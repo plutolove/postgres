@@ -44,3 +44,4 @@ lib*.pc
 /tmp_install/
 /lib
 /bin
+/DemoDir
