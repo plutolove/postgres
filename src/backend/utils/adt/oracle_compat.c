@@ -25,6 +25,30 @@ static text *dotrim(const char *string, int stringlen,
 					const char *set, int setlen,
 					bool doltrim, bool dortrim);
 
+
+/*
+ test user define builtin function
+ */
+Datum
+helloworld(PG_FUNCTION_ARGS) {
+	char* hello = "hello world";
+	text *result = cstring_to_text(hello);
+	PG_RETURN_TEXT_P(result);
+}
+
+Datum
+strcon(PG_FUNCTION_ARGS) {
+	text* final;
+	text* str1 = PG_GETARG_TEXT_PP(0);
+	text* str2 = PG_GETARG_TEXT_PP(1);
+	char* result = palloc(VARSIZE_ANY_EXHDR(str1)+ VARSIZE_ANY_EXHDR(str2)+1);
+	memcpy(result, VARDATA_ANY(str1), VARSIZE_ANY_EXHDR(str1));
+	memcpy(result+VARSIZE_ANY_EXHDR(str1), VARDATA_ANY(str2), VARSIZE_ANY_EXHDR(str2));
+	result[VARSIZE_ANY_EXHDR(str1)+ VARSIZE_ANY_EXHDR(str2)] = '\0';
+	final = cstring_to_text(result);
+	PG_RETURN_TEXT_P(final);
+}
+
 /********************************************************************
  *
  * lower
