@@ -38,13 +38,6 @@
 # Try to do one or the other though, don't just insert entries at random.
 # OIDS 1 - 99
 
-# test user define builtin function
-{ oid => '6122', descr => 'helloworld',
-  proname => 'helloworld', prorettype => 'text', proargtypes => '',
-  prosrc => 'helloworld' },
-{ oid => '6123', descr => 'strcon',
-  proname => 'strcon', prorettype => 'text', proargtypes => 'text text',
-  prosrc => 'strcon' },
 { oid => '1242', descr => 'I/O',
   proname => 'boolin', prorettype => 'bool', proargtypes => 'cstring',
   prosrc => 'boolin' },
