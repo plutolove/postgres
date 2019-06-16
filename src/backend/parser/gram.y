@@ -663,7 +663,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
-	OBJECT_P OF OFF OFFSET OIDS OLD ON ONLY OPERATOR OPTION OPTIONS OR
+	OBJECT_P OF OFF OFFSET OIDS OLD ON ONLINE ONLY OPERATOR OPTION OPTIONS OR
 	ORDER ORDINALITY OTHERS OUT_P OUTER_P
 	OVER OVERLAPS OVERLAY OVERRIDING OWNED OWNER
 
@@ -11320,8 +11320,24 @@ simple_select:
 					n->groupClause = $7;
 					n->havingClause = $8;
 					n->windowClause = $9;
+					n->online = false;
 					$$ = (Node *)n;
 				}
+			| SELECT ONLINE opt_all_clause opt_target_list
+              	into_clause from_clause where_clause
+           		group_clause having_clause window_clause
+              	{
+              		SelectStmt *n = makeNode(SelectStmt);
+              		n->targetList = $3;
+              		n->intoClause = $4;
+              		n->fromClause = $5;
+              		n->whereClause = $6;
+              		n->groupClause = $7;
+              		n->havingClause = $8;
+              		n->windowClause = $9;
+              		n->online = true;
+              		$$ = (Node *)n;
+              	}
 			| SELECT distinct_clause target_list
 			into_clause from_clause where_clause
 			group_clause having_clause window_clause
@@ -15470,6 +15486,7 @@ reserved_keyword:
 			| NULL_P
 			| OFFSET
 			| ON
+			| ONLINE
 			| ONLY
 			| OR
 			| ORDER

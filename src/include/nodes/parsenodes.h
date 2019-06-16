@@ -1606,6 +1606,11 @@ typedef struct SelectStmt
 	struct SelectStmt *larg;	/* left child */
 	struct SelectStmt *rarg;	/* right child */
 	/* Eventually add fields for CORRESPONDING spec here */
+
+	/*
+	 * add online
+	 */
+	bool online;
 } SelectStmt;
 
 
