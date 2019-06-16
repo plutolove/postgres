@@ -11328,13 +11328,13 @@ simple_select:
            		group_clause having_clause window_clause
               	{
               		SelectStmt *n = makeNode(SelectStmt);
-              		n->targetList = $3;
-              		n->intoClause = $4;
-              		n->fromClause = $5;
-              		n->whereClause = $6;
-              		n->groupClause = $7;
-              		n->havingClause = $8;
-              		n->windowClause = $9;
+              		n->targetList = $4;
+              		n->intoClause = $5;
+              		n->fromClause = $6;
+              		n->whereClause = $7;
+              		n->groupClause = $8;
+              		n->havingClause = $9;
+              		n->windowClause = $10;
               		n->online = true;
               		$$ = (Node *)n;
               	}

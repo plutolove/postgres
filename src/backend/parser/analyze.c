@@ -1201,6 +1201,12 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	Node	   *qual;
 	ListCell   *l;
 
+	qry->online = stmt->online;
+	if(stmt->online) {
+        printf("select stmt online true\n");
+	} else {
+        printf("select stmt online false\n");
+	}
 	qry->commandType = CMD_SELECT;
 
 	/* process the WITH clause independently of all else */

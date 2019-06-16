@@ -347,6 +347,13 @@ typedef struct Scan
  */
 typedef Scan SeqScan;
 
+typedef struct OnlineScan
+{
+    Scan scan;
+    bool online;
+} OnlineScan;
+
+
 /* ----------------
  *		table sample scan node
  * ----------------
