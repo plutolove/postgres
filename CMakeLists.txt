@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.14)
 project(pg C)
 
 set(CMAKE_C_STANDARD 11)
@@ -8,6 +8,982 @@ include_directories(src/include)
 include_directories(src/backend)
 
 add_executable(pg
+        contrib/adminpack/adminpack.c
+        contrib/amcheck/verify_nbtree.c
+        contrib/auth_delay/auth_delay.c
+        contrib/auto_explain/auto_explain.c
+        contrib/bloom/blcost.c
+        contrib/bloom/blinsert.c
+        contrib/bloom/bloom.h
+        contrib/bloom/blscan.c
+        contrib/bloom/blutils.c
+        contrib/bloom/blvacuum.c
+        contrib/bloom/blvalidate.c
+        contrib/btree_gin/btree_gin.c
+        contrib/btree_gist/btree_bit.c
+        contrib/btree_gist/btree_bytea.c
+        contrib/btree_gist/btree_cash.c
+        contrib/btree_gist/btree_date.c
+        contrib/btree_gist/btree_enum.c
+        contrib/btree_gist/btree_float4.c
+        contrib/btree_gist/btree_float8.c
+        contrib/btree_gist/btree_gist.c
+        contrib/btree_gist/btree_gist.h
+        contrib/btree_gist/btree_inet.c
+        contrib/btree_gist/btree_int2.c
+        contrib/btree_gist/btree_int4.c
+        contrib/btree_gist/btree_int8.c
+        contrib/btree_gist/btree_interval.c
+        contrib/btree_gist/btree_macaddr.c
+        contrib/btree_gist/btree_macaddr8.c
+        contrib/btree_gist/btree_numeric.c
+        contrib/btree_gist/btree_oid.c
+        contrib/btree_gist/btree_text.c
+        contrib/btree_gist/btree_time.c
+        contrib/btree_gist/btree_ts.c
+        contrib/btree_gist/btree_utils_num.c
+        contrib/btree_gist/btree_utils_num.h
+        contrib/btree_gist/btree_utils_var.c
+        contrib/btree_gist/btree_utils_var.h
+        contrib/btree_gist/btree_uuid.c
+        contrib/citext/citext.c
+        contrib/cube/cube.c
+        contrib/cube/cubedata.h
+        contrib/dblink/dblink.c
+        contrib/dict_int/dict_int.c
+        contrib/dict_xsyn/dict_xsyn.c
+        contrib/earthdistance/earthdistance.c
+        contrib/file_fdw/file_fdw.c
+        contrib/fuzzystrmatch/dmetaphone.c
+        contrib/fuzzystrmatch/fuzzystrmatch.c
+        contrib/hstore/hstore.h
+        contrib/hstore/hstore_compat.c
+        contrib/hstore/hstore_gin.c
+        contrib/hstore/hstore_gist.c
+        contrib/hstore/hstore_io.c
+        contrib/hstore/hstore_op.c
+        contrib/hstore_plperl/hstore_plperl.c
+        contrib/hstore_plpython/hstore_plpython.c
+        contrib/intarray/_int.h
+        contrib/intarray/_int_bool.c
+        contrib/intarray/_int_gin.c
+        contrib/intarray/_int_gist.c
+        contrib/intarray/_int_op.c
+        contrib/intarray/_int_selfuncs.c
+        contrib/intarray/_int_tool.c
+        contrib/intarray/_intbig_gist.c
+        contrib/isn/EAN13.h
+        contrib/isn/ISBN.h
+        contrib/isn/ISMN.h
+        contrib/isn/isn.c
+        contrib/isn/isn.h
+        contrib/isn/ISSN.h
+        contrib/isn/UPC.h
+        contrib/jsonb_plperl/jsonb_plperl.c
+        contrib/jsonb_plpython/jsonb_plpython.c
+        contrib/lo/lo.c
+        contrib/ltree/_ltree_gist.c
+        contrib/ltree/_ltree_op.c
+        contrib/ltree/crc32.c
+        contrib/ltree/crc32.h
+        contrib/ltree/lquery_op.c
+        contrib/ltree/ltree.h
+        contrib/ltree/ltree_gist.c
+        contrib/ltree/ltree_io.c
+        contrib/ltree/ltree_op.c
+        contrib/ltree/ltxtquery_io.c
+        contrib/ltree/ltxtquery_op.c
+        contrib/ltree_plpython/ltree_plpython.c
+        contrib/oid2name/oid2name.c
+        contrib/pageinspect/brinfuncs.c
+        contrib/pageinspect/btreefuncs.c
+        contrib/pageinspect/fsmfuncs.c
+        contrib/pageinspect/ginfuncs.c
+        contrib/pageinspect/hashfuncs.c
+        contrib/pageinspect/heapfuncs.c
+        contrib/pageinspect/pageinspect.h
+        contrib/pageinspect/rawpage.c
+        contrib/passwordcheck/passwordcheck.c
+        contrib/pg_buffercache/pg_buffercache_pages.c
+        contrib/pg_freespacemap/pg_freespacemap.c
+        contrib/pg_prewarm/autoprewarm.c
+        contrib/pg_prewarm/pg_prewarm.c
+        contrib/pg_standby/pg_standby.c
+        contrib/pg_stat_statements/pg_stat_statements.c
+        contrib/pg_trgm/trgm.h
+        contrib/pg_trgm/trgm_gin.c
+        contrib/pg_trgm/trgm_gist.c
+        contrib/pg_trgm/trgm_op.c
+        contrib/pg_trgm/trgm_regexp.c
+        contrib/pg_visibility/pg_visibility.c
+        contrib/pgcrypto/blf.c
+        contrib/pgcrypto/blf.h
+        contrib/pgcrypto/crypt-blowfish.c
+        contrib/pgcrypto/crypt-des.c
+        contrib/pgcrypto/crypt-gensalt.c
+        contrib/pgcrypto/crypt-md5.c
+        contrib/pgcrypto/imath.c
+        contrib/pgcrypto/imath.h
+        contrib/pgcrypto/internal-sha2.c
+        contrib/pgcrypto/internal.c
+        contrib/pgcrypto/mbuf.c
+        contrib/pgcrypto/mbuf.h
+        contrib/pgcrypto/md5.c
+        contrib/pgcrypto/md5.h
+        contrib/pgcrypto/openssl.c
+        contrib/pgcrypto/pgcrypto.c
+        contrib/pgcrypto/pgcrypto.h
+        contrib/pgcrypto/pgp-armor.c
+        contrib/pgcrypto/pgp-cfb.c
+        contrib/pgcrypto/pgp-compress.c
+        contrib/pgcrypto/pgp-decrypt.c
+        contrib/pgcrypto/pgp-encrypt.c
+        contrib/pgcrypto/pgp-info.c
+        contrib/pgcrypto/pgp-mpi-internal.c
+        contrib/pgcrypto/pgp-mpi-openssl.c
+        contrib/pgcrypto/pgp-mpi.c
+        contrib/pgcrypto/pgp-pgsql.c
+        contrib/pgcrypto/pgp-pubdec.c
+        contrib/pgcrypto/pgp-pubenc.c
+        contrib/pgcrypto/pgp-pubkey.c
+        contrib/pgcrypto/pgp-s2k.c
+        contrib/pgcrypto/pgp.c
+        contrib/pgcrypto/pgp.h
+        contrib/pgcrypto/px-crypt.c
+        contrib/pgcrypto/px-crypt.h
+        contrib/pgcrypto/px-hmac.c
+        contrib/pgcrypto/px.c
+        contrib/pgcrypto/px.h
+        contrib/pgcrypto/rijndael.c
+        contrib/pgcrypto/rijndael.h
+        contrib/pgcrypto/sha1.c
+        contrib/pgcrypto/sha1.h
+        contrib/pgrowlocks/pgrowlocks.c
+        contrib/pgstattuple/pgstatapprox.c
+        contrib/pgstattuple/pgstatindex.c
+        contrib/pgstattuple/pgstattuple.c
+        contrib/postgres_fdw/connection.c
+        contrib/postgres_fdw/deparse.c
+        contrib/postgres_fdw/option.c
+        contrib/postgres_fdw/postgres_fdw.c
+        contrib/postgres_fdw/postgres_fdw.h
+        contrib/postgres_fdw/shippable.c
+        contrib/seg/seg.c
+        contrib/seg/segdata.h
+        contrib/sepgsql/database.c
+        contrib/sepgsql/dml.c
+        contrib/sepgsql/hooks.c
+        contrib/sepgsql/label.c
+        contrib/sepgsql/proc.c
+        contrib/sepgsql/relation.c
+        contrib/sepgsql/schema.c
+        contrib/sepgsql/selinux.c
+        contrib/sepgsql/sepgsql.h
+        contrib/sepgsql/uavc.c
+        contrib/spi/autoinc.c
+        contrib/spi/insert_username.c
+        contrib/spi/moddatetime.c
+        contrib/spi/refint.c
+        contrib/sslinfo/sslinfo.c
+        contrib/tablefunc/tablefunc.c
+        contrib/tablefunc/tablefunc.h
+        contrib/tcn/tcn.c
+        contrib/test_decoding/test_decoding.c
+        contrib/tsm_system_rows/tsm_system_rows.c
+        contrib/tsm_system_time/tsm_system_time.c
+        contrib/unaccent/unaccent.c
+        contrib/uuid-ossp/uuid-ossp.c
+        contrib/vacuumlo/vacuumlo.c
+        contrib/xml2/xpath.c
+        contrib/xml2/xslt_proc.c
+        include/libpq/libpq-fs.h
+        include/postgresql/informix/esql/datetime.h
+        include/postgresql/informix/esql/decimal.h
+        include/postgresql/informix/esql/sqltypes.h
+        include/postgresql/internal/libpq/pqcomm.h
+        include/postgresql/internal/c.h
+        include/postgresql/internal/libpq-int.h
+        include/postgresql/internal/port.h
+        include/postgresql/internal/postgres_fe.h
+        include/postgresql/internal/pqexpbuffer.h
+        include/postgresql/server/access/amapi.h
+        include/postgresql/server/access/amvalidate.h
+        include/postgresql/server/access/attnum.h
+        include/postgresql/server/access/brin.h
+        include/postgresql/server/access/brin_internal.h
+        include/postgresql/server/access/brin_page.h
+        include/postgresql/server/access/brin_pageops.h
+        include/postgresql/server/access/brin_revmap.h
+        include/postgresql/server/access/brin_tuple.h
+        include/postgresql/server/access/brin_xlog.h
+        include/postgresql/server/access/bufmask.h
+        include/postgresql/server/access/clog.h
+        include/postgresql/server/access/commit_ts.h
+        include/postgresql/server/access/genam.h
+        include/postgresql/server/access/generic_xlog.h
+        include/postgresql/server/access/gin.h
+        include/postgresql/server/access/gin_private.h
+        include/postgresql/server/access/ginblock.h
+        include/postgresql/server/access/ginxlog.h
+        include/postgresql/server/access/gist.h
+        include/postgresql/server/access/gist_private.h
+        include/postgresql/server/access/gistscan.h
+        include/postgresql/server/access/gistxlog.h
+        include/postgresql/server/access/hash.h
+        include/postgresql/server/access/hash_xlog.h
+        include/postgresql/server/access/heapam.h
+        include/postgresql/server/access/heapam_xlog.h
+        include/postgresql/server/access/hio.h
+        include/postgresql/server/access/htup.h
+        include/postgresql/server/access/htup_details.h
+        include/postgresql/server/access/itup.h
+        include/postgresql/server/access/multixact.h
+        include/postgresql/server/access/nbtree.h
+        include/postgresql/server/access/nbtxlog.h
+        include/postgresql/server/access/parallel.h
+        include/postgresql/server/access/printsimple.h
+        include/postgresql/server/access/printtup.h
+        include/postgresql/server/access/relation.h
+        include/postgresql/server/access/reloptions.h
+        include/postgresql/server/access/relscan.h
+        include/postgresql/server/access/rewriteheap.h
+        include/postgresql/server/access/rmgr.h
+        include/postgresql/server/access/rmgrlist.h
+        include/postgresql/server/access/sdir.h
+        include/postgresql/server/access/session.h
+        include/postgresql/server/access/skey.h
+        include/postgresql/server/access/slru.h
+        include/postgresql/server/access/spgist.h
+        include/postgresql/server/access/spgist_private.h
+        include/postgresql/server/access/spgxlog.h
+        include/postgresql/server/access/stratnum.h
+        include/postgresql/server/access/subtrans.h
+        include/postgresql/server/access/sysattr.h
+        include/postgresql/server/access/table.h
+        include/postgresql/server/access/tableam.h
+        include/postgresql/server/access/timeline.h
+        include/postgresql/server/access/transam.h
+        include/postgresql/server/access/tsmapi.h
+        include/postgresql/server/access/tupconvert.h
+        include/postgresql/server/access/tupdesc.h
+        include/postgresql/server/access/tupdesc_details.h
+        include/postgresql/server/access/tupmacs.h
+        include/postgresql/server/access/tuptoaster.h
+        include/postgresql/server/access/twophase.h
+        include/postgresql/server/access/twophase_rmgr.h
+        include/postgresql/server/access/valid.h
+        include/postgresql/server/access/visibilitymap.h
+        include/postgresql/server/access/xact.h
+        include/postgresql/server/access/xlog.h
+        include/postgresql/server/access/xlog_internal.h
+        include/postgresql/server/access/xlogdefs.h
+        include/postgresql/server/access/xloginsert.h
+        include/postgresql/server/access/xlogreader.h
+        include/postgresql/server/access/xlogrecord.h
+        include/postgresql/server/access/xlogutils.h
+        include/postgresql/server/bootstrap/bootstrap.h
+        include/postgresql/server/catalog/binary_upgrade.h
+        include/postgresql/server/catalog/catalog.h
+        include/postgresql/server/catalog/catversion.h
+        include/postgresql/server/catalog/dependency.h
+        include/postgresql/server/catalog/genbki.h
+        include/postgresql/server/catalog/heap.h
+        include/postgresql/server/catalog/index.h
+        include/postgresql/server/catalog/indexing.h
+        include/postgresql/server/catalog/namespace.h
+        include/postgresql/server/catalog/objectaccess.h
+        include/postgresql/server/catalog/objectaddress.h
+        include/postgresql/server/catalog/opfam_internal.h
+        include/postgresql/server/catalog/partition.h
+        include/postgresql/server/catalog/pg_aggregate.h
+        include/postgresql/server/catalog/pg_aggregate_d.h
+        include/postgresql/server/catalog/pg_am.h
+        include/postgresql/server/catalog/pg_am_d.h
+        include/postgresql/server/catalog/pg_amop.h
+        include/postgresql/server/catalog/pg_amop_d.h
+        include/postgresql/server/catalog/pg_amproc.h
+        include/postgresql/server/catalog/pg_amproc_d.h
+        include/postgresql/server/catalog/pg_attrdef.h
+        include/postgresql/server/catalog/pg_attrdef_d.h
+        include/postgresql/server/catalog/pg_attribute.h
+        include/postgresql/server/catalog/pg_attribute_d.h
+        include/postgresql/server/catalog/pg_auth_members.h
+        include/postgresql/server/catalog/pg_auth_members_d.h
+        include/postgresql/server/catalog/pg_authid.h
+        include/postgresql/server/catalog/pg_authid_d.h
+        include/postgresql/server/catalog/pg_cast.h
+        include/postgresql/server/catalog/pg_cast_d.h
+        include/postgresql/server/catalog/pg_class.h
+        include/postgresql/server/catalog/pg_class_d.h
+        include/postgresql/server/catalog/pg_collation.h
+        include/postgresql/server/catalog/pg_collation_d.h
+        include/postgresql/server/catalog/pg_constraint.h
+        include/postgresql/server/catalog/pg_constraint_d.h
+        include/postgresql/server/catalog/pg_control.h
+        include/postgresql/server/catalog/pg_conversion.h
+        include/postgresql/server/catalog/pg_conversion_d.h
+        include/postgresql/server/catalog/pg_database.h
+        include/postgresql/server/catalog/pg_database_d.h
+        include/postgresql/server/catalog/pg_db_role_setting.h
+        include/postgresql/server/catalog/pg_db_role_setting_d.h
+        include/postgresql/server/catalog/pg_default_acl.h
+        include/postgresql/server/catalog/pg_default_acl_d.h
+        include/postgresql/server/catalog/pg_depend.h
+        include/postgresql/server/catalog/pg_depend_d.h
+        include/postgresql/server/catalog/pg_description.h
+        include/postgresql/server/catalog/pg_description_d.h
+        include/postgresql/server/catalog/pg_enum.h
+        include/postgresql/server/catalog/pg_enum_d.h
+        include/postgresql/server/catalog/pg_event_trigger.h
+        include/postgresql/server/catalog/pg_event_trigger_d.h
+        include/postgresql/server/catalog/pg_extension.h
+        include/postgresql/server/catalog/pg_extension_d.h
+        include/postgresql/server/catalog/pg_foreign_data_wrapper.h
+        include/postgresql/server/catalog/pg_foreign_data_wrapper_d.h
+        include/postgresql/server/catalog/pg_foreign_server.h
+        include/postgresql/server/catalog/pg_foreign_server_d.h
+        include/postgresql/server/catalog/pg_foreign_table.h
+        include/postgresql/server/catalog/pg_foreign_table_d.h
+        include/postgresql/server/catalog/pg_index.h
+        include/postgresql/server/catalog/pg_index_d.h
+        include/postgresql/server/catalog/pg_inherits.h
+        include/postgresql/server/catalog/pg_inherits_d.h
+        include/postgresql/server/catalog/pg_init_privs.h
+        include/postgresql/server/catalog/pg_init_privs_d.h
+        include/postgresql/server/catalog/pg_language.h
+        include/postgresql/server/catalog/pg_language_d.h
+        include/postgresql/server/catalog/pg_largeobject.h
+        include/postgresql/server/catalog/pg_largeobject_d.h
+        include/postgresql/server/catalog/pg_largeobject_metadata.h
+        include/postgresql/server/catalog/pg_largeobject_metadata_d.h
+        include/postgresql/server/catalog/pg_namespace.h
+        include/postgresql/server/catalog/pg_namespace_d.h
+        include/postgresql/server/catalog/pg_opclass.h
+        include/postgresql/server/catalog/pg_opclass_d.h
+        include/postgresql/server/catalog/pg_operator.h
+        include/postgresql/server/catalog/pg_operator_d.h
+        include/postgresql/server/catalog/pg_opfamily.h
+        include/postgresql/server/catalog/pg_opfamily_d.h
+        include/postgresql/server/catalog/pg_partitioned_table.h
+        include/postgresql/server/catalog/pg_partitioned_table_d.h
+        include/postgresql/server/catalog/pg_pltemplate.h
+        include/postgresql/server/catalog/pg_pltemplate_d.h
+        include/postgresql/server/catalog/pg_policy.h
+        include/postgresql/server/catalog/pg_policy_d.h
+        include/postgresql/server/catalog/pg_proc.h
+        include/postgresql/server/catalog/pg_proc_d.h
+        include/postgresql/server/catalog/pg_publication.h
+        include/postgresql/server/catalog/pg_publication_d.h
+        include/postgresql/server/catalog/pg_publication_rel.h
+        include/postgresql/server/catalog/pg_publication_rel_d.h
+        include/postgresql/server/catalog/pg_range.h
+        include/postgresql/server/catalog/pg_range_d.h
+        include/postgresql/server/catalog/pg_replication_origin.h
+        include/postgresql/server/catalog/pg_replication_origin_d.h
+        include/postgresql/server/catalog/pg_rewrite.h
+        include/postgresql/server/catalog/pg_rewrite_d.h
+        include/postgresql/server/catalog/pg_seclabel.h
+        include/postgresql/server/catalog/pg_seclabel_d.h
+        include/postgresql/server/catalog/pg_sequence.h
+        include/postgresql/server/catalog/pg_sequence_d.h
+        include/postgresql/server/catalog/pg_shdepend.h
+        include/postgresql/server/catalog/pg_shdepend_d.h
+        include/postgresql/server/catalog/pg_shdescription.h
+        include/postgresql/server/catalog/pg_shdescription_d.h
+        include/postgresql/server/catalog/pg_shseclabel.h
+        include/postgresql/server/catalog/pg_shseclabel_d.h
+        include/postgresql/server/catalog/pg_statistic.h
+        include/postgresql/server/catalog/pg_statistic_d.h
+        include/postgresql/server/catalog/pg_statistic_ext.h
+        include/postgresql/server/catalog/pg_statistic_ext_d.h
+        include/postgresql/server/catalog/pg_subscription.h
+        include/postgresql/server/catalog/pg_subscription_d.h
+        include/postgresql/server/catalog/pg_subscription_rel.h
+        include/postgresql/server/catalog/pg_subscription_rel_d.h
+        include/postgresql/server/catalog/pg_tablespace.h
+        include/postgresql/server/catalog/pg_tablespace_d.h
+        include/postgresql/server/catalog/pg_transform.h
+        include/postgresql/server/catalog/pg_transform_d.h
+        include/postgresql/server/catalog/pg_trigger.h
+        include/postgresql/server/catalog/pg_trigger_d.h
+        include/postgresql/server/catalog/pg_ts_config.h
+        include/postgresql/server/catalog/pg_ts_config_d.h
+        include/postgresql/server/catalog/pg_ts_config_map.h
+        include/postgresql/server/catalog/pg_ts_config_map_d.h
+        include/postgresql/server/catalog/pg_ts_dict.h
+        include/postgresql/server/catalog/pg_ts_dict_d.h
+        include/postgresql/server/catalog/pg_ts_parser.h
+        include/postgresql/server/catalog/pg_ts_parser_d.h
+        include/postgresql/server/catalog/pg_ts_template.h
+        include/postgresql/server/catalog/pg_ts_template_d.h
+        include/postgresql/server/catalog/pg_type.h
+        include/postgresql/server/catalog/pg_type_d.h
+        include/postgresql/server/catalog/pg_user_mapping.h
+        include/postgresql/server/catalog/pg_user_mapping_d.h
+        include/postgresql/server/catalog/schemapg.h
+        include/postgresql/server/catalog/storage.h
+        include/postgresql/server/catalog/storage_xlog.h
+        include/postgresql/server/catalog/toasting.h
+        include/postgresql/server/commands/alter.h
+        include/postgresql/server/commands/async.h
+        include/postgresql/server/commands/cluster.h
+        include/postgresql/server/commands/collationcmds.h
+        include/postgresql/server/commands/comment.h
+        include/postgresql/server/commands/conversioncmds.h
+        include/postgresql/server/commands/copy.h
+        include/postgresql/server/commands/createas.h
+        include/postgresql/server/commands/dbcommands.h
+        include/postgresql/server/commands/dbcommands_xlog.h
+        include/postgresql/server/commands/defrem.h
+        include/postgresql/server/commands/discard.h
+        include/postgresql/server/commands/event_trigger.h
+        include/postgresql/server/commands/explain.h
+        include/postgresql/server/commands/extension.h
+        include/postgresql/server/commands/lockcmds.h
+        include/postgresql/server/commands/matview.h
+        include/postgresql/server/commands/policy.h
+        include/postgresql/server/commands/portalcmds.h
+        include/postgresql/server/commands/prepare.h
+        include/postgresql/server/commands/proclang.h
+        include/postgresql/server/commands/progress.h
+        include/postgresql/server/commands/publicationcmds.h
+        include/postgresql/server/commands/schemacmds.h
+        include/postgresql/server/commands/seclabel.h
+        include/postgresql/server/commands/sequence.h
+        include/postgresql/server/commands/subscriptioncmds.h
+        include/postgresql/server/commands/tablecmds.h
+        include/postgresql/server/commands/tablespace.h
+        include/postgresql/server/commands/trigger.h
+        include/postgresql/server/commands/typecmds.h
+        include/postgresql/server/commands/user.h
+        include/postgresql/server/commands/vacuum.h
+        include/postgresql/server/commands/variable.h
+        include/postgresql/server/commands/view.h
+        include/postgresql/server/common/base64.h
+        include/postgresql/server/common/config_info.h
+        include/postgresql/server/common/controldata_utils.h
+        include/postgresql/server/common/fe_memutils.h
+        include/postgresql/server/common/file_perm.h
+        include/postgresql/server/common/file_utils.h
+        include/postgresql/server/common/int.h
+        include/postgresql/server/common/int128.h
+        include/postgresql/server/common/ip.h
+        include/postgresql/server/common/keywords.h
+        include/postgresql/server/common/kwlookup.h
+        include/postgresql/server/common/link-canary.h
+        include/postgresql/server/common/logging.h
+        include/postgresql/server/common/md5.h
+        include/postgresql/server/common/pg_lzcompress.h
+        include/postgresql/server/common/relpath.h
+        include/postgresql/server/common/restricted_token.h
+        include/postgresql/server/common/saslprep.h
+        include/postgresql/server/common/scram-common.h
+        include/postgresql/server/common/sha2.h
+        include/postgresql/server/common/shortest_dec.h
+        include/postgresql/server/common/string.h
+        include/postgresql/server/common/unicode_norm.h
+        include/postgresql/server/common/unicode_norm_table.h
+        include/postgresql/server/common/username.h
+        include/postgresql/server/datatype/timestamp.h
+        include/postgresql/server/executor/execdebug.h
+        include/postgresql/server/executor/execdesc.h
+        include/postgresql/server/executor/execExpr.h
+        include/postgresql/server/executor/execParallel.h
+        include/postgresql/server/executor/execPartition.h
+        include/postgresql/server/executor/executor.h
+        include/postgresql/server/executor/functions.h
+        include/postgresql/server/executor/hashjoin.h
+        include/postgresql/server/executor/instrument.h
+        include/postgresql/server/executor/nodeAgg.h
+        include/postgresql/server/executor/nodeAppend.h
+        include/postgresql/server/executor/nodeBitmapAnd.h
+        include/postgresql/server/executor/nodeBitmapHeapscan.h
+        include/postgresql/server/executor/nodeBitmapIndexscan.h
+        include/postgresql/server/executor/nodeBitmapOr.h
+        include/postgresql/server/executor/nodeCtescan.h
+        include/postgresql/server/executor/nodeCustom.h
+        include/postgresql/server/executor/nodeForeignscan.h
+        include/postgresql/server/executor/nodeFunctionscan.h
+        include/postgresql/server/executor/nodeGather.h
+        include/postgresql/server/executor/nodeGatherMerge.h
+        include/postgresql/server/executor/nodeGroup.h
+        include/postgresql/server/executor/nodeHash.h
+        include/postgresql/server/executor/nodeHashjoin.h
+        include/postgresql/server/executor/nodeIndexonlyscan.h
+        include/postgresql/server/executor/nodeIndexscan.h
+        include/postgresql/server/executor/nodeLimit.h
+        include/postgresql/server/executor/nodeLockRows.h
+        include/postgresql/server/executor/nodeMaterial.h
+        include/postgresql/server/executor/nodeMergeAppend.h
+        include/postgresql/server/executor/nodeMergejoin.h
+        include/postgresql/server/executor/nodeModifyTable.h
+        include/postgresql/server/executor/nodeNamedtuplestorescan.h
+        include/postgresql/server/executor/nodeNestloop.h
+        include/postgresql/server/executor/nodeProjectSet.h
+        include/postgresql/server/executor/nodeRecursiveunion.h
+        include/postgresql/server/executor/nodeResult.h
+        include/postgresql/server/executor/nodeSamplescan.h
+        include/postgresql/server/executor/nodeSeqscan.h
+        include/postgresql/server/executor/nodeSetOp.h
+        include/postgresql/server/executor/nodeSort.h
+        include/postgresql/server/executor/nodeSubplan.h
+        include/postgresql/server/executor/nodeSubqueryscan.h
+        include/postgresql/server/executor/nodeTableFuncscan.h
+        include/postgresql/server/executor/nodeTidscan.h
+        include/postgresql/server/executor/nodeUnique.h
+        include/postgresql/server/executor/nodeValuesscan.h
+        include/postgresql/server/executor/nodeWindowAgg.h
+        include/postgresql/server/executor/nodeWorktablescan.h
+        include/postgresql/server/executor/spi.h
+        include/postgresql/server/executor/spi_priv.h
+        include/postgresql/server/executor/tablefunc.h
+        include/postgresql/server/executor/tqueue.h
+        include/postgresql/server/executor/tstoreReceiver.h
+        include/postgresql/server/executor/tuptable.h
+        include/postgresql/server/fe_utils/conditional.h
+        include/postgresql/server/fe_utils/connect.h
+        include/postgresql/server/fe_utils/mbprint.h
+        include/postgresql/server/fe_utils/print.h
+        include/postgresql/server/fe_utils/psqlscan.h
+        include/postgresql/server/fe_utils/psqlscan_int.h
+        include/postgresql/server/fe_utils/simple_list.h
+        include/postgresql/server/fe_utils/string_utils.h
+        include/postgresql/server/foreign/fdwapi.h
+        include/postgresql/server/foreign/foreign.h
+        include/postgresql/server/jit/jit.h
+        include/postgresql/server/jit/llvmjit.h
+        include/postgresql/server/jit/llvmjit_emit.h
+        include/postgresql/server/lib/binaryheap.h
+        include/postgresql/server/lib/bipartite_match.h
+        include/postgresql/server/lib/bloomfilter.h
+        include/postgresql/server/lib/dshash.h
+        include/postgresql/server/lib/hyperloglog.h
+        include/postgresql/server/lib/ilist.h
+        include/postgresql/server/lib/integerset.h
+        include/postgresql/server/lib/knapsack.h
+        include/postgresql/server/lib/pairingheap.h
+        include/postgresql/server/lib/rbtree.h
+        include/postgresql/server/lib/simplehash.h
+        include/postgresql/server/lib/stringinfo.h
+        include/postgresql/server/libpq/auth.h
+        include/postgresql/server/libpq/be-fsstubs.h
+        include/postgresql/server/libpq/be-gssapi-common.h
+        include/postgresql/server/libpq/crypt.h
+        include/postgresql/server/libpq/hba.h
+        include/postgresql/server/libpq/ifaddr.h
+        include/postgresql/server/libpq/libpq-be.h
+        include/postgresql/server/libpq/libpq-fs.h
+        include/postgresql/server/libpq/libpq.h
+        include/postgresql/server/libpq/pqcomm.h
+        include/postgresql/server/libpq/pqformat.h
+        include/postgresql/server/libpq/pqmq.h
+        include/postgresql/server/libpq/pqsignal.h
+        include/postgresql/server/libpq/scram.h
+        include/postgresql/server/mb/pg_wchar.h
+        include/postgresql/server/nodes/bitmapset.h
+        include/postgresql/server/nodes/execnodes.h
+        include/postgresql/server/nodes/extensible.h
+        include/postgresql/server/nodes/lockoptions.h
+        include/postgresql/server/nodes/makefuncs.h
+        include/postgresql/server/nodes/memnodes.h
+        include/postgresql/server/nodes/nodeFuncs.h
+        include/postgresql/server/nodes/nodes.h
+        include/postgresql/server/nodes/params.h
+        include/postgresql/server/nodes/parsenodes.h
+        include/postgresql/server/nodes/pathnodes.h
+        include/postgresql/server/nodes/pg_list.h
+        include/postgresql/server/nodes/plannodes.h
+        include/postgresql/server/nodes/primnodes.h
+        include/postgresql/server/nodes/print.h
+        include/postgresql/server/nodes/readfuncs.h
+        include/postgresql/server/nodes/replnodes.h
+        include/postgresql/server/nodes/supportnodes.h
+        include/postgresql/server/nodes/tidbitmap.h
+        include/postgresql/server/nodes/value.h
+        include/postgresql/server/optimizer/appendinfo.h
+        include/postgresql/server/optimizer/clauses.h
+        include/postgresql/server/optimizer/cost.h
+        include/postgresql/server/optimizer/geqo.h
+        include/postgresql/server/optimizer/geqo_copy.h
+        include/postgresql/server/optimizer/geqo_gene.h
+        include/postgresql/server/optimizer/geqo_misc.h
+        include/postgresql/server/optimizer/geqo_mutation.h
+        include/postgresql/server/optimizer/geqo_pool.h
+        include/postgresql/server/optimizer/geqo_random.h
+        include/postgresql/server/optimizer/geqo_recombination.h
+        include/postgresql/server/optimizer/geqo_selection.h
+        include/postgresql/server/optimizer/inherit.h
+        include/postgresql/server/optimizer/joininfo.h
+        include/postgresql/server/optimizer/optimizer.h
+        include/postgresql/server/optimizer/orclauses.h
+        include/postgresql/server/optimizer/paramassign.h
+        include/postgresql/server/optimizer/pathnode.h
+        include/postgresql/server/optimizer/paths.h
+        include/postgresql/server/optimizer/placeholder.h
+        include/postgresql/server/optimizer/plancat.h
+        include/postgresql/server/optimizer/planmain.h
+        include/postgresql/server/optimizer/planner.h
+        include/postgresql/server/optimizer/prep.h
+        include/postgresql/server/optimizer/restrictinfo.h
+        include/postgresql/server/optimizer/subselect.h
+        include/postgresql/server/optimizer/tlist.h
+        include/postgresql/server/parser/analyze.h
+        include/postgresql/server/parser/gram.h
+        include/postgresql/server/parser/gramparse.h
+        include/postgresql/server/parser/kwlist.h
+        include/postgresql/server/parser/parse_agg.h
+        include/postgresql/server/parser/parse_clause.h
+        include/postgresql/server/parser/parse_coerce.h
+        include/postgresql/server/parser/parse_collate.h
+        include/postgresql/server/parser/parse_cte.h
+        include/postgresql/server/parser/parse_enr.h
+        include/postgresql/server/parser/parse_expr.h
+        include/postgresql/server/parser/parse_func.h
+        include/postgresql/server/parser/parse_node.h
+        include/postgresql/server/parser/parse_oper.h
+        include/postgresql/server/parser/parse_param.h
+        include/postgresql/server/parser/parse_relation.h
+        include/postgresql/server/parser/parse_target.h
+        include/postgresql/server/parser/parse_type.h
+        include/postgresql/server/parser/parse_utilcmd.h
+        include/postgresql/server/parser/parser.h
+        include/postgresql/server/parser/parsetree.h
+        include/postgresql/server/parser/scanner.h
+        include/postgresql/server/parser/scansup.h
+        include/postgresql/server/partitioning/partbounds.h
+        include/postgresql/server/partitioning/partdefs.h
+        include/postgresql/server/partitioning/partdesc.h
+        include/postgresql/server/partitioning/partprune.h
+        include/postgresql/server/port/atomics/arch-arm.h
+        include/postgresql/server/port/atomics/arch-hppa.h
+        include/postgresql/server/port/atomics/arch-ia64.h
+        include/postgresql/server/port/atomics/arch-ppc.h
+        include/postgresql/server/port/atomics/arch-x86.h
+        include/postgresql/server/port/atomics/fallback.h
+        include/postgresql/server/port/atomics/generic-acc.h
+        include/postgresql/server/port/atomics/generic-gcc.h
+        include/postgresql/server/port/atomics/generic-msvc.h
+        include/postgresql/server/port/atomics/generic-sunpro.h
+        include/postgresql/server/port/atomics/generic-xlc.h
+        include/postgresql/server/port/atomics/generic.h
+        include/postgresql/server/port/win32/arpa/inet.h
+        include/postgresql/server/port/win32/netinet/in.h
+        include/postgresql/server/port/win32/sys/socket.h
+        include/postgresql/server/port/win32/sys/wait.h
+        include/postgresql/server/port/win32/dlfcn.h
+        include/postgresql/server/port/win32/grp.h
+        include/postgresql/server/port/win32/netdb.h
+        include/postgresql/server/port/win32/pwd.h
+        include/postgresql/server/port/win32_msvc/sys/file.h
+        include/postgresql/server/port/win32_msvc/sys/param.h
+        include/postgresql/server/port/win32_msvc/sys/time.h
+        include/postgresql/server/port/win32_msvc/dirent.h
+        include/postgresql/server/port/win32_msvc/unistd.h
+        include/postgresql/server/port/win32_msvc/utime.h
+        include/postgresql/server/port/aix.h
+        include/postgresql/server/port/atomics.h
+        include/postgresql/server/port/cygwin.h
+        include/postgresql/server/port/darwin.h
+        include/postgresql/server/port/freebsd.h
+        include/postgresql/server/port/hpux.h
+        include/postgresql/server/port/linux.h
+        include/postgresql/server/port/netbsd.h
+        include/postgresql/server/port/openbsd.h
+        include/postgresql/server/port/pg_bitutils.h
+        include/postgresql/server/port/pg_bswap.h
+        include/postgresql/server/port/pg_crc32c.h
+        include/postgresql/server/port/solaris.h
+        include/postgresql/server/port/win32.h
+        include/postgresql/server/port/win32_port.h
+        include/postgresql/server/portability/instr_time.h
+        include/postgresql/server/portability/mem.h
+        include/postgresql/server/postmaster/autovacuum.h
+        include/postgresql/server/postmaster/bgworker.h
+        include/postgresql/server/postmaster/bgworker_internals.h
+        include/postgresql/server/postmaster/bgwriter.h
+        include/postgresql/server/postmaster/fork_process.h
+        include/postgresql/server/postmaster/pgarch.h
+        include/postgresql/server/postmaster/postmaster.h
+        include/postgresql/server/postmaster/startup.h
+        include/postgresql/server/postmaster/syslogger.h
+        include/postgresql/server/postmaster/walwriter.h
+        include/postgresql/server/regex/regcustom.h
+        include/postgresql/server/regex/regerrs.h
+        include/postgresql/server/regex/regex.h
+        include/postgresql/server/regex/regexport.h
+        include/postgresql/server/regex/regguts.h
+        include/postgresql/server/replication/basebackup.h
+        include/postgresql/server/replication/decode.h
+        include/postgresql/server/replication/logical.h
+        include/postgresql/server/replication/logicalfuncs.h
+        include/postgresql/server/replication/logicallauncher.h
+        include/postgresql/server/replication/logicalproto.h
+        include/postgresql/server/replication/logicalrelation.h
+        include/postgresql/server/replication/logicalworker.h
+        include/postgresql/server/replication/message.h
+        include/postgresql/server/replication/origin.h
+        include/postgresql/server/replication/output_plugin.h
+        include/postgresql/server/replication/pgoutput.h
+        include/postgresql/server/replication/reorderbuffer.h
+        include/postgresql/server/replication/slot.h
+        include/postgresql/server/replication/snapbuild.h
+        include/postgresql/server/replication/syncrep.h
+        include/postgresql/server/replication/walreceiver.h
+        include/postgresql/server/replication/walsender.h
+        include/postgresql/server/replication/walsender_private.h
+        include/postgresql/server/replication/worker_internal.h
+        include/postgresql/server/rewrite/prs2lock.h
+        include/postgresql/server/rewrite/rewriteDefine.h
+        include/postgresql/server/rewrite/rewriteHandler.h
+        include/postgresql/server/rewrite/rewriteManip.h
+        include/postgresql/server/rewrite/rewriteRemove.h
+        include/postgresql/server/rewrite/rewriteSupport.h
+        include/postgresql/server/rewrite/rowsecurity.h
+        include/postgresql/server/snowball/libstemmer/api.h
+        include/postgresql/server/snowball/libstemmer/header.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_danish.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_dutch.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_english.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_finnish.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_french.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_german.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_indonesian.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_irish.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_italian.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_norwegian.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_porter.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_portuguese.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_spanish.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_1_swedish.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_2_hungarian.h
+        include/postgresql/server/snowball/libstemmer/stem_ISO_8859_2_romanian.h
+        include/postgresql/server/snowball/libstemmer/stem_KOI8_R_russian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_arabic.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_danish.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_dutch.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_english.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_finnish.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_french.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_german.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_hungarian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_indonesian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_irish.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_italian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_lithuanian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_nepali.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_norwegian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_porter.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_portuguese.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_romanian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_russian.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_spanish.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_swedish.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_tamil.h
+        include/postgresql/server/snowball/libstemmer/stem_UTF_8_turkish.h
+        include/postgresql/server/snowball/header.h
+        include/postgresql/server/statistics/extended_stats_internal.h
+        include/postgresql/server/statistics/statistics.h
+        include/postgresql/server/storage/backendid.h
+        include/postgresql/server/storage/barrier.h
+        include/postgresql/server/storage/block.h
+        include/postgresql/server/storage/buf.h
+        include/postgresql/server/storage/buf_internals.h
+        include/postgresql/server/storage/buffile.h
+        include/postgresql/server/storage/bufmgr.h
+        include/postgresql/server/storage/bufpage.h
+        include/postgresql/server/storage/checksum.h
+        include/postgresql/server/storage/checksum_impl.h
+        include/postgresql/server/storage/condition_variable.h
+        include/postgresql/server/storage/copydir.h
+        include/postgresql/server/storage/dsm.h
+        include/postgresql/server/storage/dsm_impl.h
+        include/postgresql/server/storage/fd.h
+        include/postgresql/server/storage/freespace.h
+        include/postgresql/server/storage/fsm_internals.h
+        include/postgresql/server/storage/indexfsm.h
+        include/postgresql/server/storage/ipc.h
+        include/postgresql/server/storage/item.h
+        include/postgresql/server/storage/itemid.h
+        include/postgresql/server/storage/itemptr.h
+        include/postgresql/server/storage/large_object.h
+        include/postgresql/server/storage/latch.h
+        include/postgresql/server/storage/lmgr.h
+        include/postgresql/server/storage/lock.h
+        include/postgresql/server/storage/lockdefs.h
+        include/postgresql/server/storage/lwlock.h
+        include/postgresql/server/storage/lwlocknames.h
+        include/postgresql/server/storage/md.h
+        include/postgresql/server/storage/off.h
+        include/postgresql/server/storage/pg_sema.h
+        include/postgresql/server/storage/pg_shmem.h
+        include/postgresql/server/storage/pmsignal.h
+        include/postgresql/server/storage/predicate.h
+        include/postgresql/server/storage/predicate_internals.h
+        include/postgresql/server/storage/proc.h
+        include/postgresql/server/storage/procarray.h
+        include/postgresql/server/storage/proclist.h
+        include/postgresql/server/storage/proclist_types.h
+        include/postgresql/server/storage/procsignal.h
+        include/postgresql/server/storage/reinit.h
+        include/postgresql/server/storage/relfilenode.h
+        include/postgresql/server/storage/s_lock.h
+        include/postgresql/server/storage/sharedfileset.h
+        include/postgresql/server/storage/shm_mq.h
+        include/postgresql/server/storage/shm_toc.h
+        include/postgresql/server/storage/shmem.h
+        include/postgresql/server/storage/sinval.h
+        include/postgresql/server/storage/sinvaladt.h
+        include/postgresql/server/storage/smgr.h
+        include/postgresql/server/storage/spin.h
+        include/postgresql/server/storage/standby.h
+        include/postgresql/server/storage/standbydefs.h
+        include/postgresql/server/storage/sync.h
+        include/postgresql/server/tcop/deparse_utility.h
+        include/postgresql/server/tcop/dest.h
+        include/postgresql/server/tcop/fastpath.h
+        include/postgresql/server/tcop/pquery.h
+        include/postgresql/server/tcop/tcopprot.h
+        include/postgresql/server/tcop/utility.h
+        include/postgresql/server/tsearch/dicts/regis.h
+        include/postgresql/server/tsearch/dicts/spell.h
+        include/postgresql/server/tsearch/ts_cache.h
+        include/postgresql/server/tsearch/ts_locale.h
+        include/postgresql/server/tsearch/ts_public.h
+        include/postgresql/server/tsearch/ts_type.h
+        include/postgresql/server/tsearch/ts_utils.h
+        include/postgresql/server/utils/acl.h
+        include/postgresql/server/utils/aclchk_internal.h
+        include/postgresql/server/utils/array.h
+        include/postgresql/server/utils/arrayaccess.h
+        include/postgresql/server/utils/ascii.h
+        include/postgresql/server/utils/attoptcache.h
+        include/postgresql/server/utils/builtins.h
+        include/postgresql/server/utils/bytea.h
+        include/postgresql/server/utils/cash.h
+        include/postgresql/server/utils/catcache.h
+        include/postgresql/server/utils/combocid.h
+        include/postgresql/server/utils/date.h
+        include/postgresql/server/utils/datetime.h
+        include/postgresql/server/utils/datum.h
+        include/postgresql/server/utils/dsa.h
+        include/postgresql/server/utils/dynahash.h
+        include/postgresql/server/utils/elog.h
+        include/postgresql/server/utils/errcodes.h
+        include/postgresql/server/utils/evtcache.h
+        include/postgresql/server/utils/expandeddatum.h
+        include/postgresql/server/utils/expandedrecord.h
+        include/postgresql/server/utils/float.h
+        include/postgresql/server/utils/fmgroids.h
+        include/postgresql/server/utils/fmgrprotos.h
+        include/postgresql/server/utils/fmgrtab.h
+        include/postgresql/server/utils/formatting.h
+        include/postgresql/server/utils/freepage.h
+        include/postgresql/server/utils/geo_decls.h
+        include/postgresql/server/utils/guc.h
+        include/postgresql/server/utils/guc_tables.h
+        include/postgresql/server/utils/hashutils.h
+        include/postgresql/server/utils/help_config.h
+        include/postgresql/server/utils/hsearch.h
+        include/postgresql/server/utils/index_selfuncs.h
+        include/postgresql/server/utils/inet.h
+        include/postgresql/server/utils/int8.h
+        include/postgresql/server/utils/inval.h
+        include/postgresql/server/utils/json.h
+        include/postgresql/server/utils/jsonapi.h
+        include/postgresql/server/utils/jsonb.h
+        include/postgresql/server/utils/jsonpath.h
+        include/postgresql/server/utils/logtape.h
+        include/postgresql/server/utils/lsyscache.h
+        include/postgresql/server/utils/memdebug.h
+        include/postgresql/server/utils/memutils.h
+        include/postgresql/server/utils/numeric.h
+        include/postgresql/server/utils/palloc.h
+        include/postgresql/server/utils/partcache.h
+        include/postgresql/server/utils/pg_crc.h
+        include/postgresql/server/utils/pg_locale.h
+        include/postgresql/server/utils/pg_lsn.h
+        include/postgresql/server/utils/pg_rusage.h
+        include/postgresql/server/utils/pidfile.h
+        include/postgresql/server/utils/plancache.h
+        include/postgresql/server/utils/portal.h
+        include/postgresql/server/utils/probes.h
+        include/postgresql/server/utils/ps_status.h
+        include/postgresql/server/utils/queryenvironment.h
+        include/postgresql/server/utils/rangetypes.h
+        include/postgresql/server/utils/regproc.h
+        include/postgresql/server/utils/rel.h
+        include/postgresql/server/utils/relcache.h
+        include/postgresql/server/utils/relfilenodemap.h
+        include/postgresql/server/utils/relmapper.h
+        include/postgresql/server/utils/relptr.h
+        include/postgresql/server/utils/reltrigger.h
+        include/postgresql/server/utils/resowner.h
+        include/postgresql/server/utils/resowner_private.h
+        include/postgresql/server/utils/rls.h
+        include/postgresql/server/utils/ruleutils.h
+        include/postgresql/server/utils/sampling.h
+        include/postgresql/server/utils/selfuncs.h
+        include/postgresql/server/utils/sharedtuplestore.h
+        include/postgresql/server/utils/snapmgr.h
+        include/postgresql/server/utils/snapshot.h
+        include/postgresql/server/utils/sortsupport.h
+        include/postgresql/server/utils/spccache.h
+        include/postgresql/server/utils/syscache.h
+        include/postgresql/server/utils/timeout.h
+        include/postgresql/server/utils/timestamp.h
+        include/postgresql/server/utils/tuplesort.h
+        include/postgresql/server/utils/tuplestore.h
+        include/postgresql/server/utils/typcache.h
+        include/postgresql/server/utils/tzparser.h
+        include/postgresql/server/utils/uuid.h
+        include/postgresql/server/utils/varbit.h
+        include/postgresql/server/utils/varlena.h
+        include/postgresql/server/utils/xml.h
+        include/postgresql/server/c.h
+        include/postgresql/server/fmgr.h
+        include/postgresql/server/funcapi.h
+        include/postgresql/server/getaddrinfo.h
+        include/postgresql/server/getopt_long.h
+        include/postgresql/server/miscadmin.h
+        include/postgresql/server/pg_config.h
+        include/postgresql/server/pg_config_ext.h
+        include/postgresql/server/pg_config_manual.h
+        include/postgresql/server/pg_config_os.h
+        include/postgresql/server/pg_getopt.h
+        include/postgresql/server/pg_trace.h
+        include/postgresql/server/pgstat.h
+        include/postgresql/server/pgtar.h
+        include/postgresql/server/pgtime.h
+        include/postgresql/server/plpgsql.h
+        include/postgresql/server/port.h
+        include/postgresql/server/postgres.h
+        include/postgresql/server/postgres_ext.h
+        include/postgresql/server/postgres_fe.h
+        include/postgresql/server/rusagestub.h
+        include/postgresql/server/windowapi.h
+        include/ecpg_config.h
+        include/ecpg_informix.h
+        include/ecpgerrno.h
+        include/ecpglib.h
+        include/ecpgtype.h
+        include/libpq-events.h
+        include/libpq-fe.h
+        include/pg_config.h
+        include/pg_config_ext.h
+        include/pg_config_manual.h
+        include/pg_config_os.h
+        include/pgtypes.h
+        include/pgtypes_date.h
+        include/pgtypes_error.h
+        include/pgtypes_interval.h
+        include/pgtypes_numeric.h
+        include/pgtypes_timestamp.h
+        include/postgres_ext.h
+        include/sql3types.h
+        include/sqlca.h
+        include/sqlda-compat.h
+        include/sqlda-native.h
+        include/sqlda.h
         src/backend/access/brin/brin.c
         src/backend/access/brin/brin_inclusion.c
         src/backend/access/brin/brin_minmax.c
@@ -16,11 +992,15 @@ add_executable(pg
         src/backend/access/brin/brin_tuple.c
         src/backend/access/brin/brin_validate.c
         src/backend/access/brin/brin_xlog.c
+        src/backend/access/common/bufmask.c
         src/backend/access/common/heaptuple.c
         src/backend/access/common/indextuple.c
+        src/backend/access/common/printsimple.c
         src/backend/access/common/printtup.c
+        src/backend/access/common/relation.c
         src/backend/access/common/reloptions.c
         src/backend/access/common/scankey.c
+        src/backend/access/common/session.c
         src/backend/access/common/tupconvert.c
         src/backend/access/common/tupdesc.c
         src/backend/access/gin/ginarrayproc.c
@@ -50,21 +1030,24 @@ add_executable(pg
         src/backend/access/gist/gistvalidate.c
         src/backend/access/gist/gistxlog.c
         src/backend/access/hash/hash.c
+        src/backend/access/hash/hash_xlog.c
         src/backend/access/hash/hashfunc.c
         src/backend/access/hash/hashinsert.c
         src/backend/access/hash/hashovfl.c
         src/backend/access/hash/hashpage.c
-        src/backend/access/hash/hashscan.c
         src/backend/access/hash/hashsearch.c
         src/backend/access/hash/hashsort.c
         src/backend/access/hash/hashutil.c
         src/backend/access/hash/hashvalidate.c
         src/backend/access/heap/heapam.c
+        src/backend/access/heap/heapam_handler.c
+        src/backend/access/heap/heapam_visibility.c
         src/backend/access/heap/hio.c
         src/backend/access/heap/pruneheap.c
         src/backend/access/heap/rewriteheap.c
         src/backend/access/heap/syncscan.c
         src/backend/access/heap/tuptoaster.c
+        src/backend/access/heap/vacuumlazy.c
         src/backend/access/heap/visibilitymap.c
         src/backend/access/index/amapi.c
         src/backend/access/index/amvalidate.c
@@ -76,6 +1059,7 @@ add_executable(pg
         src/backend/access/nbtree/nbtree.c
         src/backend/access/nbtree/nbtsearch.c
         src/backend/access/nbtree/nbtsort.c
+        src/backend/access/nbtree/nbtsplitloc.c
         src/backend/access/nbtree/nbtutils.c
         src/backend/access/nbtree/nbtvalidate.c
         src/backend/access/nbtree/nbtxlog.c
@@ -103,6 +1087,7 @@ add_executable(pg
         src/backend/access/spgist/spgdoinsert.c
         src/backend/access/spgist/spginsert.c
         src/backend/access/spgist/spgkdtreeproc.c
+        src/backend/access/spgist/spgproc.c
         src/backend/access/spgist/spgquadtreeproc.c
         src/backend/access/spgist/spgscan.c
         src/backend/access/spgist/spgtextproc.c
@@ -110,6 +1095,9 @@ add_executable(pg
         src/backend/access/spgist/spgvacuum.c
         src/backend/access/spgist/spgvalidate.c
         src/backend/access/spgist/spgxlog.c
+        src/backend/access/table/table.c
+        src/backend/access/table/tableam.c
+        src/backend/access/table/tableamapi.c
         src/backend/access/tablesample/bernoulli.c
         src/backend/access/tablesample/system.c
         src/backend/access/tablesample/tablesample.c
@@ -133,8 +1121,6 @@ add_executable(pg
         src/backend/access/transam/xloginsert.c
         src/backend/access/transam/xlogreader.c
         src/backend/access/transam/xlogutils.c
-        src/backend/bootstrap/bootparse.c
-        src/backend/bootstrap/bootscanner.c
         src/backend/bootstrap/bootstrap.c
         src/backend/catalog/aclchk.c
         src/backend/catalog/catalog.c
@@ -145,6 +1131,7 @@ add_executable(pg
         src/backend/catalog/namespace.c
         src/backend/catalog/objectaccess.c
         src/backend/catalog/objectaddress.c
+        src/backend/catalog/partition.c
         src/backend/catalog/pg_aggregate.c
         src/backend/catalog/pg_collation.c
         src/backend/catalog/pg_constraint.c
@@ -157,10 +1144,11 @@ add_executable(pg
         src/backend/catalog/pg_namespace.c
         src/backend/catalog/pg_operator.c
         src/backend/catalog/pg_proc.c
+        src/backend/catalog/pg_publication.c
         src/backend/catalog/pg_range.c
         src/backend/catalog/pg_shdepend.c
+        src/backend/catalog/pg_subscription.c
         src/backend/catalog/pg_type.c
-        src/backend/catalog/schemapg.h
         src/backend/catalog/storage.c
         src/backend/catalog/toasting.c
         src/backend/commands/aggregatecmds.c
@@ -193,9 +1181,12 @@ add_executable(pg
         src/backend/commands/portalcmds.c
         src/backend/commands/prepare.c
         src/backend/commands/proclang.c
+        src/backend/commands/publicationcmds.c
         src/backend/commands/schemacmds.c
         src/backend/commands/seclabel.c
         src/backend/commands/sequence.c
+        src/backend/commands/statscmds.c
+        src/backend/commands/subscriptioncmds.c
         src/backend/commands/tablecmds.c
         src/backend/commands/tablespace.c
         src/backend/commands/trigger.c
@@ -203,19 +1194,22 @@ add_executable(pg
         src/backend/commands/typecmds.c
         src/backend/commands/user.c
         src/backend/commands/vacuum.c
-        src/backend/commands/vacuumlazy.c
         src/backend/commands/variable.c
         src/backend/commands/view.c
         src/backend/executor/execAmi.c
         src/backend/executor/execCurrent.c
+        src/backend/executor/execExpr.c
+        src/backend/executor/execExprInterp.c
         src/backend/executor/execGrouping.c
         src/backend/executor/execIndexing.c
         src/backend/executor/execJunk.c
         src/backend/executor/execMain.c
         src/backend/executor/execParallel.c
+        src/backend/executor/execPartition.c
         src/backend/executor/execProcnode.c
-        src/backend/executor/execQual.c
+        src/backend/executor/execReplication.c
         src/backend/executor/execScan.c
+        src/backend/executor/execSRF.c
         src/backend/executor/execTuples.c
         src/backend/executor/execUtils.c
         src/backend/executor/functions.c
@@ -231,6 +1225,7 @@ add_executable(pg
         src/backend/executor/nodeForeignscan.c
         src/backend/executor/nodeFunctionscan.c
         src/backend/executor/nodeGather.c
+        src/backend/executor/nodeGatherMerge.c
         src/backend/executor/nodeGroup.c
         src/backend/executor/nodeHash.c
         src/backend/executor/nodeHashjoin.c
@@ -242,7 +1237,9 @@ add_executable(pg
         src/backend/executor/nodeMergeAppend.c
         src/backend/executor/nodeMergejoin.c
         src/backend/executor/nodeModifyTable.c
+        src/backend/executor/nodeNamedtuplestorescan.c
         src/backend/executor/nodeNestloop.c
+        src/backend/executor/nodeProjectSet.c
         src/backend/executor/nodeRecursiveunion.c
         src/backend/executor/nodeResult.c
         src/backend/executor/nodeSamplescan.c
@@ -251,6 +1248,7 @@ add_executable(pg
         src/backend/executor/nodeSort.c
         src/backend/executor/nodeSubplan.c
         src/backend/executor/nodeSubqueryscan.c
+        src/backend/executor/nodeTableFuncscan.c
         src/backend/executor/nodeTidscan.c
         src/backend/executor/nodeUnique.c
         src/backend/executor/nodeValuesscan.c
@@ -260,21 +1258,36 @@ add_executable(pg
         src/backend/executor/tqueue.c
         src/backend/executor/tstoreReceiver.c
         src/backend/foreign/foreign.c
+        src/backend/jit/llvm/llvmjit.c
+        src/backend/jit/llvm/llvmjit_deform.c
+        src/backend/jit/llvm/llvmjit_error.cpp
+        src/backend/jit/llvm/llvmjit_expr.c
+        src/backend/jit/llvm/llvmjit_inline.cpp
+        src/backend/jit/llvm/llvmjit_types.c
+        src/backend/jit/llvm/llvmjit_wrap.cpp
+        src/backend/jit/jit.c
         src/backend/lib/binaryheap.c
         src/backend/lib/bipartite_match.c
+        src/backend/lib/bloomfilter.c
+        src/backend/lib/dshash.c
         src/backend/lib/hyperloglog.c
         src/backend/lib/ilist.c
+        src/backend/lib/integerset.c
+        src/backend/lib/knapsack.c
         src/backend/lib/pairingheap.c
         src/backend/lib/rbtree.c
         src/backend/lib/stringinfo.c
+        src/backend/libpq/auth-scram.c
         src/backend/libpq/auth.c
         src/backend/libpq/be-fsstubs.c
+        src/backend/libpq/be-gssapi-common.c
+        src/backend/libpq/be-secure-common.c
+        src/backend/libpq/be-secure-gssapi.c
         src/backend/libpq/be-secure-openssl.c
         src/backend/libpq/be-secure.c
         src/backend/libpq/crypt.c
         src/backend/libpq/hba.c
-        src/backend/libpq/ip.c
-        src/backend/libpq/md5.c
+        src/backend/libpq/ifaddr.c
         src/backend/libpq/pqcomm.c
         src/backend/libpq/pqformat.c
         src/backend/libpq/pqmq.c
@@ -329,12 +1342,14 @@ add_executable(pg
         src/backend/optimizer/plan/subselect.c
         src/backend/optimizer/prep/prepjointree.c
         src/backend/optimizer/prep/prepqual.c
-        src/backend/optimizer/prep/prepsecurity.c
         src/backend/optimizer/prep/preptlist.c
         src/backend/optimizer/prep/prepunion.c
+        src/backend/optimizer/util/appendinfo.c
         src/backend/optimizer/util/clauses.c
+        src/backend/optimizer/util/inherit.c
         src/backend/optimizer/util/joininfo.c
         src/backend/optimizer/util/orclauses.c
+        src/backend/optimizer/util/paramassign.c
         src/backend/optimizer/util/pathnode.c
         src/backend/optimizer/util/placeholder.c
         src/backend/optimizer/util/plancat.c
@@ -344,13 +1359,12 @@ add_executable(pg
         src/backend/optimizer/util/tlist.c
         src/backend/optimizer/util/var.c
         src/backend/parser/analyze.c
-        src/backend/parser/gram.c
-        src/backend/parser/gram.h
         src/backend/parser/parse_agg.c
         src/backend/parser/parse_clause.c
         src/backend/parser/parse_coerce.c
         src/backend/parser/parse_collate.c
         src/backend/parser/parse_cte.c
+        src/backend/parser/parse_enr.c
         src/backend/parser/parse_expr.c
         src/backend/parser/parse_func.c
         src/backend/parser/parse_node.c
@@ -361,33 +1375,10 @@ add_executable(pg
         src/backend/parser/parse_type.c
         src/backend/parser/parse_utilcmd.c
         src/backend/parser/parser.c
-        src/backend/parser/scan.c
         src/backend/parser/scansup.c
-        src/backend/port/darwin/system.c
-        src/backend/port/dynloader/aix.c
-        src/backend/port/dynloader/aix.h
-        src/backend/port/dynloader/cygwin.c
-        src/backend/port/dynloader/cygwin.h
-        src/backend/port/dynloader/darwin.c
-        src/backend/port/dynloader/darwin.h
-        src/backend/port/dynloader/freebsd.c
-        src/backend/port/dynloader/freebsd.h
-        src/backend/port/dynloader/hpux.c
-        src/backend/port/dynloader/hpux.h
-        src/backend/port/dynloader/linux.c
-        src/backend/port/dynloader/linux.h
-        src/backend/port/dynloader/netbsd.c
-        src/backend/port/dynloader/netbsd.h
-        src/backend/port/dynloader/openbsd.c
-        src/backend/port/dynloader/openbsd.h
-        src/backend/port/dynloader/sco.c
-        src/backend/port/dynloader/sco.h
-        src/backend/port/dynloader/solaris.c
-        src/backend/port/dynloader/solaris.h
-        src/backend/port/dynloader/unixware.c
-        src/backend/port/dynloader/unixware.h
-        src/backend/port/dynloader/win32.c
-        src/backend/port/dynloader/win32.h
+        src/backend/partitioning/partbounds.c
+        src/backend/partitioning/partdesc.c
+        src/backend/partitioning/partprune.c
         src/backend/port/win32/crashdump.c
         src/backend/port/win32/mingwcompat.c
         src/backend/port/win32/signal.c
@@ -425,20 +1416,22 @@ add_executable(pg
         src/backend/regex/regprefix.c
         src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
         src/backend/replication/logical/decode.c
+        src/backend/replication/logical/launcher.c
         src/backend/replication/logical/logical.c
         src/backend/replication/logical/logicalfuncs.c
         src/backend/replication/logical/message.c
         src/backend/replication/logical/origin.c
+        src/backend/replication/logical/proto.c
+        src/backend/replication/logical/relation.c
         src/backend/replication/logical/reorderbuffer.c
         src/backend/replication/logical/snapbuild.c
+        src/backend/replication/logical/tablesync.c
+        src/backend/replication/logical/worker.c
+        src/backend/replication/pgoutput/pgoutput.c
         src/backend/replication/basebackup.c
-        src/backend/replication/repl_gram.c
-        src/backend/replication/repl_scanner.c
         src/backend/replication/slot.c
         src/backend/replication/slotfuncs.c
         src/backend/replication/syncrep.c
-        src/backend/replication/syncrep_gram.c
-        src/backend/replication/syncrep_scanner.c
         src/backend/replication/walreceiver.c
         src/backend/replication/walreceiverfuncs.c
         src/backend/replication/walsender.c
@@ -455,15 +1448,18 @@ add_executable(pg
         src/backend/snowball/libstemmer/stem_ISO_8859_1_finnish.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_french.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_german.c
-        src/backend/snowball/libstemmer/stem_ISO_8859_1_hungarian.c
+        src/backend/snowball/libstemmer/stem_ISO_8859_1_indonesian.c
+        src/backend/snowball/libstemmer/stem_ISO_8859_1_irish.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_italian.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_norwegian.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_porter.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_portuguese.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_spanish.c
         src/backend/snowball/libstemmer/stem_ISO_8859_1_swedish.c
+        src/backend/snowball/libstemmer/stem_ISO_8859_2_hungarian.c
         src/backend/snowball/libstemmer/stem_ISO_8859_2_romanian.c
         src/backend/snowball/libstemmer/stem_KOI8_R_russian.c
+        src/backend/snowball/libstemmer/stem_UTF_8_arabic.c
         src/backend/snowball/libstemmer/stem_UTF_8_danish.c
         src/backend/snowball/libstemmer/stem_UTF_8_dutch.c
         src/backend/snowball/libstemmer/stem_UTF_8_english.c
@@ -471,7 +1467,11 @@ add_executable(pg
         src/backend/snowball/libstemmer/stem_UTF_8_french.c
         src/backend/snowball/libstemmer/stem_UTF_8_german.c
         src/backend/snowball/libstemmer/stem_UTF_8_hungarian.c
+        src/backend/snowball/libstemmer/stem_UTF_8_indonesian.c
+        src/backend/snowball/libstemmer/stem_UTF_8_irish.c
         src/backend/snowball/libstemmer/stem_UTF_8_italian.c
+        src/backend/snowball/libstemmer/stem_UTF_8_lithuanian.c
+        src/backend/snowball/libstemmer/stem_UTF_8_nepali.c
         src/backend/snowball/libstemmer/stem_UTF_8_norwegian.c
         src/backend/snowball/libstemmer/stem_UTF_8_porter.c
         src/backend/snowball/libstemmer/stem_UTF_8_portuguese.c
@@ -479,9 +1479,14 @@ add_executable(pg
         src/backend/snowball/libstemmer/stem_UTF_8_russian.c
         src/backend/snowball/libstemmer/stem_UTF_8_spanish.c
         src/backend/snowball/libstemmer/stem_UTF_8_swedish.c
+        src/backend/snowball/libstemmer/stem_UTF_8_tamil.c
         src/backend/snowball/libstemmer/stem_UTF_8_turkish.c
         src/backend/snowball/libstemmer/utilities.c
         src/backend/snowball/dict_snowball.c
+        src/backend/statistics/dependencies.c
+        src/backend/statistics/extended_stats.c
+        src/backend/statistics/mcv.c
+        src/backend/statistics/mvdistinct.c
         src/backend/storage/buffer/buf_init.c
         src/backend/storage/buffer/buf_table.c
         src/backend/storage/buffer/bufmgr.c
@@ -491,9 +1496,11 @@ add_executable(pg
         src/backend/storage/file/copydir.c
         src/backend/storage/file/fd.c
         src/backend/storage/file/reinit.c
+        src/backend/storage/file/sharedfileset.c
         src/backend/storage/freespace/freespace.c
         src/backend/storage/freespace/fsmpage.c
         src/backend/storage/freespace/indexfsm.c
+        src/backend/storage/ipc/barrier.c
         src/backend/storage/ipc/dsm.c
         src/backend/storage/ipc/dsm_impl.c
         src/backend/storage/ipc/ipc.c
@@ -506,16 +1513,16 @@ add_executable(pg
         src/backend/storage/ipc/shm_toc.c
         src/backend/storage/ipc/shmem.c
         src/backend/storage/ipc/shmqueue.c
+        src/backend/storage/ipc/signalfuncs.c
         src/backend/storage/ipc/sinval.c
         src/backend/storage/ipc/sinvaladt.c
         src/backend/storage/ipc/standby.c
         src/backend/storage/large_object/inv_api.c
+        src/backend/storage/lmgr/condition_variable.c
         src/backend/storage/lmgr/deadlock.c
         src/backend/storage/lmgr/lmgr.c
         src/backend/storage/lmgr/lock.c
         src/backend/storage/lmgr/lwlock.c
-        src/backend/storage/lmgr/lwlocknames.c
-        src/backend/storage/lmgr/lwlocknames.h
         src/backend/storage/lmgr/predicate.c
         src/backend/storage/lmgr/proc.c
         src/backend/storage/lmgr/s_lock.c
@@ -525,7 +1532,7 @@ add_executable(pg
         src/backend/storage/page/itemptr.c
         src/backend/storage/smgr/md.c
         src/backend/storage/smgr/smgr.c
-        src/backend/storage/smgr/smgrtype.c
+        src/backend/storage/sync/sync.c
         src/backend/tcop/dest.c
         src/backend/tcop/fastpath.c
         src/backend/tcop/postgres.c
@@ -558,6 +1565,7 @@ add_executable(pg
         src/backend/utils/adt/bool.c
         src/backend/utils/adt/cash.c
         src/backend/utils/adt/char.c
+        src/backend/utils/adt/cryptohashes.c
         src/backend/utils/adt/date.c
         src/backend/utils/adt/datetime.c
         src/backend/utils/adt/datum.c
@@ -566,6 +1574,7 @@ add_executable(pg
         src/backend/utils/adt/encode.c
         src/backend/utils/adt/enum.c
         src/backend/utils/adt/expandeddatum.c
+        src/backend/utils/adt/expandedrecord.c
         src/backend/utils/adt/float.c
         src/backend/utils/adt/format_type.c
         src/backend/utils/adt/formatting.c
@@ -583,22 +1592,27 @@ add_executable(pg
         src/backend/utils/adt/jsonb_op.c
         src/backend/utils/adt/jsonb_util.c
         src/backend/utils/adt/jsonfuncs.c
+        src/backend/utils/adt/jsonpath.c
+        src/backend/utils/adt/jsonpath_exec.c
         src/backend/utils/adt/levenshtein.c
         src/backend/utils/adt/like.c
         src/backend/utils/adt/like_match.c
+        src/backend/utils/adt/like_support.c
         src/backend/utils/adt/lockfuncs.c
         src/backend/utils/adt/mac.c
+        src/backend/utils/adt/mac8.c
         src/backend/utils/adt/misc.c
-        src/backend/utils/adt/nabstime.c
         src/backend/utils/adt/name.c
         src/backend/utils/adt/network.c
         src/backend/utils/adt/network_gist.c
         src/backend/utils/adt/network_selfuncs.c
+        src/backend/utils/adt/network_spgist.c
         src/backend/utils/adt/numeric.c
         src/backend/utils/adt/numutils.c
         src/backend/utils/adt/oid.c
         src/backend/utils/adt/oracle_compat.c
         src/backend/utils/adt/orderedsetaggs.c
+        src/backend/utils/adt/partitionfuncs.c
         src/backend/utils/adt/pg_locale.c
         src/backend/utils/adt/pg_lsn.c
         src/backend/utils/adt/pg_upgrade_support.c
@@ -645,6 +1659,7 @@ add_executable(pg
         src/backend/utils/cache/evtcache.c
         src/backend/utils/cache/inval.c
         src/backend/utils/cache/lsyscache.c
+        src/backend/utils/cache/partcache.c
         src/backend/utils/cache/plancache.c
         src/backend/utils/cache/relcache.c
         src/backend/utils/cache/relfilenodemap.c
@@ -700,43 +1715,47 @@ add_executable(pg
         src/backend/utils/mb/win866.c
         src/backend/utils/mb/wstrcmp.c
         src/backend/utils/mb/wstrncmp.c
-        src/backend/utils/misc/guc-file.c
         src/backend/utils/misc/guc.c
         src/backend/utils/misc/help_config.c
         src/backend/utils/misc/pg_config.c
         src/backend/utils/misc/pg_controldata.c
         src/backend/utils/misc/pg_rusage.c
         src/backend/utils/misc/ps_status.c
+        src/backend/utils/misc/queryenvironment.c
         src/backend/utils/misc/rls.c
         src/backend/utils/misc/sampling.c
         src/backend/utils/misc/superuser.c
         src/backend/utils/misc/timeout.c
         src/backend/utils/misc/tzparser.c
         src/backend/utils/mmgr/aset.c
+        src/backend/utils/mmgr/dsa.c
+        src/backend/utils/mmgr/freepage.c
+        src/backend/utils/mmgr/generation.c
         src/backend/utils/mmgr/mcxt.c
+        src/backend/utils/mmgr/memdebug.c
         src/backend/utils/mmgr/portalmem.c
+        src/backend/utils/mmgr/slab.c
         src/backend/utils/resowner/resowner.c
         src/backend/utils/sort/logtape.c
-        src/backend/utils/sort/qsort_tuple.c
+        src/backend/utils/sort/sharedtuplestore.c
         src/backend/utils/sort/sortsupport.c
         src/backend/utils/sort/tuplesort.c
         src/backend/utils/sort/tuplestore.c
         src/backend/utils/time/combocid.c
         src/backend/utils/time/snapmgr.c
-        src/backend/utils/time/tqual.c
-        src/backend/utils/errcodes.h
-        src/backend/utils/fmgroids.h
-        src/backend/utils/fmgrtab.c
         src/bin/initdb/findtimezone.c
         src/bin/initdb/initdb.c
         src/bin/pg_archivecleanup/pg_archivecleanup.c
         src/bin/pg_basebackup/pg_basebackup.c
-        src/bin/pg_basebackup/pg_receivexlog.c
+        src/bin/pg_basebackup/pg_receivewal.c
         src/bin/pg_basebackup/pg_recvlogical.c
         src/bin/pg_basebackup/receivelog.c
         src/bin/pg_basebackup/receivelog.h
         src/bin/pg_basebackup/streamutil.c
         src/bin/pg_basebackup/streamutil.h
+        src/bin/pg_basebackup/walmethods.c
+        src/bin/pg_basebackup/walmethods.h
+        src/bin/pg_checksums/pg_checksums.c
         src/bin/pg_config/pg_config.c
         src/bin/pg_controldata/pg_controldata.c
         src/bin/pg_ctl/pg_ctl.c
@@ -764,7 +1783,7 @@ add_executable(pg
         src/bin/pg_dump/pg_dump_sort.c
         src/bin/pg_dump/pg_dumpall.c
         src/bin/pg_dump/pg_restore.c
-        src/bin/pg_resetxlog/pg_resetxlog.c
+        src/bin/pg_resetwal/pg_resetwal.c
         src/bin/pg_rewind/copy_fetch.c
         src/bin/pg_rewind/datapagemap.c
         src/bin/pg_rewind/datapagemap.h
@@ -775,8 +1794,6 @@ add_executable(pg
         src/bin/pg_rewind/filemap.c
         src/bin/pg_rewind/filemap.h
         src/bin/pg_rewind/libpq_fetch.c
-        src/bin/pg_rewind/logging.c
-        src/bin/pg_rewind/logging.h
         src/bin/pg_rewind/parsexlog.c
         src/bin/pg_rewind/pg_rewind.c
         src/bin/pg_rewind/pg_rewind.h
@@ -799,12 +1816,9 @@ add_executable(pg
         src/bin/pg_upgrade/tablespace.c
         src/bin/pg_upgrade/util.c
         src/bin/pg_upgrade/version.c
-        src/bin/pg_xlogdump/compat.c
-        src/bin/pg_xlogdump/pg_xlogdump.c
-        src/bin/pg_xlogdump/rmgrdesc.c
-        src/bin/pg_xlogdump/rmgrdesc.h
-        src/bin/pgbench/exprparse.c
-        src/bin/pgbench/exprscan.c
+        src/bin/pg_waldump/compat.c
+        src/bin/pg_waldump/pg_waldump.c
+        src/bin/pg_waldump/rmgrdesc.h
         src/bin/pgbench/pgbench.c
         src/bin/pgbench/pgbench.h
         src/bin/pgevent/pgevent.c
@@ -829,11 +1843,8 @@ add_executable(pg
         src/bin/psql/mainloop.h
         src/bin/psql/prompt.c
         src/bin/psql/prompt.h
-        src/bin/psql/psqlscanslash.c
         src/bin/psql/psqlscanslash.h
         src/bin/psql/settings.h
-        src/bin/psql/sql_help.c
-        src/bin/psql/sql_help.h
         src/bin/psql/startup.c
         src/bin/psql/stringutils.c
         src/bin/psql/stringutils.h
@@ -845,31 +1856,49 @@ add_executable(pg
         src/bin/scripts/common.c
         src/bin/scripts/common.h
         src/bin/scripts/createdb.c
-        src/bin/scripts/createlang.c
         src/bin/scripts/createuser.c
         src/bin/scripts/dropdb.c
-        src/bin/scripts/droplang.c
         src/bin/scripts/dropuser.c
         src/bin/scripts/pg_isready.c
         src/bin/scripts/reindexdb.c
         src/bin/scripts/vacuumdb.c
+        src/common/unicode/norm_test.c
+        src/common/base64.c
         src/common/config_info.c
         src/common/controldata_utils.c
+        src/common/d2s.c
+        src/common/d2s_full_table.h
+        src/common/d2s_intrinsics.h
+        src/common/digit_table.h
         src/common/exec.c
+        src/common/f2s.c
         src/common/fe_memutils.c
+        src/common/file_perm.c
+        src/common/file_utils.c
+        src/common/ip.c
         src/common/keywords.c
+        src/common/kwlookup.c
+        src/common/link-canary.c
+        src/common/logging.c
+        src/common/md5.c
         src/common/pg_lzcompress.c
         src/common/pgfnames.c
         src/common/psprintf.c
         src/common/relpath.c
         src/common/restricted_token.c
         src/common/rmtree.c
+        src/common/ryu_common.h
+        src/common/saslprep.c
+        src/common/scram-common.c
+        src/common/sha2.c
+        src/common/sha2_openssl.c
         src/common/string.c
+        src/common/unicode_norm.c
         src/common/username.c
         src/common/wait_error.c
+        src/fe_utils/conditional.c
         src/fe_utils/mbprint.c
         src/fe_utils/print.c
-        src/fe_utils/psqlscan.c
         src/fe_utils/simple_list.c
         src/fe_utils/string_utils.c
         src/include/access/amapi.h
@@ -882,16 +1911,21 @@ add_executable(pg
         src/include/access/brin_revmap.h
         src/include/access/brin_tuple.h
         src/include/access/brin_xlog.h
+        src/include/access/bufmask.h
         src/include/access/clog.h
         src/include/access/commit_ts.h
         src/include/access/genam.h
         src/include/access/generic_xlog.h
         src/include/access/gin.h
         src/include/access/gin_private.h
+        src/include/access/ginblock.h
+        src/include/access/ginxlog.h
         src/include/access/gist.h
         src/include/access/gist_private.h
         src/include/access/gistscan.h
+        src/include/access/gistxlog.h
         src/include/access/hash.h
+        src/include/access/hash_xlog.h
         src/include/access/heapam.h
         src/include/access/heapam_xlog.h
         src/include/access/hio.h
@@ -900,26 +1934,34 @@ add_executable(pg
         src/include/access/itup.h
         src/include/access/multixact.h
         src/include/access/nbtree.h
+        src/include/access/nbtxlog.h
         src/include/access/parallel.h
+        src/include/access/printsimple.h
         src/include/access/printtup.h
+        src/include/access/relation.h
         src/include/access/reloptions.h
         src/include/access/relscan.h
         src/include/access/rewriteheap.h
         src/include/access/rmgr.h
         src/include/access/rmgrlist.h
         src/include/access/sdir.h
+        src/include/access/session.h
         src/include/access/skey.h
         src/include/access/slru.h
         src/include/access/spgist.h
         src/include/access/spgist_private.h
+        src/include/access/spgxlog.h
         src/include/access/stratnum.h
         src/include/access/subtrans.h
         src/include/access/sysattr.h
+        src/include/access/table.h
+        src/include/access/tableam.h
         src/include/access/timeline.h
         src/include/access/transam.h
         src/include/access/tsmapi.h
         src/include/access/tupconvert.h
         src/include/access/tupdesc.h
+        src/include/access/tupdesc_details.h
         src/include/access/tupmacs.h
         src/include/access/tuptoaster.h
         src/include/access/twophase.h
@@ -928,7 +1970,6 @@ add_executable(pg
         src/include/access/visibilitymap.h
         src/include/access/xact.h
         src/include/access/xlog.h
-        src/include/access/xlog_fn.h
         src/include/access/xlog_internal.h
         src/include/access/xlogdefs.h
         src/include/access/xloginsert.h
@@ -948,6 +1989,7 @@ add_executable(pg
         src/include/catalog/objectaccess.h
         src/include/catalog/objectaddress.h
         src/include/catalog/opfam_internal.h
+        src/include/catalog/partition.h
         src/include/catalog/pg_aggregate.h
         src/include/catalog/pg_am.h
         src/include/catalog/pg_amop.h
@@ -959,12 +2001,9 @@ add_executable(pg
         src/include/catalog/pg_cast.h
         src/include/catalog/pg_class.h
         src/include/catalog/pg_collation.h
-        src/include/catalog/pg_collation_fn.h
         src/include/catalog/pg_constraint.h
-        src/include/catalog/pg_constraint_fn.h
         src/include/catalog/pg_control.h
         src/include/catalog/pg_conversion.h
-        src/include/catalog/pg_conversion_fn.h
         src/include/catalog/pg_database.h
         src/include/catalog/pg_db_role_setting.h
         src/include/catalog/pg_default_acl.h
@@ -978,7 +2017,6 @@ add_executable(pg
         src/include/catalog/pg_foreign_table.h
         src/include/catalog/pg_index.h
         src/include/catalog/pg_inherits.h
-        src/include/catalog/pg_inherits_fn.h
         src/include/catalog/pg_init_privs.h
         src/include/catalog/pg_language.h
         src/include/catalog/pg_largeobject.h
@@ -986,20 +2024,25 @@ add_executable(pg
         src/include/catalog/pg_namespace.h
         src/include/catalog/pg_opclass.h
         src/include/catalog/pg_operator.h
-        src/include/catalog/pg_operator_fn.h
         src/include/catalog/pg_opfamily.h
+        src/include/catalog/pg_partitioned_table.h
         src/include/catalog/pg_pltemplate.h
         src/include/catalog/pg_policy.h
         src/include/catalog/pg_proc.h
-        src/include/catalog/pg_proc_fn.h
+        src/include/catalog/pg_publication.h
+        src/include/catalog/pg_publication_rel.h
         src/include/catalog/pg_range.h
         src/include/catalog/pg_replication_origin.h
         src/include/catalog/pg_rewrite.h
         src/include/catalog/pg_seclabel.h
+        src/include/catalog/pg_sequence.h
         src/include/catalog/pg_shdepend.h
         src/include/catalog/pg_shdescription.h
         src/include/catalog/pg_shseclabel.h
         src/include/catalog/pg_statistic.h
+        src/include/catalog/pg_statistic_ext.h
+        src/include/catalog/pg_subscription.h
+        src/include/catalog/pg_subscription_rel.h
         src/include/catalog/pg_tablespace.h
         src/include/catalog/pg_transform.h
         src/include/catalog/pg_trigger.h
@@ -1009,7 +2052,6 @@ add_executable(pg
         src/include/catalog/pg_ts_parser.h
         src/include/catalog/pg_ts_template.h
         src/include/catalog/pg_type.h
-        src/include/catalog/pg_type_fn.h
         src/include/catalog/pg_user_mapping.h
         src/include/catalog/storage.h
         src/include/catalog/storage_xlog.h
@@ -1036,9 +2078,11 @@ add_executable(pg
         src/include/commands/prepare.h
         src/include/commands/proclang.h
         src/include/commands/progress.h
+        src/include/commands/publicationcmds.h
         src/include/commands/schemacmds.h
         src/include/commands/seclabel.h
         src/include/commands/sequence.h
+        src/include/commands/subscriptioncmds.h
         src/include/commands/tablecmds.h
         src/include/commands/tablespace.h
         src/include/commands/trigger.h
@@ -1047,19 +2091,37 @@ add_executable(pg
         src/include/commands/vacuum.h
         src/include/commands/variable.h
         src/include/commands/view.h
+        src/include/common/base64.h
         src/include/common/config_info.h
         src/include/common/controldata_utils.h
         src/include/common/fe_memutils.h
+        src/include/common/file_perm.h
+        src/include/common/file_utils.h
+        src/include/common/int.h
+        src/include/common/int128.h
+        src/include/common/ip.h
         src/include/common/keywords.h
+        src/include/common/kwlookup.h
+        src/include/common/link-canary.h
+        src/include/common/logging.h
+        src/include/common/md5.h
         src/include/common/pg_lzcompress.h
         src/include/common/relpath.h
         src/include/common/restricted_token.h
+        src/include/common/saslprep.h
+        src/include/common/scram-common.h
+        src/include/common/sha2.h
+        src/include/common/shortest_dec.h
         src/include/common/string.h
+        src/include/common/unicode_norm.h
+        src/include/common/unicode_norm_table.h
         src/include/common/username.h
         src/include/datatype/timestamp.h
         src/include/executor/execdebug.h
         src/include/executor/execdesc.h
+        src/include/executor/execExpr.h
         src/include/executor/execParallel.h
+        src/include/executor/execPartition.h
         src/include/executor/executor.h
         src/include/executor/functions.h
         src/include/executor/hashjoin.h
@@ -1075,6 +2137,7 @@ add_executable(pg
         src/include/executor/nodeForeignscan.h
         src/include/executor/nodeFunctionscan.h
         src/include/executor/nodeGather.h
+        src/include/executor/nodeGatherMerge.h
         src/include/executor/nodeGroup.h
         src/include/executor/nodeHash.h
         src/include/executor/nodeHashjoin.h
@@ -1086,7 +2149,9 @@ add_executable(pg
         src/include/executor/nodeMergeAppend.h
         src/include/executor/nodeMergejoin.h
         src/include/executor/nodeModifyTable.h
+        src/include/executor/nodeNamedtuplestorescan.h
         src/include/executor/nodeNestloop.h
+        src/include/executor/nodeProjectSet.h
         src/include/executor/nodeRecursiveunion.h
         src/include/executor/nodeResult.h
         src/include/executor/nodeSamplescan.h
@@ -1095,6 +2160,7 @@ add_executable(pg
         src/include/executor/nodeSort.h
         src/include/executor/nodeSubplan.h
         src/include/executor/nodeSubqueryscan.h
+        src/include/executor/nodeTableFuncscan.h
         src/include/executor/nodeTidscan.h
         src/include/executor/nodeUnique.h
         src/include/executor/nodeValuesscan.h
@@ -1102,9 +2168,12 @@ add_executable(pg
         src/include/executor/nodeWorktablescan.h
         src/include/executor/spi.h
         src/include/executor/spi_priv.h
+        src/include/executor/tablefunc.h
         src/include/executor/tqueue.h
         src/include/executor/tstoreReceiver.h
         src/include/executor/tuptable.h
+        src/include/fe_utils/conditional.h
+        src/include/fe_utils/connect.h
         src/include/fe_utils/mbprint.h
         src/include/fe_utils/print.h
         src/include/fe_utils/psqlscan.h
@@ -1113,26 +2182,35 @@ add_executable(pg
         src/include/fe_utils/string_utils.h
         src/include/foreign/fdwapi.h
         src/include/foreign/foreign.h
+        src/include/jit/jit.h
+        src/include/jit/llvmjit.h
+        src/include/jit/llvmjit_emit.h
         src/include/lib/binaryheap.h
         src/include/lib/bipartite_match.h
+        src/include/lib/bloomfilter.h
+        src/include/lib/dshash.h
         src/include/lib/hyperloglog.h
         src/include/lib/ilist.h
+        src/include/lib/integerset.h
+        src/include/lib/knapsack.h
         src/include/lib/pairingheap.h
         src/include/lib/rbtree.h
+        src/include/lib/simplehash.h
         src/include/lib/stringinfo.h
         src/include/libpq/auth.h
         src/include/libpq/be-fsstubs.h
+        src/include/libpq/be-gssapi-common.h
         src/include/libpq/crypt.h
         src/include/libpq/hba.h
-        src/include/libpq/ip.h
+        src/include/libpq/ifaddr.h
         src/include/libpq/libpq-be.h
         src/include/libpq/libpq-fs.h
         src/include/libpq/libpq.h
-        src/include/libpq/md5.h
         src/include/libpq/pqcomm.h
         src/include/libpq/pqformat.h
         src/include/libpq/pqmq.h
         src/include/libpq/pqsignal.h
+        src/include/libpq/scram.h
         src/include/mb/pg_wchar.h
         src/include/nodes/bitmapset.h
         src/include/nodes/execnodes.h
@@ -1144,15 +2222,17 @@ add_executable(pg
         src/include/nodes/nodes.h
         src/include/nodes/params.h
         src/include/nodes/parsenodes.h
+        src/include/nodes/pathnodes.h
         src/include/nodes/pg_list.h
         src/include/nodes/plannodes.h
         src/include/nodes/primnodes.h
         src/include/nodes/print.h
         src/include/nodes/readfuncs.h
-        src/include/nodes/relation.h
         src/include/nodes/replnodes.h
+        src/include/nodes/supportnodes.h
         src/include/nodes/tidbitmap.h
         src/include/nodes/value.h
+        src/include/optimizer/appendinfo.h
         src/include/optimizer/clauses.h
         src/include/optimizer/cost.h
         src/include/optimizer/geqo.h
@@ -1164,20 +2244,21 @@ add_executable(pg
         src/include/optimizer/geqo_random.h
         src/include/optimizer/geqo_recombination.h
         src/include/optimizer/geqo_selection.h
+        src/include/optimizer/inherit.h
         src/include/optimizer/joininfo.h
+        src/include/optimizer/optimizer.h
         src/include/optimizer/orclauses.h
+        src/include/optimizer/paramassign.h
         src/include/optimizer/pathnode.h
         src/include/optimizer/paths.h
         src/include/optimizer/placeholder.h
         src/include/optimizer/plancat.h
         src/include/optimizer/planmain.h
         src/include/optimizer/planner.h
-        src/include/optimizer/predtest.h
         src/include/optimizer/prep.h
         src/include/optimizer/restrictinfo.h
         src/include/optimizer/subselect.h
         src/include/optimizer/tlist.h
-        src/include/optimizer/var.h
         src/include/parser/analyze.h
         src/include/parser/gramparse.h
         src/include/parser/kwlist.h
@@ -1186,6 +2267,7 @@ add_executable(pg
         src/include/parser/parse_coerce.h
         src/include/parser/parse_collate.h
         src/include/parser/parse_cte.h
+        src/include/parser/parse_enr.h
         src/include/parser/parse_expr.h
         src/include/parser/parse_func.h
         src/include/parser/parse_node.h
@@ -1199,6 +2281,10 @@ add_executable(pg
         src/include/parser/parsetree.h
         src/include/parser/scanner.h
         src/include/parser/scansup.h
+        src/include/partitioning/partbounds.h
+        src/include/partitioning/partdefs.h
+        src/include/partitioning/partdesc.h
+        src/include/partitioning/partprune.h
         src/include/port/atomics/arch-arm.h
         src/include/port/atomics/arch-hppa.h
         src/include/port/atomics/arch-ia64.h
@@ -1234,12 +2320,12 @@ add_executable(pg
         src/include/port/linux.h
         src/include/port/netbsd.h
         src/include/port/openbsd.h
+        src/include/port/pg_bitutils.h
         src/include/port/pg_bswap.h
         src/include/port/pg_crc32c.h
-        src/include/port/sco.h
         src/include/port/solaris.h
-        src/include/port/unixware.h
         src/include/port/win32.h
+        src/include/port/win32_port.h
         src/include/portability/instr_time.h
         src/include/portability/mem.h
         src/include/postmaster/autovacuum.h
@@ -1261,9 +2347,14 @@ add_executable(pg
         src/include/replication/decode.h
         src/include/replication/logical.h
         src/include/replication/logicalfuncs.h
+        src/include/replication/logicallauncher.h
+        src/include/replication/logicalproto.h
+        src/include/replication/logicalrelation.h
+        src/include/replication/logicalworker.h
         src/include/replication/message.h
         src/include/replication/origin.h
         src/include/replication/output_plugin.h
+        src/include/replication/pgoutput.h
         src/include/replication/reorderbuffer.h
         src/include/replication/slot.h
         src/include/replication/snapbuild.h
@@ -1271,6 +2362,7 @@ add_executable(pg
         src/include/replication/walreceiver.h
         src/include/replication/walsender.h
         src/include/replication/walsender_private.h
+        src/include/replication/worker_internal.h
         src/include/rewrite/prs2lock.h
         src/include/rewrite/rewriteDefine.h
         src/include/rewrite/rewriteHandler.h
@@ -1286,15 +2378,18 @@ add_executable(pg
         src/include/snowball/libstemmer/stem_ISO_8859_1_finnish.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_french.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_german.h
-        src/include/snowball/libstemmer/stem_ISO_8859_1_hungarian.h
+        src/include/snowball/libstemmer/stem_ISO_8859_1_indonesian.h
+        src/include/snowball/libstemmer/stem_ISO_8859_1_irish.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_italian.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_norwegian.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_porter.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_portuguese.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_spanish.h
         src/include/snowball/libstemmer/stem_ISO_8859_1_swedish.h
+        src/include/snowball/libstemmer/stem_ISO_8859_2_hungarian.h
         src/include/snowball/libstemmer/stem_ISO_8859_2_romanian.h
         src/include/snowball/libstemmer/stem_KOI8_R_russian.h
+        src/include/snowball/libstemmer/stem_UTF_8_arabic.h
         src/include/snowball/libstemmer/stem_UTF_8_danish.h
         src/include/snowball/libstemmer/stem_UTF_8_dutch.h
         src/include/snowball/libstemmer/stem_UTF_8_english.h
@@ -1302,7 +2397,11 @@ add_executable(pg
         src/include/snowball/libstemmer/stem_UTF_8_french.h
         src/include/snowball/libstemmer/stem_UTF_8_german.h
         src/include/snowball/libstemmer/stem_UTF_8_hungarian.h
+        src/include/snowball/libstemmer/stem_UTF_8_indonesian.h
+        src/include/snowball/libstemmer/stem_UTF_8_irish.h
         src/include/snowball/libstemmer/stem_UTF_8_italian.h
+        src/include/snowball/libstemmer/stem_UTF_8_lithuanian.h
+        src/include/snowball/libstemmer/stem_UTF_8_nepali.h
         src/include/snowball/libstemmer/stem_UTF_8_norwegian.h
         src/include/snowball/libstemmer/stem_UTF_8_porter.h
         src/include/snowball/libstemmer/stem_UTF_8_portuguese.h
@@ -1310,8 +2409,11 @@ add_executable(pg
         src/include/snowball/libstemmer/stem_UTF_8_russian.h
         src/include/snowball/libstemmer/stem_UTF_8_spanish.h
         src/include/snowball/libstemmer/stem_UTF_8_swedish.h
+        src/include/snowball/libstemmer/stem_UTF_8_tamil.h
         src/include/snowball/libstemmer/stem_UTF_8_turkish.h
         src/include/snowball/header.h
+        src/include/statistics/extended_stats_internal.h
+        src/include/statistics/statistics.h
         src/include/storage/backendid.h
         src/include/storage/barrier.h
         src/include/storage/block.h
@@ -1322,6 +2424,7 @@ add_executable(pg
         src/include/storage/bufpage.h
         src/include/storage/checksum.h
         src/include/storage/checksum_impl.h
+        src/include/storage/condition_variable.h
         src/include/storage/copydir.h
         src/include/storage/dsm.h
         src/include/storage/dsm_impl.h
@@ -1339,19 +2442,22 @@ add_executable(pg
         src/include/storage/lock.h
         src/include/storage/lockdefs.h
         src/include/storage/lwlock.h
+        src/include/storage/md.h
         src/include/storage/off.h
         src/include/storage/pg_sema.h
         src/include/storage/pg_shmem.h
         src/include/storage/pmsignal.h
-        src/include/storage/pos.h
         src/include/storage/predicate.h
         src/include/storage/predicate_internals.h
         src/include/storage/proc.h
         src/include/storage/procarray.h
+        src/include/storage/proclist.h
+        src/include/storage/proclist_types.h
         src/include/storage/procsignal.h
         src/include/storage/reinit.h
         src/include/storage/relfilenode.h
         src/include/storage/s_lock.h
+        src/include/storage/sharedfileset.h
         src/include/storage/shm_mq.h
         src/include/storage/shm_toc.h
         src/include/storage/shmem.h
@@ -1361,6 +2467,7 @@ add_executable(pg
         src/include/storage/spin.h
         src/include/storage/standby.h
         src/include/storage/standbydefs.h
+        src/include/storage/sync.h
         src/include/tcop/deparse_utility.h
         src/include/tcop/dest.h
         src/include/tcop/fastpath.h
@@ -1388,16 +2495,20 @@ add_executable(pg
         src/include/utils/date.h
         src/include/utils/datetime.h
         src/include/utils/datum.h
+        src/include/utils/dsa.h
         src/include/utils/dynahash.h
-        src/include/utils/dynamic_loader.h
         src/include/utils/elog.h
         src/include/utils/evtcache.h
         src/include/utils/expandeddatum.h
+        src/include/utils/expandedrecord.h
+        src/include/utils/float.h
         src/include/utils/fmgrtab.h
         src/include/utils/formatting.h
+        src/include/utils/freepage.h
         src/include/utils/geo_decls.h
         src/include/utils/guc.h
         src/include/utils/guc_tables.h
+        src/include/utils/hashutils.h
         src/include/utils/help_config.h
         src/include/utils/hsearch.h
         src/include/utils/index_selfuncs.h
@@ -1407,25 +2518,30 @@ add_executable(pg
         src/include/utils/json.h
         src/include/utils/jsonapi.h
         src/include/utils/jsonb.h
+        src/include/utils/jsonpath.h
         src/include/utils/logtape.h
         src/include/utils/lsyscache.h
         src/include/utils/memdebug.h
         src/include/utils/memutils.h
-        src/include/utils/nabstime.h
         src/include/utils/numeric.h
         src/include/utils/palloc.h
+        src/include/utils/partcache.h
         src/include/utils/pg_crc.h
         src/include/utils/pg_locale.h
         src/include/utils/pg_lsn.h
         src/include/utils/pg_rusage.h
+        src/include/utils/pidfile.h
         src/include/utils/plancache.h
         src/include/utils/portal.h
         src/include/utils/ps_status.h
+        src/include/utils/queryenvironment.h
         src/include/utils/rangetypes.h
+        src/include/utils/regproc.h
         src/include/utils/rel.h
         src/include/utils/relcache.h
         src/include/utils/relfilenodemap.h
         src/include/utils/relmapper.h
+        src/include/utils/relptr.h
         src/include/utils/reltrigger.h
         src/include/utils/resowner.h
         src/include/utils/resowner_private.h
@@ -1433,6 +2549,7 @@ add_executable(pg
         src/include/utils/ruleutils.h
         src/include/utils/sampling.h
         src/include/utils/selfuncs.h
+        src/include/utils/sharedtuplestore.h
         src/include/utils/snapmgr.h
         src/include/utils/snapshot.h
         src/include/utils/sortsupport.h
@@ -1440,13 +2557,13 @@ add_executable(pg
         src/include/utils/syscache.h
         src/include/utils/timeout.h
         src/include/utils/timestamp.h
-        src/include/utils/tqual.h
         src/include/utils/tuplesort.h
         src/include/utils/tuplestore.h
         src/include/utils/typcache.h
         src/include/utils/tzparser.h
         src/include/utils/uuid.h
         src/include/utils/varbit.h
+        src/include/utils/varlena.h
         src/include/utils/xml.h
         src/include/c.h
         src/include/fmgr.h
@@ -1454,8 +2571,6 @@ add_executable(pg
         src/include/getaddrinfo.h
         src/include/getopt_long.h
         src/include/miscadmin.h
-        src/include/pg_config.h
-        src/include/pg_config_ext.h
         src/include/pg_config_manual.h
         src/include/pg_getopt.h
         src/include/pg_trace.h
@@ -1470,25 +2585,25 @@ add_executable(pg
         src/include/windowapi.h
         src/interfaces/ecpg/compatlib/informix.c
         src/interfaces/ecpg/ecpglib/connect.c
+        src/interfaces/ecpg/ecpglib/cursor.c
         src/interfaces/ecpg/ecpglib/data.c
         src/interfaces/ecpg/ecpglib/descriptor.c
+        src/interfaces/ecpg/ecpglib/ecpglib_extern.h
         src/interfaces/ecpg/ecpglib/error.c
         src/interfaces/ecpg/ecpglib/execute.c
-        src/interfaces/ecpg/ecpglib/extern.h
         src/interfaces/ecpg/ecpglib/memory.c
         src/interfaces/ecpg/ecpglib/misc.c
-        src/interfaces/ecpg/ecpglib/pg_type.h
         src/interfaces/ecpg/ecpglib/prepare.c
         src/interfaces/ecpg/ecpglib/sqlda.c
         src/interfaces/ecpg/ecpglib/typename.c
         src/interfaces/ecpg/include/datetime.h
         src/interfaces/ecpg/include/decimal.h
         src/interfaces/ecpg/include/ecpg-pthread-win32.h
-        src/interfaces/ecpg/include/ecpg_config.h
         src/interfaces/ecpg/include/ecpg_informix.h
         src/interfaces/ecpg/include/ecpgerrno.h
         src/interfaces/ecpg/include/ecpglib.h
         src/interfaces/ecpg/include/ecpgtype.h
+        src/interfaces/ecpg/include/pgtypes.h
         src/interfaces/ecpg/include/pgtypes_date.h
         src/interfaces/ecpg/include/pgtypes_error.h
         src/interfaces/ecpg/include/pgtypes_interval.h
@@ -1504,21 +2619,20 @@ add_executable(pg
         src/interfaces/ecpg/pgtypeslib/datetime.c
         src/interfaces/ecpg/pgtypeslib/dt.h
         src/interfaces/ecpg/pgtypeslib/dt_common.c
-        src/interfaces/ecpg/pgtypeslib/extern.h
         src/interfaces/ecpg/pgtypeslib/interval.c
         src/interfaces/ecpg/pgtypeslib/numeric.c
+        src/interfaces/ecpg/pgtypeslib/pgtypeslib_extern.h
         src/interfaces/ecpg/pgtypeslib/timestamp.c
         src/interfaces/ecpg/preproc/c_keywords.c
+        src/interfaces/ecpg/preproc/c_kwlist.h
         src/interfaces/ecpg/preproc/descriptor.c
         src/interfaces/ecpg/preproc/ecpg.c
         src/interfaces/ecpg/preproc/ecpg_keywords.c
-        src/interfaces/ecpg/preproc/extern.h
+        src/interfaces/ecpg/preproc/ecpg_kwlist.h
         src/interfaces/ecpg/preproc/keywords.c
         src/interfaces/ecpg/preproc/output.c
         src/interfaces/ecpg/preproc/parser.c
-        src/interfaces/ecpg/preproc/pgc.c
-        src/interfaces/ecpg/preproc/preproc.c
-        src/interfaces/ecpg/preproc/preproc.h
+        src/interfaces/ecpg/preproc/preproc_extern.h
         src/interfaces/ecpg/preproc/type.c
         src/interfaces/ecpg/preproc/type.h
         src/interfaces/ecpg/preproc/variable.c
@@ -1531,6 +2645,7 @@ add_executable(pg
         src/interfaces/ecpg/test/expected/compat_informix-sqlda.c
         src/interfaces/ecpg/test/expected/compat_informix-test_informix.c
         src/interfaces/ecpg/test/expected/compat_informix-test_informix2.c
+        src/interfaces/ecpg/test/expected/compat_oracle-char_array.c
         src/interfaces/ecpg/test/expected/connect-test1.c
         src/interfaces/ecpg/test/expected/connect-test2.c
         src/interfaces/ecpg/test/expected/connect-test3.c
@@ -1554,10 +2669,14 @@ add_executable(pg
         src/interfaces/ecpg/test/expected/preproc-type.c
         src/interfaces/ecpg/test/expected/preproc-variable.c
         src/interfaces/ecpg/test/expected/preproc-whenever.c
+        src/interfaces/ecpg/test/expected/preproc-whenever_do_continue.c
         src/interfaces/ecpg/test/expected/sql-array.c
         src/interfaces/ecpg/test/expected/sql-binary.c
+        src/interfaces/ecpg/test/expected/sql-bytea.c
         src/interfaces/ecpg/test/expected/sql-code100.c
         src/interfaces/ecpg/test/expected/sql-copystdout.c
+        src/interfaces/ecpg/test/expected/sql-createtableas.c
+        src/interfaces/ecpg/test/expected/sql-declare.c
         src/interfaces/ecpg/test/expected/sql-define.c
         src/interfaces/ecpg/test/expected/sql-desc.c
         src/interfaces/ecpg/test/expected/sql-describe.c
@@ -1571,9 +2690,11 @@ add_executable(pg
         src/interfaces/ecpg/test/expected/sql-insupd.c
         src/interfaces/ecpg/test/expected/sql-oldexec.c
         src/interfaces/ecpg/test/expected/sql-parser.c
+        src/interfaces/ecpg/test/expected/sql-prepareas.c
         src/interfaces/ecpg/test/expected/sql-quote.c
         src/interfaces/ecpg/test/expected/sql-show.c
         src/interfaces/ecpg/test/expected/sql-sqlda.c
+        src/interfaces/ecpg/test/expected/sql-twophase.c
         src/interfaces/ecpg/test/expected/thread-alloc.c
         src/interfaces/ecpg/test/expected/thread-descriptor.c
         src/interfaces/ecpg/test/expected/thread-prep.c
@@ -1582,17 +2703,24 @@ add_executable(pg
         src/interfaces/ecpg/test/preproc/strings.h
         src/interfaces/ecpg/test/preproc/struct.h
         src/interfaces/ecpg/test/pg_regress_ecpg.c
+        src/interfaces/ecpg/test/printf_hack.h
         src/interfaces/ecpg/test/regression.h
         src/interfaces/libpq/test/uri-regress.c
+        src/interfaces/libpq/fe-auth-scram.c
         src/interfaces/libpq/fe-auth.c
         src/interfaces/libpq/fe-auth.h
         src/interfaces/libpq/fe-connect.c
         src/interfaces/libpq/fe-exec.c
+        src/interfaces/libpq/fe-gssapi-common.c
+        src/interfaces/libpq/fe-gssapi-common.h
         src/interfaces/libpq/fe-lobj.c
         src/interfaces/libpq/fe-misc.c
         src/interfaces/libpq/fe-print.c
         src/interfaces/libpq/fe-protocol2.c
         src/interfaces/libpq/fe-protocol3.c
+        src/interfaces/libpq/fe-secure-common.c
+        src/interfaces/libpq/fe-secure-common.h
+        src/interfaces/libpq/fe-secure-gssapi.c
         src/interfaces/libpq/fe-secure-openssl.c
         src/interfaces/libpq/fe-secure.c
         src/interfaces/libpq/libpq-events.c
@@ -1611,11 +2739,10 @@ add_executable(pg
         src/pl/plpgsql/src/pl_comp.c
         src/pl/plpgsql/src/pl_exec.c
         src/pl/plpgsql/src/pl_funcs.c
-        src/pl/plpgsql/src/pl_gram.c
-        src/pl/plpgsql/src/pl_gram.h
         src/pl/plpgsql/src/pl_handler.c
+        src/pl/plpgsql/src/pl_reserved_kwlist.h
         src/pl/plpgsql/src/pl_scanner.c
-        src/pl/plpgsql/src/plerrcodes.h
+        src/pl/plpgsql/src/pl_unreserved_kwlist.h
         src/pl/plpgsql/src/plpgsql.h
         src/pl/plpython/plpy_cursorobject.c
         src/pl/plpython/plpy_cursorobject.h
@@ -1642,13 +2769,12 @@ add_executable(pg
         src/pl/plpython/plpy_util.c
         src/pl/plpython/plpy_util.h
         src/pl/plpython/plpython.h
-        src/pl/plpython/spiexceptions.h
         src/pl/tcl/pltcl.c
-        src/pl/tcl/pltclerrcodes.h
         src/port/chklocale.c
         src/port/crypt.c
         src/port/dirent.c
         src/port/dirmod.c
+        src/port/dlopen.c
         src/port/erand48.c
         src/port/fls.c
         src/port/fseeko.c
@@ -1666,15 +2792,22 @@ add_executable(pg
         src/port/noblock.c
         src/port/open.c
         src/port/path.c
-        src/port/pg_crc32c_choose.c
+        src/port/pg_bitutils.c
+        src/port/pg_crc32c_armv8.c
+        src/port/pg_crc32c_armv8_choose.c
         src/port/pg_crc32c_sb8.c
         src/port/pg_crc32c_sse42.c
+        src/port/pg_crc32c_sse42_choose.c
+        src/port/pg_strong_random.c
         src/port/pgcheckdir.c
         src/port/pgmkdirp.c
         src/port/pgsleep.c
         src/port/pgstrcasecmp.c
+        src/port/pgstrsignal.c
         src/port/pqsignal.c
+        src/port/pread.c
         src/port/pthread-win32.h
+        src/port/pwrite.c
         src/port/qsort.c
         src/port/qsort_arg.c
         src/port/quotes.c
@@ -1686,6 +2819,8 @@ add_executable(pg
         src/port/strerror.c
         src/port/strlcat.c
         src/port/strlcpy.c
+        src/port/strnlen.c
+        src/port/strtof.c
         src/port/system.c
         src/port/tar.c
         src/port/thread.c
@@ -1703,12 +2838,14 @@ add_executable(pg
         src/test/isolation/isolation_main.c
         src/test/isolation/isolationtester.c
         src/test/isolation/isolationtester.h
-        src/test/isolation/specparse.c
-        src/test/isolation/specscanner.c
         src/test/locale/test-ctype.c
         src/test/modules/dummy_seclabel/dummy_seclabel.c
+        src/test/modules/test_bloomfilter/test_bloomfilter.c
         src/test/modules/test_ddl_deparse/test_ddl_deparse.c
+        src/test/modules/test_integerset/test_integerset.c
         src/test/modules/test_parser/test_parser.c
+        src/test/modules/test_predtest/test_predtest.c
+        src/test/modules/test_rbtree/test_rbtree.c
         src/test/modules/test_rls_hooks/test_rls_hooks.c
         src/test/modules/test_rls_hooks/test_rls_hooks.h
         src/test/modules/test_shm_mq/setup.c
@@ -1728,9 +2865,9 @@ add_executable(pg
         src/timezone/strftime.c
         src/timezone/tzfile.h
         src/timezone/zic.c
-        src/tools/entab/entab.c
         src/tools/findoidjoins/findoidjoins.c
         src/tools/ifaddrs/test_ifaddrs.c
+        src/tools/testint128.c
         src/tutorial/complex.c
         src/tutorial/funcs.c
         src/tutorial/funcs_new.c)
