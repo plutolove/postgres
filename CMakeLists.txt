@@ -1,201 +1,13 @@
 cmake_minimum_required(VERSION 3.14)
 project(pg C)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 11)
 
 include_directories(include)
 include_directories(src/include)
 include_directories(src/backend)
 
 add_executable(pg
-        contrib/adminpack/adminpack.c
-        contrib/amcheck/verify_nbtree.c
-        contrib/auth_delay/auth_delay.c
-        contrib/auto_explain/auto_explain.c
-        contrib/bloom/blcost.c
-        contrib/bloom/blinsert.c
-        contrib/bloom/bloom.h
-        contrib/bloom/blscan.c
-        contrib/bloom/blutils.c
-        contrib/bloom/blvacuum.c
-        contrib/bloom/blvalidate.c
-        contrib/btree_gin/btree_gin.c
-        contrib/btree_gist/btree_bit.c
-        contrib/btree_gist/btree_bytea.c
-        contrib/btree_gist/btree_cash.c
-        contrib/btree_gist/btree_date.c
-        contrib/btree_gist/btree_enum.c
-        contrib/btree_gist/btree_float4.c
-        contrib/btree_gist/btree_float8.c
-        contrib/btree_gist/btree_gist.c
-        contrib/btree_gist/btree_gist.h
-        contrib/btree_gist/btree_inet.c
-        contrib/btree_gist/btree_int2.c
-        contrib/btree_gist/btree_int4.c
-        contrib/btree_gist/btree_int8.c
-        contrib/btree_gist/btree_interval.c
-        contrib/btree_gist/btree_macaddr.c
-        contrib/btree_gist/btree_macaddr8.c
-        contrib/btree_gist/btree_numeric.c
-        contrib/btree_gist/btree_oid.c
-        contrib/btree_gist/btree_text.c
-        contrib/btree_gist/btree_time.c
-        contrib/btree_gist/btree_ts.c
-        contrib/btree_gist/btree_utils_num.c
-        contrib/btree_gist/btree_utils_num.h
-        contrib/btree_gist/btree_utils_var.c
-        contrib/btree_gist/btree_utils_var.h
-        contrib/btree_gist/btree_uuid.c
-        contrib/citext/citext.c
-        contrib/cube/cube.c
-        contrib/cube/cubedata.h
-        contrib/dblink/dblink.c
-        contrib/dict_int/dict_int.c
-        contrib/dict_xsyn/dict_xsyn.c
-        contrib/earthdistance/earthdistance.c
-        contrib/file_fdw/file_fdw.c
-        contrib/fuzzystrmatch/dmetaphone.c
-        contrib/fuzzystrmatch/fuzzystrmatch.c
-        contrib/hstore/hstore.h
-        contrib/hstore/hstore_compat.c
-        contrib/hstore/hstore_gin.c
-        contrib/hstore/hstore_gist.c
-        contrib/hstore/hstore_io.c
-        contrib/hstore/hstore_op.c
-        contrib/hstore_plperl/hstore_plperl.c
-        contrib/hstore_plpython/hstore_plpython.c
-        contrib/intarray/_int.h
-        contrib/intarray/_int_bool.c
-        contrib/intarray/_int_gin.c
-        contrib/intarray/_int_gist.c
-        contrib/intarray/_int_op.c
-        contrib/intarray/_int_selfuncs.c
-        contrib/intarray/_int_tool.c
-        contrib/intarray/_intbig_gist.c
-        contrib/isn/EAN13.h
-        contrib/isn/ISBN.h
-        contrib/isn/ISMN.h
-        contrib/isn/isn.c
-        contrib/isn/isn.h
-        contrib/isn/ISSN.h
-        contrib/isn/UPC.h
-        contrib/jsonb_plperl/jsonb_plperl.c
-        contrib/jsonb_plpython/jsonb_plpython.c
-        contrib/lo/lo.c
-        contrib/ltree/_ltree_gist.c
-        contrib/ltree/_ltree_op.c
-        contrib/ltree/crc32.c
-        contrib/ltree/crc32.h
-        contrib/ltree/lquery_op.c
-        contrib/ltree/ltree.h
-        contrib/ltree/ltree_gist.c
-        contrib/ltree/ltree_io.c
-        contrib/ltree/ltree_op.c
-        contrib/ltree/ltxtquery_io.c
-        contrib/ltree/ltxtquery_op.c
-        contrib/ltree_plpython/ltree_plpython.c
-        contrib/oid2name/oid2name.c
-        contrib/pageinspect/brinfuncs.c
-        contrib/pageinspect/btreefuncs.c
-        contrib/pageinspect/fsmfuncs.c
-        contrib/pageinspect/ginfuncs.c
-        contrib/pageinspect/hashfuncs.c
-        contrib/pageinspect/heapfuncs.c
-        contrib/pageinspect/pageinspect.h
-        contrib/pageinspect/rawpage.c
-        contrib/passwordcheck/passwordcheck.c
-        contrib/pg_buffercache/pg_buffercache_pages.c
-        contrib/pg_freespacemap/pg_freespacemap.c
-        contrib/pg_prewarm/autoprewarm.c
-        contrib/pg_prewarm/pg_prewarm.c
-        contrib/pg_standby/pg_standby.c
-        contrib/pg_stat_statements/pg_stat_statements.c
-        contrib/pg_trgm/trgm.h
-        contrib/pg_trgm/trgm_gin.c
-        contrib/pg_trgm/trgm_gist.c
-        contrib/pg_trgm/trgm_op.c
-        contrib/pg_trgm/trgm_regexp.c
-        contrib/pg_visibility/pg_visibility.c
-        contrib/pgcrypto/blf.c
-        contrib/pgcrypto/blf.h
-        contrib/pgcrypto/crypt-blowfish.c
-        contrib/pgcrypto/crypt-des.c
-        contrib/pgcrypto/crypt-gensalt.c
-        contrib/pgcrypto/crypt-md5.c
-        contrib/pgcrypto/imath.c
-        contrib/pgcrypto/imath.h
-        contrib/pgcrypto/internal-sha2.c
-        contrib/pgcrypto/internal.c
-        contrib/pgcrypto/mbuf.c
-        contrib/pgcrypto/mbuf.h
-        contrib/pgcrypto/md5.c
-        contrib/pgcrypto/md5.h
-        contrib/pgcrypto/openssl.c
-        contrib/pgcrypto/pgcrypto.c
-        contrib/pgcrypto/pgcrypto.h
-        contrib/pgcrypto/pgp-armor.c
-        contrib/pgcrypto/pgp-cfb.c
-        contrib/pgcrypto/pgp-compress.c
-        contrib/pgcrypto/pgp-decrypt.c
-        contrib/pgcrypto/pgp-encrypt.c
-        contrib/pgcrypto/pgp-info.c
-        contrib/pgcrypto/pgp-mpi-internal.c
-        contrib/pgcrypto/pgp-mpi-openssl.c
-        contrib/pgcrypto/pgp-mpi.c
-        contrib/pgcrypto/pgp-pgsql.c
-        contrib/pgcrypto/pgp-pubdec.c
-        contrib/pgcrypto/pgp-pubenc.c
-        contrib/pgcrypto/pgp-pubkey.c
-        contrib/pgcrypto/pgp-s2k.c
-        contrib/pgcrypto/pgp.c
-        contrib/pgcrypto/pgp.h
-        contrib/pgcrypto/px-crypt.c
-        contrib/pgcrypto/px-crypt.h
-        contrib/pgcrypto/px-hmac.c
-        contrib/pgcrypto/px.c
-        contrib/pgcrypto/px.h
-        contrib/pgcrypto/rijndael.c
-        contrib/pgcrypto/rijndael.h
-        contrib/pgcrypto/sha1.c
-        contrib/pgcrypto/sha1.h
-        contrib/pgrowlocks/pgrowlocks.c
-        contrib/pgstattuple/pgstatapprox.c
-        contrib/pgstattuple/pgstatindex.c
-        contrib/pgstattuple/pgstattuple.c
-        contrib/postgres_fdw/connection.c
-        contrib/postgres_fdw/deparse.c
-        contrib/postgres_fdw/option.c
-        contrib/postgres_fdw/postgres_fdw.c
-        contrib/postgres_fdw/postgres_fdw.h
-        contrib/postgres_fdw/shippable.c
-        contrib/seg/seg.c
-        contrib/seg/segdata.h
-        contrib/sepgsql/database.c
-        contrib/sepgsql/dml.c
-        contrib/sepgsql/hooks.c
-        contrib/sepgsql/label.c
-        contrib/sepgsql/proc.c
-        contrib/sepgsql/relation.c
-        contrib/sepgsql/schema.c
-        contrib/sepgsql/selinux.c
-        contrib/sepgsql/sepgsql.h
-        contrib/sepgsql/uavc.c
-        contrib/spi/autoinc.c
-        contrib/spi/insert_username.c
-        contrib/spi/moddatetime.c
-        contrib/spi/refint.c
-        contrib/sslinfo/sslinfo.c
-        contrib/tablefunc/tablefunc.c
-        contrib/tablefunc/tablefunc.h
-        contrib/tcn/tcn.c
-        contrib/test_decoding/test_decoding.c
-        contrib/tsm_system_rows/tsm_system_rows.c
-        contrib/tsm_system_time/tsm_system_time.c
-        contrib/unaccent/unaccent.c
-        contrib/uuid-ossp/uuid-ossp.c
-        contrib/vacuumlo/vacuumlo.c
-        contrib/xml2/xpath.c
-        contrib/xml2/xslt_proc.c
         include/libpq/libpq-fs.h
         include/postgresql/informix/esql/datetime.h
         include/postgresql/informix/esql/decimal.h
@@ -1121,6 +933,8 @@ add_executable(pg
         src/backend/access/transam/xloginsert.c
         src/backend/access/transam/xlogreader.c
         src/backend/access/transam/xlogutils.c
+        src/backend/bootstrap/bootparse.c
+        src/backend/bootstrap/bootscanner.c
         src/backend/bootstrap/bootstrap.c
         src/backend/catalog/aclchk.c
         src/backend/catalog/catalog.c
@@ -1133,22 +947,85 @@ add_executable(pg
         src/backend/catalog/objectaddress.c
         src/backend/catalog/partition.c
         src/backend/catalog/pg_aggregate.c
+        src/backend/catalog/pg_aggregate_d.h
+        src/backend/catalog/pg_am_d.h
+        src/backend/catalog/pg_amop_d.h
+        src/backend/catalog/pg_amproc_d.h
+        src/backend/catalog/pg_attrdef_d.h
+        src/backend/catalog/pg_attribute_d.h
+        src/backend/catalog/pg_auth_members_d.h
+        src/backend/catalog/pg_authid_d.h
+        src/backend/catalog/pg_cast_d.h
+        src/backend/catalog/pg_class_d.h
         src/backend/catalog/pg_collation.c
+        src/backend/catalog/pg_collation_d.h
         src/backend/catalog/pg_constraint.c
+        src/backend/catalog/pg_constraint_d.h
         src/backend/catalog/pg_conversion.c
+        src/backend/catalog/pg_conversion_d.h
+        src/backend/catalog/pg_database_d.h
         src/backend/catalog/pg_db_role_setting.c
+        src/backend/catalog/pg_db_role_setting_d.h
+        src/backend/catalog/pg_default_acl_d.h
         src/backend/catalog/pg_depend.c
+        src/backend/catalog/pg_depend_d.h
+        src/backend/catalog/pg_description_d.h
         src/backend/catalog/pg_enum.c
+        src/backend/catalog/pg_enum_d.h
+        src/backend/catalog/pg_event_trigger_d.h
+        src/backend/catalog/pg_extension_d.h
+        src/backend/catalog/pg_foreign_data_wrapper_d.h
+        src/backend/catalog/pg_foreign_server_d.h
+        src/backend/catalog/pg_foreign_table_d.h
+        src/backend/catalog/pg_index_d.h
         src/backend/catalog/pg_inherits.c
+        src/backend/catalog/pg_inherits_d.h
+        src/backend/catalog/pg_init_privs_d.h
+        src/backend/catalog/pg_language_d.h
         src/backend/catalog/pg_largeobject.c
+        src/backend/catalog/pg_largeobject_d.h
+        src/backend/catalog/pg_largeobject_metadata_d.h
         src/backend/catalog/pg_namespace.c
+        src/backend/catalog/pg_namespace_d.h
+        src/backend/catalog/pg_opclass_d.h
         src/backend/catalog/pg_operator.c
+        src/backend/catalog/pg_operator_d.h
+        src/backend/catalog/pg_opfamily_d.h
+        src/backend/catalog/pg_partitioned_table_d.h
+        src/backend/catalog/pg_pltemplate_d.h
+        src/backend/catalog/pg_policy_d.h
         src/backend/catalog/pg_proc.c
+        src/backend/catalog/pg_proc_d.h
         src/backend/catalog/pg_publication.c
+        src/backend/catalog/pg_publication_d.h
+        src/backend/catalog/pg_publication_rel_d.h
         src/backend/catalog/pg_range.c
+        src/backend/catalog/pg_range_d.h
+        src/backend/catalog/pg_replication_origin_d.h
+        src/backend/catalog/pg_rewrite_d.h
+        src/backend/catalog/pg_seclabel_d.h
+        src/backend/catalog/pg_sequence_d.h
         src/backend/catalog/pg_shdepend.c
+        src/backend/catalog/pg_shdepend_d.h
+        src/backend/catalog/pg_shdescription_d.h
+        src/backend/catalog/pg_shseclabel_d.h
+        src/backend/catalog/pg_statistic_d.h
+        src/backend/catalog/pg_statistic_ext_d.h
         src/backend/catalog/pg_subscription.c
+        src/backend/catalog/pg_subscription_d.h
+        src/backend/catalog/pg_subscription_rel_d.h
+        src/backend/catalog/pg_tablespace_d.h
+        src/backend/catalog/pg_transform_d.h
+        src/backend/catalog/pg_trigger_d.h
+        src/backend/catalog/pg_ts_config_d.h
+        src/backend/catalog/pg_ts_config_map_d.h
+        src/backend/catalog/pg_ts_dict_d.h
+        src/backend/catalog/pg_ts_parser_d.h
+        src/backend/catalog/pg_ts_template_d.h
         src/backend/catalog/pg_type.c
+        src/backend/catalog/pg_type_d.h
+        src/backend/catalog/pg_user_mapping_d.h
+        src/backend/catalog/schemapg.h
         src/backend/catalog/storage.c
         src/backend/catalog/toasting.c
         src/backend/commands/aggregatecmds.c
@@ -1359,6 +1236,8 @@ add_executable(pg
         src/backend/optimizer/util/tlist.c
         src/backend/optimizer/util/var.c
         src/backend/parser/analyze.c
+        src/backend/parser/gram.c
+        src/backend/parser/gram.h
         src/backend/parser/parse_agg.c
         src/backend/parser/parse_clause.c
         src/backend/parser/parse_coerce.c
@@ -1375,6 +1254,7 @@ add_executable(pg
         src/backend/parser/parse_type.c
         src/backend/parser/parse_utilcmd.c
         src/backend/parser/parser.c
+        src/backend/parser/scan.c
         src/backend/parser/scansup.c
         src/backend/partitioning/partbounds.c
         src/backend/partitioning/partdesc.c
@@ -1429,9 +1309,13 @@ add_executable(pg
         src/backend/replication/logical/worker.c
         src/backend/replication/pgoutput/pgoutput.c
         src/backend/replication/basebackup.c
+        src/backend/replication/repl_gram.c
+        src/backend/replication/repl_scanner.c
         src/backend/replication/slot.c
         src/backend/replication/slotfuncs.c
         src/backend/replication/syncrep.c
+        src/backend/replication/syncrep_gram.c
+        src/backend/replication/syncrep_scanner.c
         src/backend/replication/walreceiver.c
         src/backend/replication/walreceiverfuncs.c
         src/backend/replication/walsender.c
@@ -1523,6 +1407,8 @@ add_executable(pg
         src/backend/storage/lmgr/lmgr.c
         src/backend/storage/lmgr/lock.c
         src/backend/storage/lmgr/lwlock.c
+        src/backend/storage/lmgr/lwlocknames.c
+        src/backend/storage/lmgr/lwlocknames.h
         src/backend/storage/lmgr/predicate.c
         src/backend/storage/lmgr/proc.c
         src/backend/storage/lmgr/s_lock.c
@@ -1594,6 +1480,8 @@ add_executable(pg
         src/backend/utils/adt/jsonfuncs.c
         src/backend/utils/adt/jsonpath.c
         src/backend/utils/adt/jsonpath_exec.c
+        src/backend/utils/adt/jsonpath_gram.c
+        src/backend/utils/adt/jsonpath_scan.c
         src/backend/utils/adt/levenshtein.c
         src/backend/utils/adt/like.c
         src/backend/utils/adt/like_match.c
@@ -1715,6 +1603,7 @@ add_executable(pg
         src/backend/utils/mb/win866.c
         src/backend/utils/mb/wstrcmp.c
         src/backend/utils/mb/wstrncmp.c
+        src/backend/utils/misc/guc-file.c
         src/backend/utils/misc/guc.c
         src/backend/utils/misc/help_config.c
         src/backend/utils/misc/pg_config.c
@@ -1737,12 +1626,18 @@ add_executable(pg
         src/backend/utils/mmgr/slab.c
         src/backend/utils/resowner/resowner.c
         src/backend/utils/sort/logtape.c
+        src/backend/utils/sort/qsort_tuple.c
         src/backend/utils/sort/sharedtuplestore.c
         src/backend/utils/sort/sortsupport.c
         src/backend/utils/sort/tuplesort.c
         src/backend/utils/sort/tuplestore.c
         src/backend/utils/time/combocid.c
         src/backend/utils/time/snapmgr.c
+        src/backend/utils/errcodes.h
+        src/backend/utils/fmgroids.h
+        src/backend/utils/fmgrprotos.h
+        src/backend/utils/fmgrtab.c
+        src/backend/utils/probes.h
         src/bin/initdb/findtimezone.c
         src/bin/initdb/initdb.c
         src/bin/pg_archivecleanup/pg_archivecleanup.c
@@ -1818,7 +1713,10 @@ add_executable(pg
         src/bin/pg_upgrade/version.c
         src/bin/pg_waldump/compat.c
         src/bin/pg_waldump/pg_waldump.c
+        src/bin/pg_waldump/rmgrdesc.c
         src/bin/pg_waldump/rmgrdesc.h
+        src/bin/pgbench/exprparse.c
+        src/bin/pgbench/exprscan.c
         src/bin/pgbench/pgbench.c
         src/bin/pgbench/pgbench.h
         src/bin/pgevent/pgevent.c
@@ -1843,8 +1741,11 @@ add_executable(pg
         src/bin/psql/mainloop.h
         src/bin/psql/prompt.c
         src/bin/psql/prompt.h
+        src/bin/psql/psqlscanslash.c
         src/bin/psql/psqlscanslash.h
         src/bin/psql/settings.h
+        src/bin/psql/sql_help.c
+        src/bin/psql/sql_help.h
         src/bin/psql/startup.c
         src/bin/psql/stringutils.c
         src/bin/psql/stringutils.h
@@ -1877,6 +1778,7 @@ add_executable(pg
         src/common/file_utils.c
         src/common/ip.c
         src/common/keywords.c
+        src/common/kwlist_d.h
         src/common/kwlookup.c
         src/common/link-canary.c
         src/common/logging.c
@@ -1899,6 +1801,7 @@ add_executable(pg
         src/fe_utils/conditional.c
         src/fe_utils/mbprint.c
         src/fe_utils/print.c
+        src/fe_utils/psqlscan.c
         src/fe_utils/simple_list.c
         src/fe_utils/string_utils.c
         src/include/access/amapi.h
@@ -2571,6 +2474,8 @@ add_executable(pg
         src/include/getaddrinfo.h
         src/include/getopt_long.h
         src/include/miscadmin.h
+        src/include/pg_config.h
+        src/include/pg_config_ext.h
         src/include/pg_config_manual.h
         src/include/pg_getopt.h
         src/include/pg_trace.h
@@ -2599,6 +2504,7 @@ add_executable(pg
         src/interfaces/ecpg/include/datetime.h
         src/interfaces/ecpg/include/decimal.h
         src/interfaces/ecpg/include/ecpg-pthread-win32.h
+        src/interfaces/ecpg/include/ecpg_config.h
         src/interfaces/ecpg/include/ecpg_informix.h
         src/interfaces/ecpg/include/ecpgerrno.h
         src/interfaces/ecpg/include/ecpglib.h
@@ -2625,13 +2531,18 @@ add_executable(pg
         src/interfaces/ecpg/pgtypeslib/timestamp.c
         src/interfaces/ecpg/preproc/c_keywords.c
         src/interfaces/ecpg/preproc/c_kwlist.h
+        src/interfaces/ecpg/preproc/c_kwlist_d.h
         src/interfaces/ecpg/preproc/descriptor.c
         src/interfaces/ecpg/preproc/ecpg.c
         src/interfaces/ecpg/preproc/ecpg_keywords.c
         src/interfaces/ecpg/preproc/ecpg_kwlist.h
+        src/interfaces/ecpg/preproc/ecpg_kwlist_d.h
         src/interfaces/ecpg/preproc/keywords.c
         src/interfaces/ecpg/preproc/output.c
         src/interfaces/ecpg/preproc/parser.c
+        src/interfaces/ecpg/preproc/pgc.c
+        src/interfaces/ecpg/preproc/preproc.c
+        src/interfaces/ecpg/preproc/preproc.h
         src/interfaces/ecpg/preproc/preproc_extern.h
         src/interfaces/ecpg/preproc/type.c
         src/interfaces/ecpg/preproc/type.h
@@ -2739,10 +2650,15 @@ add_executable(pg
         src/pl/plpgsql/src/pl_comp.c
         src/pl/plpgsql/src/pl_exec.c
         src/pl/plpgsql/src/pl_funcs.c
+        src/pl/plpgsql/src/pl_gram.c
+        src/pl/plpgsql/src/pl_gram.h
         src/pl/plpgsql/src/pl_handler.c
         src/pl/plpgsql/src/pl_reserved_kwlist.h
+        src/pl/plpgsql/src/pl_reserved_kwlist_d.h
         src/pl/plpgsql/src/pl_scanner.c
         src/pl/plpgsql/src/pl_unreserved_kwlist.h
+        src/pl/plpgsql/src/pl_unreserved_kwlist_d.h
+        src/pl/plpgsql/src/plerrcodes.h
         src/pl/plpgsql/src/plpgsql.h
         src/pl/plpython/plpy_cursorobject.c
         src/pl/plpython/plpy_cursorobject.h
@@ -2793,6 +2709,7 @@ add_executable(pg
         src/port/open.c
         src/port/path.c
         src/port/pg_bitutils.c
+        src/port/pg_config_paths.h
         src/port/pg_crc32c_armv8.c
         src/port/pg_crc32c_armv8_choose.c
         src/port/pg_crc32c_sb8.c
@@ -2838,6 +2755,8 @@ add_executable(pg
         src/test/isolation/isolation_main.c
         src/test/isolation/isolationtester.c
         src/test/isolation/isolationtester.h
+        src/test/isolation/specparse.c
+        src/test/isolation/specscanner.c
         src/test/locale/test-ctype.c
         src/test/modules/dummy_seclabel/dummy_seclabel.c
         src/test/modules/test_bloomfilter/test_bloomfilter.c
