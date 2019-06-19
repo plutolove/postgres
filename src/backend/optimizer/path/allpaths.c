@@ -778,6 +778,9 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	/*
 	 * TODO
 	 *     * add online scan
+	 *     if(root->online) {
+	 *         add_online_scan
+	       }
 	 */
 	add_path(rel, create_seqscan_path(root, rel, required_outer, 0));
 
