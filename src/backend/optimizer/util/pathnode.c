@@ -945,6 +945,29 @@ add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
 /*****************************************************************************
  *		PATH NODE CREATION ROUTINES
  *****************************************************************************/
+/*
+ * create online scan path
+ */
+Path *
+create_onlinescan_path(PlannerInfo *root, RelOptInfo *rel,
+                       Relids required_outer, int parallel_workers)
+{
+    Path	   *pathnode = makeNode(Path);
+
+    pathnode->pathtype = T_OnlineScan;
+    pathnode->parent = rel;
+    pathnode->pathtarget = rel->reltarget;
+    pathnode->param_info = get_baserel_parampathinfo(root, rel,
+                                                     required_outer);
+    pathnode->parallel_aware = parallel_workers > 0 ? true : false;
+    pathnode->parallel_safe = rel->consider_parallel;
+    pathnode->parallel_workers = parallel_workers;
+    pathnode->pathkeys = NIL;	/* seqscan has unordered result */
+
+    cost_seqscan(pathnode, root, rel, pathnode->param_info);
+
+    return pathnode;
+}
 
 /*
  * create_seqscan_path

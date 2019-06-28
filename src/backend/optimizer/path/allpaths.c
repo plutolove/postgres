@@ -775,6 +775,17 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	required_outer = rel->lateral_relids;
 
 	/* Consider sequential scan */
+	/*
+	 * TODO
+	 *     * add online scan
+	 *     if(root->online) {
+	 *         add_online_scan
+	       }
+	 */
+	if(root->online) {
+	    add_path(rel, create_onlinescan_path(root, rel, required_outer, 0));
+	    return;
+	}
 	add_path(rel, create_seqscan_path(root, rel, required_outer, 0));
 
 	/* If appropriate, consider parallel sequential scan */

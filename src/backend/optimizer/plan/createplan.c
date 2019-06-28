@@ -318,7 +318,9 @@ create_plan(PlannerInfo *root, Path *best_path)
 	root->curOuterRels = NULL;
 	root->curOuterParams = NIL;
 
-	/* Recursively process the path tree, demanding the correct tlist result */
+    printf("best path relid in create plan: %d\n", best_path->parent->relid);
+
+    /* Recursively process the path tree, demanding the correct tlist result */
 	plan = create_plan_recurse(root, best_path, CP_EXACT_TLIST);
 
 	/*
@@ -361,13 +363,12 @@ static Plan *
 create_plan_recurse(PlannerInfo *root, Path *best_path, int flags)
 {
 	Plan	   *plan;
-
 	/* Guard against stack overflow due to overly complex plans */
 	check_stack_depth();
-
-	switch (best_path->pathtype)
+    switch (best_path->pathtype)
 	{
 		case T_SeqScan:
+        case T_OnlineScan:
 		case T_SampleScan:
 		case T_IndexScan:
 		case T_IndexOnlyScan:
@@ -616,16 +617,22 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 	{
 		tlist = build_path_tlist(root, best_path);
 	}
-
-	switch (best_path->pathtype)
+    switch (best_path->pathtype)
 	{
 		case T_SeqScan:
+            printf("T_SeqScan running right\n");
 			plan = (Plan *) create_seqscan_plan(root,
 												best_path,
 												tlist,
 												scan_clauses);
 			break;
-
+        case T_OnlineScan:
+            printf("T_OnlineScan running right\n");
+            plan = (Plan *) create_seqscan_plan(root,
+                                                best_path,
+                                               tlist,
+                                                scan_clauses);
+            break;
 		case T_SampleScan:
 			plan = (Plan *) create_samplescan_plan(root,
 												   best_path,

@@ -410,12 +410,15 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
 	best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
-	top_plan = create_plan(root, best_path);
+	//if(root->online) {
+	//    best_path->pathtype = T_OnlineScan;
+	//}
+    top_plan = create_plan(root, best_path);
 
-	/*
-	 * If creating a plan for a scrollable cursor, make sure it can run
-	 * backwards on demand.  Add a Material node at the top at need.
-	 */
+    /*
+     * If creating a plan for a scrollable cursor, make sure it can run
+     * backwards on demand.  Add a Material node at the top at need.
+     */
 	if (cursorOptions & CURSOR_OPT_SCROLL)
 	{
 		if (!ExecSupportsBackwardScan(top_plan))
@@ -607,6 +610,14 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
 	/* Create a PlannerInfo data structure for this subquery */
 	root = makeNode(PlannerInfo);
+	root->online = parse->online;
+
+	if(root->online) {
+        printf("plannerinfo online true\n");
+	} else {
+        printf("plannerinfo online false\n");
+	}
+
 	root->parse = parse;
 	root->glob = glob;
 	root->query_level = parent_root ? parent_root->query_level + 1 : 1;

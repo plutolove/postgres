@@ -347,6 +347,8 @@ struct PlannerInfo
 										 * pseudoconstant = true */
 	bool		hasRecursion;	/* true if planning a recursive WITH item */
 
+	bool        online; /* add keyword onnline */
+
 	/* These fields are used only when hasRecursion is true: */
 	int			wt_param_id;	/* PARAM_EXEC ID for the work table */
 	struct Path *non_recursive_path;	/* a path for non-recursive term */

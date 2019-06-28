@@ -45,3 +45,5 @@ lib*.pc
 /lib
 /bin
 /DemoDir
+/cmake-build-debug
+/.idea

@@ -1293,6 +1293,12 @@ typedef struct SeqScanState
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
 } SeqScanState;
 
+typedef struct OnlineScanState
+{
+    ScanState ss;
+    bool page_retuned_tuple;
+} OnlineScanState;
+
 /* ----------------
  *	 SampleScanState information
  * ----------------

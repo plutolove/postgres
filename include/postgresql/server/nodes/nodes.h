@@ -108,6 +108,8 @@ typedef enum NodeTag
 	T_BitmapAndState,
 	T_BitmapOrState,
 	T_ScanState,
+    T_OnlineScan,
+    T_OnlineScanState,
 	T_SeqScanState,
 	T_SampleScanState,
 	T_IndexScanState,
