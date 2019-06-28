@@ -614,8 +614,6 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
 	if(root->online) {
         printf("plannerinfo online true\n");
-	} else {
-        printf("plannerinfo online false\n");
 	}
 
 	root->parse = parse;

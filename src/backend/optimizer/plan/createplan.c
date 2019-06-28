@@ -318,8 +318,6 @@ create_plan(PlannerInfo *root, Path *best_path)
 	root->curOuterRels = NULL;
 	root->curOuterParams = NIL;
 
-    printf("best path relid in create plan: %d\n", best_path->parent->relid);
-
     /* Recursively process the path tree, demanding the correct tlist result */
 	plan = create_plan_recurse(root, best_path, CP_EXACT_TLIST);
 
