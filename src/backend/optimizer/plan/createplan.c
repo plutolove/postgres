@@ -617,7 +617,6 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 	{
 		tlist = build_path_tlist(root, best_path);
 	}
-    printf("best path relid create_scan_plan: %d\n", best_path->parent->relid);
     switch (best_path->pathtype)
 	{
 		case T_SeqScan:
@@ -628,6 +627,7 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 												scan_clauses);
 			break;
         case T_OnlineScan:
+            printf("T_OnlineScan running right\n");
             plan = (Plan *) create_seqscan_plan(root,
                                                 best_path,
                                                tlist,
@@ -2677,8 +2677,6 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 {
 	SeqScan    *scan_plan;
 	Index		scan_relid = best_path->parent->relid;
-
-	printf("scan relid: %d\n", scan_relid);
 
 	/* it should be a base rel... */
 	Assert(scan_relid > 0);
