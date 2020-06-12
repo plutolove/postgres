@@ -403,6 +403,7 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	}
 
 	/* primary planning entry point (may recurse for subqueries) */
+	// root 保存最大path，初始化path，保存在plannerinfo中
 	root = subquery_planner(glob, parse, NULL,
 							false, tuple_fraction);
 
