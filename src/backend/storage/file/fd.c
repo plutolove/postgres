@@ -3,7 +3,7 @@
  * fd.c
  *	  Virtual file descriptor code.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -61,6 +61,12 @@
  * BasicOpenFile, it is solely the caller's responsibility to close the file
  * descriptor by calling close(2).
  *
+ * If a non-virtual file descriptor needs to be held open for any length of
+ * time, report it to fd.c by calling AcquireExternalFD or ReserveExternalFD
+ * (and eventually ReleaseExternalFD), so that we can take it into account
+ * while deciding how many VFDs can be open.  This applies to FDs obtained
+ * with BasicOpenFile as well as those obtained without use of any fd.c API.
+ *
  *-------------------------------------------------------------------------
  */
 
@@ -79,18 +85,17 @@
 #include <sys/resource.h>		/* for getrlimit */
 #endif
 
-#include "miscadmin.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/pg_tablespace.h"
 #include "common/file_perm.h"
+#include "miscadmin.h"
 #include "pgstat.h"
 #include "portability/mem.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "utils/guc.h"
 #include "utils/resowner_private.h"
-
 
 /* Define PG_FLUSH_DATA_WORKS if we have an implementation for pg_flush_data */
 #if defined(HAVE_SYNC_FILE_RANGE)
@@ -104,8 +109,8 @@
 /*
  * We must leave some file descriptors free for system(), the dynamic loader,
  * and other code that tries to open files without consulting fd.c.  This
- * is the number left free.  (While we can be pretty sure we won't get
- * EMFILE, there's never any guarantee that we won't get ENFILE due to
+ * is the number left free.  (While we try fairly hard to prevent EMFILE
+ * errors, there's never any guarantee that we won't get ENFILE due to
  * other processes chewing up FDs.  So it's a bad idea to try to open files
  * without consulting fd.c.  Nonetheless we cannot control all code.)
  *
@@ -120,9 +125,12 @@
 
 /*
  * If we have fewer than this many usable FDs after allowing for the reserved
- * ones, choke.
+ * ones, choke.  (This value is chosen to work with "ulimit -n 64", but not
+ * much less than that.  Note that this value ensures numExternalFDs can be
+ * at least 16; as of this writing, the contrib/postgres_fdw regression tests
+ * will not pass unless that can grow to at least 14.)
  */
-#define FD_MINFREE				10
+#define FD_MINFREE				48
 
 /*
  * A number of platforms allow individual processes to open many more files
@@ -133,8 +141,8 @@
 int			max_files_per_process = 1000;
 
 /*
- * Maximum number of file descriptors to open for either VFD entries or
- * AllocateFile/AllocateDir/OpenTransientFile operations.  This is initialized
+ * Maximum number of file descriptors to open for operations that fd.c knows
+ * about (VFDs, AllocateFile etc, or "external" FDs).  This is initialized
  * to a conservative value, and remains that way indefinitely in bootstrap or
  * standalone-backend cases.  In normal postmaster operation, the postmaster
  * calls set_max_safe_fds() late in initialization to update the value, and
@@ -143,7 +151,7 @@ int			max_files_per_process = 1000;
  * Note: the value of max_files_per_process is taken into account while
  * setting this variable, and so need not be tested separately.
  */
-int			max_safe_fds = 32;	/* default if not changed */
+int			max_safe_fds = FD_MINFREE;	/* default if not changed */
 
 /* Whether it is safe to continue running after fsync() fails. */
 bool		data_sync_retry = false;
@@ -245,14 +253,21 @@ static int	maxAllocatedDescs = 0;
 static AllocateDesc *allocatedDescs = NULL;
 
 /*
+ * Number of open "external" FDs reported to Reserve/ReleaseExternalFD.
+ */
+static int	numExternalFDs = 0;
+
+/*
  * Number of temporary files opened during the current session;
  * this is used in generation of tempfile names.
  */
 static long tempFileCounter = 0;
 
 /*
- * Array of OIDs of temp tablespaces.  When numTempTableSpaces is -1,
- * this has not been set in the current transaction.
+ * Array of OIDs of temp tablespaces.  (Some entries may be InvalidOid,
+ * indicating that the current database's default tablespace should be used.)
+ * When numTempTableSpaces is -1, this has not been set in the current
+ * transaction.
  */
 static Oid *tempTableSpaces = NULL;
 static int	numTempTableSpaces = -1;
@@ -269,7 +284,7 @@ static int	nextTempTableSpace = 0;
  * LruInsert	   - put a file at the front of the Lru ring and open it
  * ReleaseLruFile  - Release an fd by closing the last entry in the Lru ring
  * ReleaseLruFiles - Release fd(s) until we're under the max_safe_fds limit
- * AllocateVfd	   - grab a free (or new) file record (from VfdArray)
+ * AllocateVfd	   - grab a free (or new) file record (from VfdCache)
  * FreeVfd		   - free a file record
  *
  * The Least Recently Used ring is a doubly linked list that begins and
@@ -307,8 +322,6 @@ static int	FreeDesc(AllocateDesc *desc);
 
 static void AtProcExit_Files(int code, Datum arg);
 static void CleanupTempFiles(bool isCommit, bool isProcExit);
-static void RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok,
-								   bool unlink_all);
 static void RemovePgTempRelationFiles(const char *tsdirname);
 static void RemovePgTempRelationFilesInDbspace(const char *dbspacedirname);
 
@@ -322,7 +335,6 @@ static void pre_sync_fname(const char *fname, bool isdir, int elevel);
 static void datadir_fsync_fname(const char *fname, bool isdir, int elevel);
 static void unlink_if_exists_fname(const char *fname, bool isdir, int elevel);
 
-static int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);
 static int	fsync_parent_path(const char *fname, int elevel);
 
 
@@ -332,6 +344,44 @@ static int	fsync_parent_path(const char *fname, int elevel);
 int
 pg_fsync(int fd)
 {
+#if !defined(WIN32) && defined(USE_ASSERT_CHECKING)
+	struct stat st;
+
+	/*
+	 * Some operating system implementations of fsync() have requirements
+	 * about the file access modes that were used when their file descriptor
+	 * argument was opened, and these requirements differ depending on whether
+	 * the file descriptor is for a directory.
+	 *
+	 * For any file descriptor that may eventually be handed to fsync(), we
+	 * should have opened it with access modes that are compatible with
+	 * fsync() on all supported systems, otherwise the code may not be
+	 * portable, even if it runs ok on the current system.
+	 *
+	 * We assert here that a descriptor for a file was opened with write
+	 * permissions (either O_RDWR or O_WRONLY) and for a directory without
+	 * write permissions (O_RDONLY).
+	 *
+	 * Ignore any fstat errors and let the follow-up fsync() do its work.
+	 * Doing this sanity check here counts for the case where fsync() is
+	 * disabled.
+	 */
+	if (fstat(fd, &st) == 0)
+	{
+		int			desc_flags = fcntl(fd, F_GETFL);
+
+		/*
+		 * O_RDONLY is historically 0, so just make sure that for directories
+		 * no write flags are used.
+		 */
+		if (S_ISDIR(st.st_mode))
+			Assert((desc_flags & (O_RDWR | O_WRONLY)) == 0);
+		else
+			Assert((desc_flags & (O_RDWR | O_WRONLY)) != 0);
+	}
+	errno = 0;
+#endif
+
 	/* #if is to skip the sync_method test if there's no need for it */
 #if defined(HAVE_FSYNC_WRITETHROUGH) && !defined(FSYNC_WRITETHROUGH_IS_FSYNC)
 	if (sync_method == SYNC_METHOD_FSYNC_WRITETHROUGH)
@@ -647,7 +697,7 @@ durable_rename(const char *oldfile, const char *newfile, int elevel)
 			return -1;
 		}
 
-		if (CloseTransientFile(fd))
+		if (CloseTransientFile(fd) != 0)
 		{
 			ereport(elevel,
 					(errcode_for_file_access(),
@@ -717,7 +767,7 @@ durable_unlink(const char *fname, int elevel)
 }
 
 /*
- * durable_link_or_rename -- rename a file in a durable manner.
+ * durable_rename_excl -- rename a file in a durable manner.
  *
  * Similar to durable_rename(), except that this routine tries (but does not
  * guarantee) not to overwrite the target file.
@@ -727,11 +777,15 @@ durable_unlink(const char *fname, int elevel)
  *
  * Log errors with the caller specified severity.
  *
+ * On Windows, using a hard link followed by unlink() causes concurrency
+ * issues, while a simple rename() does not cause that, so be careful when
+ * changing the logic of this routine.
+ *
  * Returns 0 if the operation succeeded, -1 otherwise. Note that errno is not
  * valid upon return.
  */
 int
-durable_link_or_rename(const char *oldfile, const char *newfile, int elevel)
+durable_rename_excl(const char *oldfile, const char *newfile, int elevel)
 {
 	/*
 	 * Ensure that, if we crash directly after the rename/link, a file with
@@ -740,7 +794,7 @@ durable_link_or_rename(const char *oldfile, const char *newfile, int elevel)
 	if (fsync_fname_ext(oldfile, false, false, elevel) != 0)
 		return -1;
 
-#if HAVE_WORKING_LINK
+#ifdef HAVE_WORKING_LINK
 	if (link(oldfile, newfile) < 0)
 	{
 		ereport(elevel,
@@ -751,7 +805,6 @@ durable_link_or_rename(const char *oldfile, const char *newfile, int elevel)
 	}
 	unlink(oldfile);
 #else
-	/* XXX: Add racy file existence check? */
 	if (rename(oldfile, newfile) < 0)
 	{
 		ereport(elevel,
@@ -897,7 +950,7 @@ count_usable_fds(int max_to_probe, int *usable_fds, int *already_open)
 
 /*
  * set_max_safe_fds
- *		Determine number of filedescriptors that fd.c is allowed to use
+ *		Determine number of file descriptors that fd.c is allowed to use
  */
 void
 set_max_safe_fds(void)
@@ -991,6 +1044,80 @@ tryAgain:
 	return -1;					/* failure */
 }
 
+/*
+ * AcquireExternalFD - attempt to reserve an external file descriptor
+ *
+ * This should be used by callers that need to hold a file descriptor open
+ * over more than a short interval, but cannot use any of the other facilities
+ * provided by this module.
+ *
+ * The difference between this and the underlying ReserveExternalFD function
+ * is that this will report failure (by setting errno and returning false)
+ * if "too many" external FDs are already reserved.  This should be used in
+ * any code where the total number of FDs to be reserved is not predictable
+ * and small.
+ */
+bool
+AcquireExternalFD(void)
+{
+	/*
+	 * We don't want more than max_safe_fds / 3 FDs to be consumed for
+	 * "external" FDs.
+	 */
+	if (numExternalFDs < max_safe_fds / 3)
+	{
+		ReserveExternalFD();
+		return true;
+	}
+	errno = EMFILE;
+	return false;
+}
+
+/*
+ * ReserveExternalFD - report external consumption of a file descriptor
+ *
+ * This should be used by callers that need to hold a file descriptor open
+ * over more than a short interval, but cannot use any of the other facilities
+ * provided by this module.  This just tracks the use of the FD and closes
+ * VFDs if needed to ensure we keep NUM_RESERVED_FDS FDs available.
+ *
+ * Call this directly only in code where failure to reserve the FD would be
+ * fatal; for example, the WAL-writing code does so, since the alternative is
+ * session failure.  Also, it's very unwise to do so in code that could
+ * consume more than one FD per process.
+ *
+ * Note: as long as everybody plays nice so that NUM_RESERVED_FDS FDs remain
+ * available, it doesn't matter too much whether this is called before or
+ * after actually opening the FD; but doing so beforehand reduces the risk of
+ * an EMFILE failure if not everybody played nice.  In any case, it's solely
+ * caller's responsibility to keep the external-FD count in sync with reality.
+ */
+void
+ReserveExternalFD(void)
+{
+	/*
+	 * Release VFDs if needed to stay safe.  Because we do this before
+	 * incrementing numExternalFDs, the final state will be as desired, i.e.,
+	 * nfile + numAllocatedDescs + numExternalFDs <= max_safe_fds.
+	 */
+	ReleaseLruFiles();
+
+	numExternalFDs++;
+}
+
+/*
+ * ReleaseExternalFD - report release of an external file descriptor
+ *
+ * This is guaranteed not to change errno, so it can be used in failure paths.
+ */
+void
+ReleaseExternalFD(void)
+{
+	Assert(numExternalFDs > 0);
+	numExternalFDs--;
+}
+
+
 #if defined(FDDEBUG)
 
 static void
@@ -1047,7 +1174,7 @@ LruDelete(File file)
 	 * Close the file.  We aren't expecting this to fail; if it does, better
 	 * to leak the FD than to mess up our internal state.
 	 */
-	if (close(vfdP->fd))
+	if (close(vfdP->fd) != 0)
 		elog(vfdP->fdstate & FD_TEMP_FILE_LIMIT ? LOG : data_sync_elevel(LOG),
 			 "could not close file \"%s\": %m", vfdP->fileName);
 	vfdP->fd = VFD_CLOSED;
@@ -1151,7 +1278,7 @@ ReleaseLruFile(void)
 static void
 ReleaseLruFiles(void)
 {
-	while (nfile + numAllocatedDescs >= max_safe_fds)
+	while (nfile + numAllocatedDescs + numExternalFDs >= max_safe_fds)
 	{
 		if (!ReleaseLruFile())
 			break;
@@ -1372,8 +1499,6 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	DO_DB(elog(LOG, "PathNameOpenFile: success %d",
 			   vfdP->fd));
 
-	Insert(file);
-
 	vfdP->fileName = fnamecopy;
 	/* Saved flags are adjusted to be OK for re-opening file */
 	vfdP->fileFlags = fileFlags & ~(O_CREAT | O_TRUNC | O_EXCL);
@@ -1381,6 +1506,8 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	vfdP->fileSize = 0;
 	vfdP->fdstate = 0x0;
 	vfdP->resowner = NULL;
+
+	Insert(file);
 
 	return file;
 }
@@ -1592,7 +1719,7 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
  * If the file is inside the top-level temporary directory, its name should
  * begin with PG_TEMP_FILE_PREFIX so that it can be identified as temporary
  * and deleted at startup by RemovePgTempFiles().  Alternatively, it can be
- * inside a directory created with PathnameCreateTemporaryDir(), in which case
+ * inside a directory created with PathNameCreateTemporaryDir(), in which case
  * the prefix isn't needed.
  */
 File
@@ -1688,7 +1815,7 @@ PathNameDeleteTemporaryFile(const char *path, bool error_on_failure)
 		if (errno != ENOENT)
 			ereport(error_on_failure ? ERROR : LOG,
 					(errcode_for_file_access(),
-					 errmsg("cannot unlink temporary file \"%s\": %m",
+					 errmsg("could not unlink temporary file \"%s\": %m",
 							path)));
 		return false;
 	}
@@ -1724,7 +1851,7 @@ FileClose(File file)
 	if (!FileIsNotOpen(file))
 	{
 		/* close the file */
-		if (close(vfdP->fd))
+		if (close(vfdP->fd) != 0)
 		{
 			/*
 			 * We may need to panic on failure to close non-temporary files;
@@ -1971,10 +2098,6 @@ retry:
 	{
 		/*
 		 * Maintain fileSize and temporary_files_size if it's a temp file.
-		 *
-		 * If seekPos is -1 (unknown), this will do nothing; but we could only
-		 * get here in that state if we're not enforcing temporary_files_size,
-		 * so we don't care.
 		 */
 		if (vfdP->fdstate & FD_TEMP_FILE_LIMIT)
 		{
@@ -2146,13 +2269,13 @@ reserveAllocatedDesc(void)
 
 	/*
 	 * If the array hasn't yet been created in the current process, initialize
-	 * it with FD_MINFREE / 2 elements.  In many scenarios this is as many as
+	 * it with FD_MINFREE / 3 elements.  In many scenarios this is as many as
 	 * we will ever need, anyway.  We don't want to look at max_safe_fds
 	 * immediately because set_max_safe_fds() may not have run yet.
 	 */
 	if (allocatedDescs == NULL)
 	{
-		newMax = FD_MINFREE / 2;
+		newMax = FD_MINFREE / 3;
 		newDescs = (AllocateDesc *) malloc(newMax * sizeof(AllocateDesc));
 		/* Out of memory already?  Treat as fatal error. */
 		if (newDescs == NULL)
@@ -2170,10 +2293,12 @@ reserveAllocatedDesc(void)
 	 *
 	 * We mustn't let allocated descriptors hog all the available FDs, and in
 	 * practice we'd better leave a reasonable number of FDs for VFD use.  So
-	 * set the maximum to max_safe_fds / 2.  (This should certainly be at
-	 * least as large as the initial size, FD_MINFREE / 2.)
+	 * set the maximum to max_safe_fds / 3.  (This should certainly be at
+	 * least as large as the initial size, FD_MINFREE / 3, so we aren't
+	 * tightening the restriction here.)  Recall that "external" FDs are
+	 * allowed to consume another third of max_safe_fds.
 	 */
-	newMax = max_safe_fds / 2;
+	newMax = max_safe_fds / 3;
 	if (newMax > maxAllocatedDescs)
 	{
 		newDescs = (AllocateDesc *) realloc(allocatedDescs,
@@ -2670,6 +2795,9 @@ closeAllVfds(void)
  * unless this function is called again before then.  It is caller's
  * responsibility that the passed-in array has adequate lifespan (typically
  * it'd be allocated in TopTransactionContext).
+ *
+ * Some entries of the array may be InvalidOid, indicating that the current
+ * database's default tablespace should be used.
  */
 void
 SetTempTablespaces(Oid *tableSpaces, int numSpaces)
@@ -2709,7 +2837,10 @@ TempTablespacesAreSet(void)
  * GetTempTablespaces
  *
  * Populate an array with the OIDs of the tablespaces that should be used for
- * temporary files.  Return the number that were copied into the output array.
+ * temporary files.  (Some entries may be InvalidOid, indicating that the
+ * current database's default tablespace should be used.)  At most numSpaces
+ * entries will be filled.
+ * Returns the number of OIDs that were copied into the output array.
  */
 int
 GetTempTablespaces(Oid *tableSpaces, int numSpaces)
@@ -2923,11 +3054,10 @@ RemovePgTempFiles(void)
 
 	/*
 	 * In EXEC_BACKEND case there is a pgsql_tmp directory at the top level of
-	 * DataDir as well.
+	 * DataDir as well.  However, that is *not* cleaned here because doing so
+	 * would create a race condition.  It's done separately, earlier in
+	 * postmaster startup.
 	 */
-#ifdef EXEC_BACKEND
-	RemovePgTempFilesInDir(PG_TEMP_FILES_DIR, true, false);
-#endif
 }
 
 /*
@@ -2945,7 +3075,7 @@ RemovePgTempFiles(void)
  * (These two flags could be replaced by one, but it seems clearer to keep
  * them separate.)
  */
-static void
+void
 RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok, bool unlink_all)
 {
 	DIR		   *temp_dir;
@@ -3208,7 +3338,8 @@ SyncDataDirectory(void)
  *
  * Errors are reported at level elevel, which might be ERROR or less.
  *
- * See also walkdir in initdb.c, which is a frontend version of this logic.
+ * See also walkdir in file_utils.c, which is a frontend version of this
+ * logic.
  */
 static void
 walkdir(const char *path,
@@ -3302,7 +3433,7 @@ pre_sync_fname(const char *fname, bool isdir, int elevel)
 	 */
 	pg_flush_data(fd, 0, 0);
 
-	if (CloseTransientFile(fd))
+	if (CloseTransientFile(fd) != 0)
 		ereport(elevel,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", fname)));
@@ -3328,7 +3459,7 @@ unlink_if_exists_fname(const char *fname, bool isdir, int elevel)
 		if (rmdir(fname) != 0 && errno != ENOENT)
 			ereport(elevel,
 					(errcode_for_file_access(),
-					 errmsg("could not rmdir directory \"%s\": %m", fname)));
+					 errmsg("could not remove directory \"%s\": %m", fname)));
 	}
 	else
 	{
@@ -3345,7 +3476,7 @@ unlink_if_exists_fname(const char *fname, bool isdir, int elevel)
  *
  * Returns 0 if the operation succeeded, -1 otherwise.
  */
-static int
+int
 fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
 {
 	int			fd;
@@ -3404,7 +3535,7 @@ fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel)
 		return -1;
 	}
 
-	if (CloseTransientFile(fd))
+	if (CloseTransientFile(fd) != 0)
 	{
 		ereport(elevel,
 				(errcode_for_file_access(),

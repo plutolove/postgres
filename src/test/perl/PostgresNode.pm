@@ -63,6 +63,9 @@ PostgresNode - class representing PostgreSQL server instance
   # Stop the server
   $node->stop('fast');
 
+  # Find a free, unprivileged TCP port to bind some other service to
+  my $port = get_free_port();
+
 =head1 DESCRIPTION
 
 PostgresNode contains a set of routines able to work on a PostgreSQL node,
@@ -102,26 +105,18 @@ use Scalar::Util qw(blessed);
 
 our @EXPORT = qw(
   get_new_node
+  get_free_port
 );
 
 our ($use_tcp, $test_localhost, $test_pghost, $last_host_assigned,
 	$last_port_assigned, @all_nodes, $died);
-
-# Windows path to virtual file system root
-
-our $vfs_path = '';
-if ($Config{osname} eq 'msys')
-{
-	$vfs_path = `cd / && pwd -W`;
-	chomp $vfs_path;
-}
 
 INIT
 {
 
 	# Set PGHOST for backward compatibility.  This doesn't work for own_host
 	# nodes, so prefer to not rely on this when writing new tests.
-	$use_tcp            = $TestLib::windows_os;
+	$use_tcp            = !$TestLib::use_unix_sockets;
 	$test_localhost     = "127.0.0.1";
 	$last_host_assigned = 1;
 	$test_pghost        = $use_tcp ? $test_localhost : TestLib::tempdir_short;
@@ -392,7 +387,7 @@ sub set_replication_conf
 
 	open my $hba, '>>', "$pgdata/pg_hba.conf";
 	print $hba "\n# Allow replication (set up by PostgresNode.pm)\n";
-	if ($TestLib::windows_os)
+	if ($TestLib::windows_os && !$TestLib::use_unix_sockets)
 	{
 		print $hba
 		  "host replication all $test_localhost/32 sspi include_realm=1 map=regress\n";
@@ -474,13 +469,15 @@ sub init
 		{
 			print $conf "wal_level = replica\n";
 		}
-		print $conf "max_wal_senders = 5\n";
-		print $conf "max_replication_slots = 5\n";
-		print $conf "max_wal_size = 128MB\n";
-		print $conf "shared_buffers = 1MB\n";
+		print $conf "max_wal_senders = 10\n";
+		print $conf "max_replication_slots = 10\n";
 		print $conf "wal_log_hints = on\n";
 		print $conf "hot_standby = on\n";
+		# conservative settings to ensure we can run multiple postmasters:
+		print $conf "shared_buffers = 1MB\n";
 		print $conf "max_connections = 10\n";
+		# limit disk space consumption, too:
+		print $conf "max_wal_size = 128MB\n";
 	}
 	else
 	{
@@ -556,8 +553,10 @@ sub backup
 	my $name        = $self->name;
 
 	print "# Taking pg_basebackup $backup_name from node \"$name\"\n";
-	TestLib::system_or_bail('pg_basebackup', '-D', $backup_path, '-h',
-		$self->host, '-p', $self->port, '--no-sync');
+	TestLib::system_or_bail(
+		'pg_basebackup', '-D', $backup_path, '-h',
+		$self->host,     '-p', $self->port,  '--checkpoint',
+		'fast',          '--no-sync');
 	print "# Backup finished\n";
 	return;
 }
@@ -658,6 +657,9 @@ Restoring WAL segments from archives using restore_command can be enabled
 by passing the keyword parameter has_restoring => 1. This is disabled by
 default.
 
+If has_restoring is used, standby mode is used by default.  To use
+recovery mode instead, pass the keyword parameter standby => 0.
+
 The backup is copied, leaving the original unmodified. pg_hba.conf is
 unconditionally set to enable replication connections.
 
@@ -674,6 +676,7 @@ sub init_from_backup
 
 	$params{has_streaming} = 0 unless defined $params{has_streaming};
 	$params{has_restoring} = 0 unless defined $params{has_restoring};
+	$params{standby}       = 1 unless defined $params{standby};
 
 	print
 	  "# Initializing node \"$node_name\" from backup \"$backup_name\" of node \"$root_name\"\n";
@@ -704,7 +707,8 @@ port = $port
 			"unix_socket_directories = '$host'");
 	}
 	$self->enable_streaming($root_node) if $params{has_streaming};
-	$self->enable_restoring($root_node) if $params{has_restoring};
+	$self->enable_restoring($root_node, $params{standby})
+	  if $params{has_restoring};
 	return;
 }
 
@@ -944,8 +948,8 @@ primary_conninfo='$root_connstr'
 # Internal routine to enable archive recovery command on a standby node
 sub enable_restoring
 {
-	my ($self, $root_node) = @_;
-	my $path = $vfs_path . $root_node->archive_dir;
+	my ($self, $root_node, $standby) = @_;
+	my $path = TestLib::perl2host($root_node->archive_dir);
 	my $name = $self->name;
 
 	print "### Enabling WAL restore for node \"$name\"\n";
@@ -966,7 +970,30 @@ sub enable_restoring
 		'postgresql.conf', qq(
 restore_command = '$copy_command'
 ));
-	$self->set_standby_mode();
+	if ($standby)
+	{
+		$self->set_standby_mode();
+	}
+	else
+	{
+		$self->set_recovery_mode();
+	}
+	return;
+}
+
+=pod
+
+=item $node->set_recovery_mode()
+
+Place recovery.signal file.
+
+=cut
+
+sub set_recovery_mode
+{
+	my ($self) = @_;
+
+	$self->append_conf('recovery.signal', '');
 	return;
 }
 
@@ -990,7 +1017,7 @@ sub set_standby_mode
 sub enable_archiving
 {
 	my ($self) = @_;
-	my $path   = $vfs_path . $self->archive_dir;
+	my $path   = TestLib::perl2host($self->archive_dir);
 	my $name   = $self->name;
 
 	print "### Enabling WAL archiving for node \"$name\"\n";
@@ -1080,54 +1107,21 @@ sub get_new_node
 	my $class = 'PostgresNode';
 	$class = shift if scalar(@_) % 2 != 1;
 	my ($name, %params) = @_;
-	my $port_is_forced = defined $params{port};
-	my $found          = $port_is_forced;
-	my $port = $port_is_forced ? $params{port} : $last_port_assigned;
 
-	while ($found == 0)
+	# Select a port.
+	my $port;
+	if (defined $params{port})
 	{
-
-		# advance $port, wrapping correctly around range end
-		$port = 49152 if ++$port >= 65536;
-		print "# Checking port $port\n";
-
-		# Check first that candidate port number is not included in
-		# the list of already-registered nodes.
-		$found = 1;
-		foreach my $node (@all_nodes)
-		{
-			$found = 0 if ($node->port == $port);
-		}
-
-		# Check to see if anything else is listening on this TCP port.  This
-		# is *necessary* on $use_tcp (Windows) configurations.  Seek a port
-		# available for all possible listen_addresses values, for own_host
-		# nodes and so the caller can harness this port for the widest range
-		# of purposes.  The 0.0.0.0 test achieves that for post-2006 Cygwin,
-		# which automatically sets SO_EXCLUSIVEADDRUSE.  The same holds for
-		# MSYS (a Cygwin fork).  Testing 0.0.0.0 is insufficient for Windows
-		# native Perl (https://stackoverflow.com/a/14388707), so we also test
-		# individual addresses.
-		#
-		# This seems like a good idea on Unixen as well, even though we don't
-		# ask the postmaster to open a TCP port on Unix.  On Non-Linux,
-		# non-Windows kernels, binding to 127.0.0.1/24 addresses other than
-		# 127.0.0.1 might fail with EADDRNOTAVAIL.  Binding to 0.0.0.0 is
-		# unnecessary on non-Windows systems.
-		#
-		# XXX A port available now may become unavailable by the time we start
-		# the postmaster.
-		if ($found == 1)
-		{
-			foreach my $addr (qw(127.0.0.1),
-				$use_tcp ? qw(127.0.0.2 127.0.0.3 0.0.0.0) : ())
-			{
-				can_bind($addr, $port) or $found = 0;
-			}
-		}
+		$port = $params{port};
 	}
-
-	print "# Found port $port\n";
+	else
+	{
+		# When selecting a port, we look for an unassigned TCP port number,
+		# even if we intend to use only Unix-domain sockets.  This is clearly
+		# necessary on $use_tcp (Windows) configurations, and it seems like a
+		# good idea on Unixen as well.
+		$port = get_free_port();
+	}
 
 	# Select a host.
 	my $host = $test_pghost;
@@ -1152,10 +1146,79 @@ sub get_new_node
 	# Add node to list of nodes
 	push(@all_nodes, $node);
 
-	# And update port for next time
-	$port_is_forced or $last_port_assigned = $port;
-
 	return $node;
+}
+
+=pod
+
+=item get_free_port()
+
+Locate an unprivileged (high) TCP port that's not currently bound to
+anything.  This is used by get_new_node, and is also exported for use
+by test cases that need to start other, non-Postgres servers.
+
+Ports assigned to existing PostgresNode objects are automatically
+excluded, even if those servers are not currently running.
+
+XXX A port available now may become unavailable by the time we start
+the desired service.
+
+=cut
+
+sub get_free_port
+{
+	my $found = 0;
+	my $port  = $last_port_assigned;
+
+	while ($found == 0)
+	{
+
+		# advance $port, wrapping correctly around range end
+		$port = 49152 if ++$port >= 65536;
+		print "# Checking port $port\n";
+
+		# Check first that candidate port number is not included in
+		# the list of already-registered nodes.
+		$found = 1;
+		foreach my $node (@all_nodes)
+		{
+			$found = 0 if ($node->port == $port);
+		}
+
+		# Check to see if anything else is listening on this TCP port.
+		# Seek a port available for all possible listen_addresses values,
+		# so callers can harness this port for the widest range of purposes.
+		# The 0.0.0.0 test achieves that for MSYS, which automatically sets
+		# SO_EXCLUSIVEADDRUSE.  Testing 0.0.0.0 is insufficient for Windows
+		# native Perl (https://stackoverflow.com/a/14388707), so we also
+		# have to test individual addresses.  Doing that for 127.0.0/24
+		# addresses other than 127.0.0.1 might fail with EADDRNOTAVAIL on
+		# non-Linux, non-Windows kernels.
+		#
+		# Thus, 0.0.0.0 and individual 127.0.0/24 addresses are tested
+		# only on Windows and only when TCP usage is requested.
+		if ($found == 1)
+		{
+			foreach my $addr (qw(127.0.0.1),
+               ($use_tcp && $TestLib::windows_os)
+               ? qw(127.0.0.2 127.0.0.3 0.0.0.0)
+               : ())
+			{
+				if (!can_bind($addr, $port))
+				{
+					$found = 0;
+					last;
+				}
+			}
+		}
+	}
+
+	print "# Found port $port\n";
+
+	# Update port for next time
+	$last_port_assigned = $port;
+
+	return $port;
 }
 
 # Internal routine to check whether a host:port is available to bind
@@ -1177,20 +1240,6 @@ sub can_bind
 	return $ret;
 }
 
-# Retain the errno on die() if set, else assume a generic errno of 1.
-# This will instruct the END handler on how to handle artifacts left
-# behind from tests.
-$SIG{__DIE__} = sub {
-	if ($!)
-	{
-		$died = $!;
-	}
-	else
-	{
-		$died = 1;
-	}
-};
-
 # Automatically shut down any still-running nodes when the test script exits.
 # Note that this just stops the postmasters (in the same order the nodes were
 # created in).  Any temporary directories are deleted, in an unspecified
@@ -1209,8 +1258,7 @@ END
 		next if defined $ENV{'PG_TEST_NOCLEAN'};
 
 		# clean basedir on clean test invocation
-		$node->clean_node
-		  if TestLib::all_tests_passing() && !defined $died && !$exit_code;
+		$node->clean_node if $exit_code == 0 && TestLib::all_tests_passing();
 	}
 
 	$? = $exit_code;
@@ -1282,7 +1330,6 @@ sub safe_psql
 		print "\n#### End standard error\n";
 	}
 
-	$stdout =~ s/\r//g if $TestLib::windows_os;
 	return $stdout;
 }
 
@@ -1344,6 +1391,12 @@ the B<timed_out> parameter is also given.
 If B<timeout> is set and this parameter is given, the scalar it references
 is set to true if the psql call times out.
 
+=item replication => B<value>
+
+If set, add B<replication=value> to the conninfo string.
+Passing the literal value C<database> results in a logical replication
+connection.
+
 =item extra_params => ['--single-transaction']
 
 If given, it must be an array reference containing additional parameters to B<psql>.
@@ -1372,10 +1425,17 @@ sub psql
 
 	my $stdout            = $params{stdout};
 	my $stderr            = $params{stderr};
+	my $replication       = $params{replication};
 	my $timeout           = undef;
 	my $timeout_exception = 'psql timed out';
-	my @psql_params =
-	  ('psql', '-XAtq', '-d', $self->connstr($dbname), '-f', '-');
+	my @psql_params       = (
+		'psql',
+		'-XAtq',
+		'-d',
+		$self->connstr($dbname)
+		  . (defined $replication ? " replication=$replication" : ""),
+		'-f',
+		'-');
 
 	# If the caller wants an array and hasn't passed stdout/stderr
 	# references, allocate temporary ones to capture them so we
@@ -1458,16 +1518,20 @@ sub psql
 		}
 	};
 
+	# Note: on Windows, IPC::Run seems to convert \r\n to \n in program output
+	# if we're using native Perl, but not if we're using MSys Perl.  So do it
+	# by hand in the latter case, here and elsewhere.
+
 	if (defined $$stdout)
 	{
+		$$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stdout;
-		$$stdout =~ s/\r//g if $TestLib::windows_os;
 	}
 
 	if (defined $$stderr)
 	{
+		$$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stderr;
-		$$stderr =~ s/\r//g if $TestLib::windows_os;
 	}
 
 	# See http://perldoc.perl.org/perlvar.html#%24CHILD_ERROR
@@ -1505,6 +1569,73 @@ sub psql
 
 =pod
 
+=item $node->interactive_psql($dbname, \$stdin, \$stdout, $timer, %params) => harness
+
+Invoke B<psql> on B<$dbname> and return an IPC::Run harness object,
+which the caller may use to send interactive input to B<psql>.
+The process's stdin is sourced from the $stdin scalar reference,
+and its stdout and stderr go to the $stdout scalar reference.
+ptys are used so that psql thinks it's being called interactively.
+
+The specified timer object is attached to the harness, as well.
+It's caller's responsibility to select the timeout length, and to
+restart the timer after each command if the timeout is per-command.
+
+psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
+disabled.  That may be overridden by passing extra psql parameters.
+
+Dies on failure to invoke psql, or if psql fails to connect.
+Errors occurring later are the caller's problem.
+
+Be sure to "finish" the harness when done with it.
+
+The only extra parameter currently accepted is
+
+=over
+
+=item extra_params => ['--single-transaction']
+
+If given, it must be an array reference containing additional parameters to B<psql>.
+
+=back
+
+This requires IO::Pty in addition to IPC::Run.
+
+=cut
+
+sub interactive_psql
+{
+	my ($self, $dbname, $stdin, $stdout, $timer, %params) = @_;
+
+	my @psql_params = ('psql', '-XAt', '-d', $self->connstr($dbname));
+
+	push @psql_params, @{ $params{extra_params} }
+	  if defined $params{extra_params};
+
+	# Ensure there is no data waiting to be sent:
+	$$stdin = "" if ref($stdin);
+	# IPC::Run would otherwise append to existing contents:
+	$$stdout = "" if ref($stdout);
+
+	my $harness = IPC::Run::start \@psql_params,
+	  '<pty<', $stdin, '>pty>', $stdout, $timer;
+
+	# Pump until we see psql's help banner.  This ensures that callers
+	# won't write anything to the pty before it's ready, avoiding an
+	# implementation issue in IPC::Run.  Also, it means that psql
+	# connection failures are caught here, relieving callers of
+	# the need to handle those.  (Right now, we have no particularly
+	# good handling for errors anyway, but that might be added later.)
+	pump $harness
+	  until $$stdout =~ /Type "help" for help/ || $timer->is_expired;
+
+	die "psql startup timed out" if $timer->is_expired;
+
+	return $harness;
+}
+
+=pod
+
 =item $node->poll_query_until($dbname, $query [, $expected ])
 
 Run B<$query> repeatedly, until it returns the B<$expected> result
@@ -1530,8 +1661,8 @@ sub poll_query_until
 	{
 		my $result = IPC::Run::run $cmd, '>', \$stdout, '2>', \$stderr;
 
+		$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stdout);
-		$stdout =~ s/\r//g if $TestLib::windows_os;
 
 		if ($stdout eq $expected)
 		{
@@ -1546,8 +1677,8 @@ sub poll_query_until
 
 	# The query result didn't change in 180 seconds. Give up. Print the
 	# output from the last attempt, hopefully that's useful for debugging.
+	$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 	chomp($stderr);
-	$stderr =~ s/\r//g if $TestLib::windows_os;
 	diag qq(poll_query_until timed out executing this query:
 $query
 expecting this output:
@@ -1652,9 +1783,6 @@ sub command_checks_all
 Run a command on the node, then verify that $expected_sql appears in the
 server log file.
 
-Reads the whole log file so be careful when working with large log outputs.
-The log file is truncated prior to running the command, however.
-
 =cut
 
 sub issues_sql_like
@@ -1666,10 +1794,11 @@ sub issues_sql_like
 	local $ENV{PGHOST} = $self->host;
 	local $ENV{PGPORT} = $self->port;
 
-	truncate $self->logfile, 0;
+	my $log_location = -s $self->logfile;
+
 	my $result = TestLib::run_log($cmd);
 	ok($result, "@$cmd exit code 0");
-	my $log = TestLib::slurp_file($self->logfile);
+	my $log = TestLib::slurp_file($self->logfile, $log_location);
 	like($log, $expected_sql, "$test_name: SQL found in server log");
 	return;
 }
@@ -1991,8 +2120,8 @@ sub pg_recvlogical_upto
 		}
 	};
 
-	$stdout =~ s/\r//g if $TestLib::windows_os;
-	$stderr =~ s/\r//g if $TestLib::windows_os;
+	$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
+	$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 
 	if (wantarray)
 	{

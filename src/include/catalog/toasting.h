@@ -7,7 +7,7 @@
  * object OIDs, else renumber_oids.pl might change them inappropriately.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/toasting.h
@@ -70,6 +70,7 @@ DECLARE_TOAST(pg_rewrite, 2838, 2839);
 DECLARE_TOAST(pg_seclabel, 3598, 3599);
 DECLARE_TOAST(pg_statistic, 2840, 2841);
 DECLARE_TOAST(pg_statistic_ext, 3439, 3440);
+DECLARE_TOAST(pg_statistic_ext_data, 3430, 3431);
 DECLARE_TOAST(pg_trigger, 2336, 2337);
 DECLARE_TOAST(pg_ts_dict, 4169, 4170);
 DECLARE_TOAST(pg_type, 4171, 4172);
@@ -85,9 +86,6 @@ DECLARE_TOAST(pg_database, 4177, 4178);
 DECLARE_TOAST(pg_db_role_setting, 2966, 2967);
 #define PgDbRoleSettingToastTable 2966
 #define PgDbRoleSettingToastIndex 2967
-DECLARE_TOAST(pg_pltemplate, 4179, 4180);
-#define PgPlTemplateToastTable 4179
-#define PgPlTemplateToastIndex 4180
 DECLARE_TOAST(pg_replication_origin, 4181, 4182);
 #define PgReplicationOriginToastTable 4181
 #define PgReplicationOriginToastIndex 4182

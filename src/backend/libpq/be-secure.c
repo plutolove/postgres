@@ -6,7 +6,7 @@
  *	  message integrity and endpoint authentication.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,11 +32,10 @@
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "tcop/tcopprot.h"
-#include "utils/memutils.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
-
+#include "tcop/tcopprot.h"
+#include "utils/memutils.h"
 
 char	   *ssl_library;
 char	   *ssl_cert_file;
@@ -161,7 +160,7 @@ retry:
 	else
 #endif
 #ifdef ENABLE_GSS
-	if (port->gss->enc)
+	if (port->gss && port->gss->enc)
 	{
 		n = be_gssapi_read(port, ptr, len);
 		waitfor = WL_SOCKET_READABLE;
@@ -274,7 +273,7 @@ retry:
 	else
 #endif
 #ifdef ENABLE_GSS
-	if (port->gss->enc)
+	if (port->gss && port->gss->enc)
 	{
 		n = be_gssapi_write(port, ptr, len);
 		waitfor = WL_SOCKET_WRITEABLE;

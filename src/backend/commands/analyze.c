@@ -3,7 +3,7 @@
  * analyze.c
  *	  the Postgres statistics generator
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,6 +16,7 @@
 
 #include <math.h>
 
+#include "access/detoast.h"
 #include "access/genam.h"
 #include "access/multixact.h"
 #include "access/relation.h"
@@ -24,7 +25,6 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/tupconvert.h"
-#include "access/tuptoaster.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -35,6 +35,7 @@
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_statistic_ext.h"
 #include "commands/dbcommands.h"
+#include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
@@ -251,6 +252,8 @@ analyze_rel(Oid relid, RangeVar *relation,
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 	MyPgXact->vacuumFlags |= PROC_IN_ANALYZE;
 	LWLockRelease(ProcArrayLock);
+	pgstat_progress_start_command(PROGRESS_COMMAND_ANALYZE,
+								  RelationGetRelid(onerel));
 
 	/*
 	 * Do the normal non-recursive ANALYZE.  We can skip this for partitioned
@@ -274,6 +277,8 @@ analyze_rel(Oid relid, RangeVar *relation,
 	 * expose us to concurrent-update failures in update_attstats.)
 	 */
 	relation_close(onerel, NoLock);
+
+	pgstat_progress_end_command();
 
 	/*
 	 * Reset my PGXACT flag.  Note: we need this here, and not in vacuum_rel,
@@ -307,7 +312,8 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	VacAttrStats **vacattrstats;
 	AnlIndexData *indexdata;
 	int			targrows,
-				numrows;
+				numrows,
+				minrows;
 	double		totalrows,
 				totaldeadrows;
 	HeapTuple  *rows;
@@ -455,7 +461,8 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 						if (indexpr_item == NULL)	/* shouldn't happen */
 							elog(ERROR, "too few entries in indexprs list");
 						indexkey = (Node *) lfirst(indexpr_item);
-						indexpr_item = lnext(indexpr_item);
+						indexpr_item = lnext(indexInfo->ii_Expressions,
+											 indexpr_item);
 						thisdata->vacattrstats[tcnt] =
 							examine_attribute(Irel[ind], i + 1, indexkey);
 						if (thisdata->vacattrstats[tcnt] != NULL)
@@ -491,9 +498,22 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	}
 
 	/*
+	 * Look at extended statistics objects too, as those may define custom
+	 * statistics target. So we may need to sample more rows and then build
+	 * the statistics with enough detail.
+	 */
+	minrows = ComputeExtStatisticsRows(onerel, attr_cnt, vacattrstats);
+
+	if (targrows < minrows)
+		targrows = minrows;
+
+	/*
 	 * Acquire the sample rows
 	 */
 	rows = (HeapTuple *) palloc(targrows * sizeof(HeapTuple));
+	pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
+								 inh ? PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS_INH :
+								 PROGRESS_ANALYZE_PHASE_ACQUIRE_SAMPLE_ROWS);
 	if (inh)
 		numrows = acquire_inherited_sample_rows(onerel, elevel,
 												rows, targrows,
@@ -513,6 +533,9 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	{
 		MemoryContext col_context,
 					old_context;
+
+		pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
+									 PROGRESS_ANALYZE_PHASE_COMPUTE_STATS);
 
 		col_context = AllocSetContextCreate(anl_context,
 											"Analyze Column",
@@ -573,14 +596,31 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 							thisdata->attr_cnt, thisdata->vacattrstats);
 		}
 
-		/* Build extended statistics (if there are any). */
-		BuildRelationExtStatistics(onerel, totalrows, numrows, rows, attr_cnt,
-								   vacattrstats);
+		/*
+		 * Build extended statistics (if there are any).
+		 *
+		 * For now we only build extended statistics on individual relations,
+		 * not for relations representing inheritance trees.
+		 */
+		if (!inh)
+			BuildRelationExtStatistics(onerel, totalrows, numrows, rows,
+									   attr_cnt, vacattrstats);
 	}
 
+	pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
+								 PROGRESS_ANALYZE_PHASE_FINALIZE_ANALYZE);
+
 	/*
-	 * Update pages/tuples stats in pg_class ... but not if we're doing
-	 * inherited stats.
+	 * Update pages/tuples stats in pg_class, and report ANALYZE to the stats
+	 * collector ... but not if we're doing inherited stats.
+	 *
+	 * We assume that VACUUM hasn't set pg_class.reltuples already, even
+	 * during a VACUUM ANALYZE.  Although VACUUM often updates pg_class,
+	 * exceptions exists.  A "VACUUM (ANALYZE, INDEX_CLEANUP OFF)" command
+	 * will never update pg_class entries for index relations.  It's also
+	 * possible that an individual index's pg_class entry won't be updated
+	 * during VACUUM if the index AM returns NULL from its amvacuumcleanup()
+	 * routine.
 	 */
 	if (!inh)
 	{
@@ -588,6 +628,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 
 		visibilitymap_count(onerel, &relallvisible, NULL);
 
+		/* Update pg_class for table relation */
 		vac_update_relstats(onerel,
 							relpages,
 							totalrows,
@@ -596,15 +637,8 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 							InvalidTransactionId,
 							InvalidMultiXactId,
 							in_outer_xact);
-	}
 
-	/*
-	 * Same for indexes. Vacuum always scans all indexes, so if we're part of
-	 * VACUUM ANALYZE, don't overwrite the accurate count already inserted by
-	 * VACUUM.
-	 */
-	if (!inh && !(params->options & VACOPT_VACUUM))
-	{
+		/* Same for indexes */
 		for (ind = 0; ind < nindexes; ind++)
 		{
 			AnlIndexData *thisdata = &indexdata[ind];
@@ -620,20 +654,28 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 								InvalidMultiXactId,
 								in_outer_xact);
 		}
+
+		/*
+		 * Now report ANALYZE to the stats collector.
+		 *
+		 * We deliberately don't report to the stats collector when doing
+		 * inherited stats, because the stats collector only tracks per-table
+		 * stats.
+		 *
+		 * Reset the changes_since_analyze counter only if we analyzed all
+		 * columns; otherwise, there is still work for auto-analyze to do.
+		 */
+		pgstat_report_analyze(onerel, totalrows, totaldeadrows,
+							  (va_cols == NIL));
 	}
 
 	/*
-	 * Report ANALYZE to the stats collector, too.  However, if doing
-	 * inherited stats we shouldn't report, because the stats collector only
-	 * tracks per-table stats.  Reset the changes_since_analyze counter only
-	 * if we analyzed all columns; otherwise, there is still work for
-	 * auto-analyze to do.
+	 * If this isn't part of VACUUM ANALYZE, let index AMs do cleanup.
+	 *
+	 * Note that most index AMs perform a no-op as a matter of policy for
+	 * amvacuumcleanup() when called in ANALYZE-only mode.  The only exception
+	 * among core index AMs is GIN/ginvacuumcleanup().
 	 */
-	if (!inh)
-		pgstat_report_analyze(onerel, totalrows, totaldeadrows,
-							  (va_cols == NIL));
-
-	/* If this isn't part of VACUUM ANALYZE, let index AMs do cleanup */
 	if (!(params->options & VACOPT_VACUUM))
 	{
 		for (ind = 0; ind < nindexes; ind++)
@@ -1016,6 +1058,8 @@ acquire_sample_rows(Relation onerel, int elevel,
 	ReservoirStateData rstate;
 	TupleTableSlot *slot;
 	TableScanDesc scan;
+	BlockNumber nblocks;
+	BlockNumber blksdone = 0;
 
 	Assert(targrows > 0);
 
@@ -1025,7 +1069,12 @@ acquire_sample_rows(Relation onerel, int elevel,
 	OldestXmin = GetOldestXmin(onerel, PROCARRAY_FLAGS_VACUUM);
 
 	/* Prepare for sampling block numbers */
-	BlockSampler_Init(&bs, totalblocks, targrows, random());
+	nblocks = BlockSampler_Init(&bs, totalblocks, targrows, random());
+
+	/* Report sampling block numbers */
+	pgstat_progress_update_param(PROGRESS_ANALYZE_BLOCKS_TOTAL,
+								 nblocks);
+
 	/* Prepare for sampling rows */
 	reservoir_init_selection_state(&rstate, targrows);
 
@@ -1048,13 +1097,13 @@ acquire_sample_rows(Relation onerel, int elevel,
 			 * The first targrows sample rows are simply copied into the
 			 * reservoir. Then we start replacing tuples in the sample until
 			 * we reach the end of the relation.  This algorithm is from Jeff
-			 * Vitter's paper (see full citation below). It works by
-			 * repeatedly computing the number of tuples to skip before
-			 * selecting a tuple, which replaces a randomly chosen element of
-			 * the reservoir (current set of tuples).  At all times the
-			 * reservoir is a true random sample of the tuples we've passed
-			 * over so far, so when we fall off the end of the relation we're
-			 * done.
+			 * Vitter's paper (see full citation in utils/misc/sampling.c). It
+			 * works by repeatedly computing the number of tuples to skip
+			 * before selecting a tuple, which replaces a randomly chosen
+			 * element of the reservoir (current set of tuples).  At all times
+			 * the reservoir is a true random sample of the tuples we've
+			 * passed over so far, so when we fall off the end of the relation
+			 * we're done.
 			 */
 			if (numrows < targrows)
 				rows[numrows++] = ExecCopySlotHeapTuple(slot);
@@ -1086,6 +1135,9 @@ acquire_sample_rows(Relation onerel, int elevel,
 
 			samplerows += 1;
 		}
+
+		pgstat_progress_update_param(PROGRESS_ANALYZE_BLOCKS_DONE,
+									 ++blksdone);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -1314,6 +1366,8 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	 * rels have radically different free-space percentages, but it's not
 	 * clear that it's worth working harder.)
 	 */
+	pgstat_progress_update_param(PROGRESS_ANALYZE_CHILD_TABLES_TOTAL,
+								 nrels);
 	numrows = 0;
 	*totalrows = 0;
 	*totaldeadrows = 0;
@@ -1322,6 +1376,9 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 		Relation	childrel = rels[i];
 		AcquireSampleRowsFunc acquirefunc = acquirefuncs[i];
 		double		childblocks = relblocks[i];
+
+		pgstat_progress_update_param(PROGRESS_ANALYZE_CURRENT_CHILD_TABLE_RELID,
+									 RelationGetRelid(childrel));
 
 		if (childblocks > 0)
 		{
@@ -1349,8 +1406,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 					TupleConversionMap *map;
 
 					map = convert_tuples_by_name(RelationGetDescr(childrel),
-												 RelationGetDescr(onerel),
-												 gettext_noop("could not convert row type"));
+												 RelationGetDescr(onerel));
 					if (map != NULL)
 					{
 						int			j;
@@ -1379,6 +1435,8 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 		 * pointers to their TOAST tables in the sampled rows.
 		 */
 		table_close(childrel, NoLock);
+		pgstat_progress_update_param(PROGRESS_ANALYZE_CHILD_TABLES_DONE,
+									 i + 1);
 	}
 
 	return numrows;
@@ -1479,7 +1537,7 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
 				/* XXX knows more than it should about type float4: */
 				arry = construct_array(numdatums, nnum,
 									   FLOAT4OID,
-									   sizeof(float4), FLOAT4PASSBYVAL, 'i');
+									   sizeof(float4), true, TYPALIGN_INT);
 				values[i++] = PointerGetDatum(arry);	/* stanumbersN */
 			}
 			else

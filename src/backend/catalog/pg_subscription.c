@@ -3,7 +3,7 @@
  * pg_subscription.c
  *		replication subscriptions
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,30 +14,24 @@
 
 #include "postgres.h"
 
-#include "miscadmin.h"
-
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/xact.h"
-
 #include "catalog/indexing.h"
-#include "catalog/pg_type.h"
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
-
+#include "catalog/pg_type.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
-
 #include "storage/lmgr.h"
-
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-
 
 static List *textarray_to_stringlist(ArrayType *textarray);
 
@@ -222,7 +216,7 @@ textarray_to_stringlist(ArrayType *textarray)
 	List	   *res = NIL;
 
 	deconstruct_array(textarray,
-					  TEXTOID, -1, false, 'i',
+					  TEXTOID, -1, false, TYPALIGN_INT,
 					  &elems, NULL, &nelems);
 
 	if (nelems == 0)
@@ -457,13 +451,20 @@ GetSubscriptionRelations(Oid subid)
 	{
 		Form_pg_subscription_rel subrel;
 		SubscriptionRelState *relstate;
+		Datum		d;
+		bool		isnull;
 
 		subrel = (Form_pg_subscription_rel) GETSTRUCT(tup);
 
 		relstate = (SubscriptionRelState *) palloc(sizeof(SubscriptionRelState));
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
-		relstate->lsn = subrel->srsublsn;
+		d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
+							Anum_pg_subscription_rel_srsublsn, &isnull);
+		if (isnull)
+			relstate->lsn = InvalidXLogRecPtr;
+		else
+			relstate->lsn = DatumGetLSN(d);
 
 		res = lappend(res, relstate);
 	}
@@ -509,13 +510,20 @@ GetSubscriptionNotReadyRelations(Oid subid)
 	{
 		Form_pg_subscription_rel subrel;
 		SubscriptionRelState *relstate;
+		Datum		d;
+		bool		isnull;
 
 		subrel = (Form_pg_subscription_rel) GETSTRUCT(tup);
 
 		relstate = (SubscriptionRelState *) palloc(sizeof(SubscriptionRelState));
 		relstate->relid = subrel->srrelid;
 		relstate->state = subrel->srsubstate;
-		relstate->lsn = subrel->srsublsn;
+		d = SysCacheGetAttr(SUBSCRIPTIONRELMAP, tup,
+							Anum_pg_subscription_rel_srsublsn, &isnull);
+		if (isnull)
+			relstate->lsn = InvalidXLogRecPtr;
+		else
+			relstate->lsn = DatumGetLSN(d);
 
 		res = lappend(res, relstate);
 	}

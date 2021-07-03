@@ -3,7 +3,7 @@
  * execPartition.c
  *	  Support routines for partitioning.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -28,9 +28,9 @@
 #include "partitioning/partdesc.h"
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/ruleutils.h"
 
@@ -50,6 +50,11 @@
  *		present in the 0th element of this array.  See comment for
  *		PartitionDispatchData->indexes for details on how this array is
  *		indexed.
+ *
+ * nonleaf_partitions
+ *		Array of 'max_dispatch' elements containing pointers to fake
+ *		ResultRelInfo objects for nonleaf partitions, useful for checking
+ *		the partition constraint.
  *
  * num_dispatch
  *		The current number of items stored in the 'partition_dispatch_info'
@@ -89,6 +94,7 @@ struct PartitionTupleRouting
 {
 	Relation	partition_root;
 	PartitionDispatch *partition_dispatch_info;
+	ResultRelInfo **nonleaf_partitions;
 	int			num_dispatch;
 	int			max_dispatch;
 	ResultRelInfo **partitions;
@@ -143,7 +149,7 @@ typedef struct PartitionDispatchData
 	List	   *keystate;		/* list of ExprState */
 	PartitionDesc partdesc;
 	TupleTableSlot *tupslot;
-	AttrNumber *tupmap;
+	AttrMap    *tupmap;
 	int			indexes[FLEXIBLE_ARRAY_MEMBER];
 }			PartitionDispatchData;
 
@@ -170,7 +176,8 @@ static void ExecInitRoutingInfo(ModifyTableState *mtstate,
 								int partidx);
 static PartitionDispatch ExecInitPartitionDispatchInfo(EState *estate,
 													   PartitionTupleRouting *proute,
-													   Oid partoid, PartitionDispatch parent_pd, int partidx);
+													   Oid partoid, PartitionDispatch parent_pd,
+													   int partidx, ResultRelInfo *rootResultRelInfo);
 static void FormPartitionKeyDatum(PartitionDispatch pd,
 								  TupleTableSlot *slot,
 								  EState *estate,
@@ -232,7 +239,7 @@ ExecSetupPartitionTupleRouting(EState *estate, ModifyTableState *mtstate,
 	 * partitioned table.
 	 */
 	ExecInitPartitionDispatchInfo(estate, proute, RelationGetRelid(rel),
-								  NULL, 0);
+								  NULL, 0, NULL);
 
 	/*
 	 * If performing an UPDATE with tuple routing, we can reuse partition
@@ -280,9 +287,11 @@ ExecFindPartition(ModifyTableState *mtstate,
 	PartitionDispatch dispatch;
 	PartitionDesc partdesc;
 	ExprContext *ecxt = GetPerTupleExprContext(estate);
-	TupleTableSlot *ecxt_scantuple_old = ecxt->ecxt_scantuple;
+	TupleTableSlot *ecxt_scantuple_saved = ecxt->ecxt_scantuple;
+	TupleTableSlot *rootslot = slot;
 	TupleTableSlot *myslot = NULL;
 	MemoryContext oldcxt;
+	ResultRelInfo *rri = NULL;
 
 	/* use per-tuple context here to avoid leaking memory */
 	oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
@@ -296,26 +305,14 @@ ExecFindPartition(ModifyTableState *mtstate,
 
 	/* start with the root partitioned table */
 	dispatch = pd[0];
-	while (true)
+	while (dispatch != NULL)
 	{
-		AttrNumber *map = dispatch->tupmap;
 		int			partidx = -1;
 
 		CHECK_FOR_INTERRUPTS();
 
 		rel = dispatch->reldesc;
 		partdesc = dispatch->partdesc;
-
-		/*
-		 * Convert the tuple to this parent's layout, if different from the
-		 * current relation.
-		 */
-		myslot = dispatch->tupslot;
-		if (myslot != NULL)
-		{
-			Assert(map != NULL);
-			slot = execute_attr_map_slot(map, slot, myslot);
-		}
 
 		/*
 		 * Extract partition key from tuple. Expression evaluation machinery
@@ -346,16 +343,15 @@ ExecFindPartition(ModifyTableState *mtstate,
 							RelationGetRelationName(rel)),
 					 val_desc ?
 					 errdetail("Partition key of the failing row contains %s.",
-							   val_desc) : 0));
+							   val_desc) : 0,
+					 errtable(rel)));
 		}
 
 		if (partdesc->is_leaf[partidx])
 		{
-			ResultRelInfo *rri;
-
 			/*
-			 * Look to see if we've already got a ResultRelInfo for this
-			 * partition.
+			 * We've reached the leaf -- hurray, we're done.  Look to see if
+			 * we've already got a ResultRelInfo for this partition.
 			 */
 			if (likely(dispatch->indexes[partidx] >= 0))
 			{
@@ -399,14 +395,10 @@ ExecFindPartition(ModifyTableState *mtstate,
 												dispatch,
 												rootResultRelInfo, partidx);
 			}
+			Assert(rri != NULL);
 
-			/* Release the tuple in the lowest parent's dedicated slot. */
-			if (slot == myslot)
-				ExecClearTuple(myslot);
-
-			MemoryContextSwitchTo(oldcxt);
-			ecxt->ecxt_scantuple = ecxt_scantuple_old;
-			return rri;
+			/* Signal to terminate the loop */
+			dispatch = NULL;
 		}
 		else
 		{
@@ -417,6 +409,8 @@ ExecFindPartition(ModifyTableState *mtstate,
 			{
 				/* Already built. */
 				Assert(dispatch->indexes[partidx] < proute->num_dispatch);
+
+				rri = proute->nonleaf_partitions[dispatch->indexes[partidx]];
 
 				/*
 				 * Move down to the next partition level and search again
@@ -433,16 +427,82 @@ ExecFindPartition(ModifyTableState *mtstate,
 				 * Create the new PartitionDispatch.  We pass the current one
 				 * in as the parent PartitionDispatch
 				 */
-				subdispatch = ExecInitPartitionDispatchInfo(mtstate->ps.state,
+				subdispatch = ExecInitPartitionDispatchInfo(estate,
 															proute,
 															partdesc->oids[partidx],
-															dispatch, partidx);
+															dispatch, partidx,
+															mtstate->rootResultRelInfo);
 				Assert(dispatch->indexes[partidx] >= 0 &&
 					   dispatch->indexes[partidx] < proute->num_dispatch);
+
+				rri = proute->nonleaf_partitions[dispatch->indexes[partidx]];
 				dispatch = subdispatch;
 			}
+
+			/*
+			 * Convert the tuple to the new parent's layout, if different from
+			 * the previous parent.
+			 */
+			if (dispatch->tupslot)
+			{
+				AttrMap    *map = dispatch->tupmap;
+				TupleTableSlot *tempslot = myslot;
+
+				myslot = dispatch->tupslot;
+				slot = execute_attr_map_slot(map, slot, myslot);
+
+				if (tempslot != NULL)
+					ExecClearTuple(tempslot);
+			}
+		}
+
+		/*
+		 * If this partition is the default one, we must check its partition
+		 * constraint now, which may have changed concurrently due to
+		 * partitions being added to the parent.
+		 *
+		 * (We do this here, and do not rely on ExecInsert doing it, because
+		 * we don't want to miss doing it for non-leaf partitions.)
+		 */
+		if (partidx == partdesc->boundinfo->default_index)
+		{
+			PartitionRoutingInfo *partrouteinfo = rri->ri_PartitionInfo;
+
+			/*
+			 * The tuple must match the partition's layout for the constraint
+			 * expression to be evaluated successfully.  If the partition is
+			 * sub-partitioned, that would already be the case due to the code
+			 * above, but for a leaf partition the tuple still matches the
+			 * parent's layout.
+			 *
+			 * Note that we have a map to convert from root to current
+			 * partition, but not from immediate parent to current partition.
+			 * So if we have to convert, do it from the root slot; if not, use
+			 * the root slot as-is.
+			 */
+			if (partrouteinfo)
+			{
+				TupleConversionMap *map = partrouteinfo->pi_RootToPartitionMap;
+
+				if (map)
+					slot = execute_attr_map_slot(map->attrMap, rootslot,
+												 partrouteinfo->pi_PartitionTupleSlot);
+				else
+					slot = rootslot;
+			}
+
+			ExecPartitionCheck(rri, slot, estate, true);
 		}
 	}
+
+	/* Release the tuple in the lowest parent's dedicated slot. */
+	if (myslot != NULL)
+		ExecClearTuple(myslot);
+	/* and restore ecxt's scantuple */
+	ecxt->ecxt_scantuple = ecxt_scantuple_saved;
+	MemoryContextSwitchTo(oldcxt);
+
+	return rri;
 }
 
 /*
@@ -486,7 +546,7 @@ ExecHashSubPlanResultRelsByOid(ModifyTableState *mtstate,
 		 * compatible with the root partitioned table's tuple descriptor. When
 		 * generating the per-subplan result rels, this was not set.
 		 */
-		rri->ri_PartitionRoot = proute->partition_root;
+		rri->ri_RootResultRelInfo = mtstate->rootResultRelInfo;
 	}
 }
 
@@ -506,12 +566,12 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 					  int partidx)
 {
 	ModifyTable *node = (ModifyTable *) mtstate->ps.plan;
-	Relation	rootrel = rootResultRelInfo->ri_RelationDesc,
-				partrel;
+	Relation	partrel;
+	int			firstVarno = mtstate->resultRelInfo[0].ri_RangeTableIndex;
 	Relation	firstResultRel = mtstate->resultRelInfo[0].ri_RelationDesc;
 	ResultRelInfo *leaf_part_rri;
 	MemoryContext oldcxt;
-	AttrNumber *part_attnos = NULL;
+	AttrMap    *part_attmap = NULL;
 	bool		found_whole_row;
 
 	oldcxt = MemoryContextSwitchTo(proute->memcxt);
@@ -521,8 +581,8 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	leaf_part_rri = makeNode(ResultRelInfo);
 	InitResultRelInfo(leaf_part_rri,
 					  partrel,
-					  node ? node->rootRelation : 1,
-					  rootrel,
+					  0,
+					  rootResultRelInfo,
 					  estate->es_instrument);
 
 	/*
@@ -556,7 +616,6 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		List	   *wcoList;
 		List	   *wcoExprs = NIL;
 		ListCell   *ll;
-		int			firstVarno = mtstate->resultRelInfo[0].ri_RangeTableIndex;
 
 		/*
 		 * In the case of INSERT on a partitioned table, there is only one
@@ -584,15 +643,13 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		/*
 		 * Convert Vars in it to contain this partition's attribute numbers.
 		 */
-		part_attnos =
-			convert_tuples_by_name_map(RelationGetDescr(partrel),
-									   RelationGetDescr(firstResultRel),
-									   gettext_noop("could not convert row type"));
+		part_attmap =
+			build_attrmap_by_name(RelationGetDescr(partrel),
+								  RelationGetDescr(firstResultRel));
 		wcoList = (List *)
 			map_variable_attnos((Node *) wcoList,
 								firstVarno, 0,
-								part_attnos,
-								RelationGetDescr(firstResultRel)->natts,
+								part_attmap,
 								RelationGetForm(partrel)->reltype,
 								&found_whole_row);
 		/* We ignore the value of found_whole_row. */
@@ -622,7 +679,6 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		TupleTableSlot *slot;
 		ExprContext *econtext;
 		List	   *returningList;
-		int			firstVarno = mtstate->resultRelInfo[0].ri_RangeTableIndex;
 
 		/* See the comment above for WCO lists. */
 		Assert((node->operation == CMD_INSERT &&
@@ -643,16 +699,14 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		/*
 		 * Convert Vars in it to contain this partition's attribute numbers.
 		 */
-		if (part_attnos == NULL)
-			part_attnos =
-				convert_tuples_by_name_map(RelationGetDescr(partrel),
-										   RelationGetDescr(firstResultRel),
-										   gettext_noop("could not convert row type"));
+		if (part_attmap == NULL)
+			part_attmap =
+				build_attrmap_by_name(RelationGetDescr(partrel),
+									  RelationGetDescr(firstResultRel));
 		returningList = (List *)
 			map_variable_attnos((Node *) returningList,
 								firstVarno, 0,
-								part_attnos,
-								RelationGetDescr(firstResultRel)->natts,
+								part_attmap,
 								RelationGetForm(partrel)->reltype,
 								&found_whole_row);
 		/* We ignore the value of found_whole_row. */
@@ -683,7 +737,6 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 */
 	if (node && node->onConflictAction != ONCONFLICT_NONE)
 	{
-		int			firstVarno = mtstate->resultRelInfo[0].ri_RangeTableIndex;
 		TupleDesc	partrelDesc = RelationGetDescr(partrel);
 		ExprContext *econtext = mtstate->ps.ps_ExprContext;
 		ListCell   *lc;
@@ -732,6 +785,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 		 */
 		if (node->onConflictAction == ONCONFLICT_UPDATE)
 		{
+			OnConflictSetState *onconfl = makeNode(OnConflictSetState);
 			TupleConversionMap *map;
 
 			map = leaf_part_rri->ri_PartitionInfo->pi_RootToPartitionMap;
@@ -739,14 +793,14 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 			Assert(node->onConflictSet != NIL);
 			Assert(rootResultRelInfo->ri_onConflict != NULL);
 
-			leaf_part_rri->ri_onConflict = makeNode(OnConflictSetState);
+			leaf_part_rri->ri_onConflict = onconfl;
 
 			/*
 			 * Need a separate existing slot for each partition, as the
 			 * partition could be of a different AM, even if the tuple
 			 * descriptors match.
 			 */
-			leaf_part_rri->ri_onConflict->oc_Existing =
+			onconfl->oc_Existing =
 				table_slot_create(leaf_part_rri->ri_RelationDesc,
 								  &mtstate->ps.state->es_tupleTable);
 
@@ -766,17 +820,16 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 				 * Projections and where clauses themselves don't store state
 				 * / are independent of the underlying storage.
 				 */
-				leaf_part_rri->ri_onConflict->oc_ProjSlot =
+				onconfl->oc_ProjSlot =
 					rootResultRelInfo->ri_onConflict->oc_ProjSlot;
-				leaf_part_rri->ri_onConflict->oc_ProjInfo =
+				onconfl->oc_ProjInfo =
 					rootResultRelInfo->ri_onConflict->oc_ProjInfo;
-				leaf_part_rri->ri_onConflict->oc_WhereClause =
+				onconfl->oc_WhereClause =
 					rootResultRelInfo->ri_onConflict->oc_WhereClause;
 			}
 			else
 			{
 				List	   *onconflset;
-				TupleDesc	tupDesc;
 				bool		found_whole_row;
 
 				/*
@@ -786,43 +839,39 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 				 * pseudo-relation (INNER_VAR), and second to handle the main
 				 * target relation (firstVarno).
 				 */
-				onconflset = (List *) copyObject((Node *) node->onConflictSet);
-				if (part_attnos == NULL)
-					part_attnos =
-						convert_tuples_by_name_map(RelationGetDescr(partrel),
-												   RelationGetDescr(firstResultRel),
-												   gettext_noop("could not convert row type"));
+				onconflset = copyObject(node->onConflictSet);
+				if (part_attmap == NULL)
+					part_attmap =
+						build_attrmap_by_name(RelationGetDescr(partrel),
+											  RelationGetDescr(firstResultRel));
 				onconflset = (List *)
 					map_variable_attnos((Node *) onconflset,
 										INNER_VAR, 0,
-										part_attnos,
-										RelationGetDescr(firstResultRel)->natts,
+										part_attmap,
 										RelationGetForm(partrel)->reltype,
 										&found_whole_row);
 				/* We ignore the value of found_whole_row. */
 				onconflset = (List *)
 					map_variable_attnos((Node *) onconflset,
 										firstVarno, 0,
-										part_attnos,
-										RelationGetDescr(firstResultRel)->natts,
+										part_attmap,
 										RelationGetForm(partrel)->reltype,
 										&found_whole_row);
 				/* We ignore the value of found_whole_row. */
 
-				/* Finally, adjust this tlist to match the partition. */
+				/* Finally, reorder the tlist to match the partition. */
 				onconflset = adjust_partition_tlist(onconflset, map);
 
 				/* create the tuple slot for the UPDATE SET projection */
-				tupDesc = ExecTypeFromTL(onconflset);
-				leaf_part_rri->ri_onConflict->oc_ProjSlot =
-					ExecInitExtraTupleSlot(mtstate->ps.state, tupDesc,
-										   &TTSOpsVirtual);
+				onconfl->oc_ProjSlot =
+					table_slot_create(partrel,
+									  &mtstate->ps.state->es_tupleTable);
 
 				/* build UPDATE SET projection state */
-				leaf_part_rri->ri_onConflict->oc_ProjInfo =
-					ExecBuildProjectionInfo(onconflset, econtext,
-											leaf_part_rri->ri_onConflict->oc_ProjSlot,
-											&mtstate->ps, partrelDesc);
+				onconfl->oc_ProjInfo =
+					ExecBuildProjectionInfoExt(onconflset, econtext,
+											   onconfl->oc_ProjSlot, false,
+											   &mtstate->ps, partrelDesc);
 
 				/*
 				 * If there is a WHERE clause, initialize state where it will
@@ -838,20 +887,18 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 					clause = (List *)
 						map_variable_attnos((Node *) clause,
 											INNER_VAR, 0,
-											part_attnos,
-											RelationGetDescr(firstResultRel)->natts,
+											part_attmap,
 											RelationGetForm(partrel)->reltype,
 											&found_whole_row);
 					/* We ignore the value of found_whole_row. */
 					clause = (List *)
 						map_variable_attnos((Node *) clause,
 											firstVarno, 0,
-											part_attnos,
-											RelationGetDescr(firstResultRel)->natts,
+											part_attmap,
 											RelationGetForm(partrel)->reltype,
 											&found_whole_row);
 					/* We ignore the value of found_whole_row. */
-					leaf_part_rri->ri_onConflict->oc_WhereClause =
+					onconfl->oc_WhereClause =
 						ExecInitQual((List *) clause, &mtstate->ps);
 				}
 			}
@@ -890,6 +937,7 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 					ResultRelInfo *partRelInfo,
 					int partidx)
 {
+	ResultRelInfo *rootRelInfo = partRelInfo->ri_RootResultRelInfo;
 	MemoryContext oldcxt;
 	PartitionRoutingInfo *partrouteinfo;
 	int			rri_index;
@@ -903,9 +951,8 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 	 * partition from the parent's type to the partition's.
 	 */
 	partrouteinfo->pi_RootToPartitionMap =
-		convert_tuples_by_name(RelationGetDescr(partRelInfo->ri_PartitionRoot),
-							   RelationGetDescr(partRelInfo->ri_RelationDesc),
-							   gettext_noop("could not convert row type"));
+		convert_tuples_by_name(RelationGetDescr(rootRelInfo->ri_RelationDesc),
+							   RelationGetDescr(partRelInfo->ri_RelationDesc));
 
 	/*
 	 * If a partition has a different rowtype than the root parent, initialize
@@ -937,8 +984,7 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 	{
 		partrouteinfo->pi_PartitionToRootMap =
 			convert_tuples_by_name(RelationGetDescr(partRelInfo->ri_RelationDesc),
-								   RelationGetDescr(partRelInfo->ri_PartitionRoot),
-								   gettext_noop("could not convert row type"));
+								   RelationGetDescr(rootRelInfo->ri_RelationDesc));
 	}
 	else
 		partrouteinfo->pi_PartitionToRootMap = NULL;
@@ -997,7 +1043,8 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 static PartitionDispatch
 ExecInitPartitionDispatchInfo(EState *estate,
 							  PartitionTupleRouting *proute, Oid partoid,
-							  PartitionDispatch parent_pd, int partidx)
+							  PartitionDispatch parent_pd, int partidx,
+							  ResultRelInfo *rootResultRelInfo)
 {
 	Relation	rel;
 	PartitionDesc partdesc;
@@ -1041,9 +1088,8 @@ ExecInitPartitionDispatchInfo(EState *estate,
 		 * tuple descriptor when computing its partition key for tuple
 		 * routing.
 		 */
-		pd->tupmap = convert_tuples_by_name_map_if_req(RelationGetDescr(parent_pd->reldesc),
-													   tupdesc,
-													   gettext_noop("could not convert row type"));
+		pd->tupmap = build_attrmap_by_name_if_req(RelationGetDescr(parent_pd->reldesc),
+												  tupdesc);
 		pd->tupslot = pd->tupmap ?
 			MakeSingleTupleTableSlot(tupdesc, &TTSOpsVirtual) : NULL;
 	}
@@ -1071,6 +1117,8 @@ ExecInitPartitionDispatchInfo(EState *estate,
 			proute->max_dispatch = 4;
 			proute->partition_dispatch_info = (PartitionDispatch *)
 				palloc(sizeof(PartitionDispatch) * proute->max_dispatch);
+			proute->nonleaf_partitions = (ResultRelInfo **)
+				palloc(sizeof(ResultRelInfo *) * proute->max_dispatch);
 		}
 		else
 		{
@@ -1078,9 +1126,27 @@ ExecInitPartitionDispatchInfo(EState *estate,
 			proute->partition_dispatch_info = (PartitionDispatch *)
 				repalloc(proute->partition_dispatch_info,
 						 sizeof(PartitionDispatch) * proute->max_dispatch);
+			proute->nonleaf_partitions = (ResultRelInfo **)
+				repalloc(proute->nonleaf_partitions,
+						 sizeof(ResultRelInfo *) * proute->max_dispatch);
 		}
 	}
 	proute->partition_dispatch_info[dispatchidx] = pd;
+
+	/*
+	 * If setting up a PartitionDispatch for a sub-partitioned table, we may
+	 * also need a minimally valid ResultRelInfo for checking the partition
+	 * constraint later; set that up now.
+	 */
+	if (parent_pd)
+	{
+		ResultRelInfo *rri = makeNode(ResultRelInfo);
+
+		InitResultRelInfo(rri, rel, 0, rootResultRelInfo, 0);
+		proute->nonleaf_partitions[dispatchidx] = rri;
+	}
+	else
+		proute->nonleaf_partitions[dispatchidx] = NULL;
 
 	/*
 	 * Finally, if setting up a PartitionDispatch for a sub-partitioned table,
@@ -1214,7 +1280,7 @@ FormPartitionKeyDatum(PartitionDispatch pd,
 			datum = ExecEvalExprSwitchContext((ExprState *) lfirst(partexpr_item),
 											  GetPerTupleExprContext(estate),
 											  &isNull);
-			partexpr_item = lnext(partexpr_item);
+			partexpr_item = lnext(pd->keystate, partexpr_item);
 		}
 		values[i] = datum;
 		isnull[i] = isNull;
@@ -1246,16 +1312,14 @@ get_partition_for_tuple(PartitionDispatch pd, Datum *values, bool *isnull)
 	{
 		case PARTITION_STRATEGY_HASH:
 			{
-				int			greatest_modulus;
 				uint64		rowHash;
 
-				greatest_modulus = get_hash_partition_greatest_modulus(boundinfo);
 				rowHash = compute_partition_hash_value(key->partnatts,
 													   key->partsupfunc,
 													   key->partcollation,
 													   values, isnull);
 
-				part_index = boundinfo->indexes[rowHash % greatest_modulus];
+				part_index = boundinfo->indexes[rowHash % boundinfo->nindexes];
 			}
 			break;
 
@@ -1406,7 +1470,7 @@ ExecBuildSlotPartitionKeyDescription(Relation rel,
 		/* truncate if needed */
 		vallen = strlen(val);
 		if (vallen <= maxfieldlen)
-			appendStringInfoString(&buf, val);
+			appendBinaryStringInfo(&buf, val, vallen);
 		else
 		{
 			vallen = pg_mbcliplen(val, vallen, maxfieldlen);
@@ -1422,51 +1486,53 @@ ExecBuildSlotPartitionKeyDescription(Relation rel,
 
 /*
  * adjust_partition_tlist
- *		Adjust the targetlist entries for a given partition to account for
- *		attribute differences between parent and the partition
+ *		Re-order the targetlist entries for a given partition to account for
+ *		column position differences between the parent and the partition.
  *
- * The expressions have already been fixed, but here we fix the list to make
- * target resnos match the partition's attribute numbers.  This results in a
- * copy of the original target list in which the entries appear in resno
- * order, including both the existing entries (that may have their resno
- * changed in-place) and the newly added entries for columns that don't exist
- * in the parent.
+ * The expressions have already been fixed, but we must now re-order the
+ * entries in case the partition has different column order, and possibly
+ * add or remove dummy entries for dropped columns.
  *
- * Scribbles on the input tlist, so callers must make sure to make a copy
- * before passing it to us.
+ * Although a new List is returned, this feels free to scribble on resno
+ * fields of the given tlist, so that should be a working copy.
  */
 static List *
 adjust_partition_tlist(List *tlist, TupleConversionMap *map)
 {
 	List	   *new_tlist = NIL;
 	TupleDesc	tupdesc = map->outdesc;
-	AttrNumber *attrMap = map->attrMap;
+	AttrMap    *attrMap = map->attrMap;
 	AttrNumber	attrno;
+	ListCell   *lc;
 
+	Assert(tupdesc->natts == attrMap->maplen);
 	for (attrno = 1; attrno <= tupdesc->natts; attrno++)
 	{
 		Form_pg_attribute att_tup = TupleDescAttr(tupdesc, attrno - 1);
+		AttrNumber	parentattrno = attrMap->attnums[attrno - 1];
 		TargetEntry *tle;
 
-		if (attrMap[attrno - 1] != InvalidAttrNumber)
+		if (parentattrno != InvalidAttrNumber)
 		{
-			Assert(!att_tup->attisdropped);
-
 			/*
 			 * Use the corresponding entry from the parent's tlist, adjusting
-			 * the resno the match the partition's attno.
+			 * the resno to match the partition's attno.
 			 */
-			tle = (TargetEntry *) list_nth(tlist, attrMap[attrno - 1] - 1);
+			Assert(!att_tup->attisdropped);
+			tle = (TargetEntry *) list_nth(tlist, parentattrno - 1);
+			Assert(!tle->resjunk);
+			Assert(tle->resno == parentattrno);
 			tle->resno = attrno;
 		}
 		else
 		{
-			Const	   *expr;
-
 			/*
 			 * For a dropped attribute in the partition, generate a dummy
-			 * entry with resno matching the partition's attno.
+			 * entry with resno matching the partition's attno.  This should
+			 * match what expand_targetlist() does.
 			 */
+			Const	   *expr;
+
 			Assert(att_tup->attisdropped);
 			expr = makeConst(INT4OID,
 							 -1,
@@ -1482,6 +1548,18 @@ adjust_partition_tlist(List *tlist, TupleConversionMap *map)
 		}
 
 		new_tlist = lappend(new_tlist, tle);
+	}
+
+	/* Finally, attach any resjunk entries to the end of the new tlist */
+	foreach(lc, tlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+		if (tle->resjunk)
+		{
+			tle->resno = list_length(new_tlist) + 1;
+			new_tlist = lappend(new_tlist, tle);
+		}
 	}
 
 	return new_tlist;
@@ -1677,26 +1755,51 @@ ExecCreatePartitionPruneState(PlanState *planstate,
 				 * present in the one used to construct subplan_map and
 				 * subpart_map.  So we must construct new and longer arrays
 				 * where the partitions that were originally present map to
-				 * the same place, and any added indexes map to -1, as if the
-				 * new partitions had been pruned.
+				 * the same sub-structures, and any added partitions map to
+				 * -1, as if the new partitions had been pruned.
+				 *
+				 * Note: pinfo->relid_map[] may contain InvalidOid entries for
+				 * partitions pruned by the planner.  We cannot tell exactly
+				 * which of the partdesc entries these correspond to, but we
+				 * don't have to; just skip over them.  The non-pruned
+				 * relid_map entries, however, had better be a subset of the
+				 * partdesc entries and in the same order.
 				 */
 				pprune->subpart_map = palloc(sizeof(int) * partdesc->nparts);
-				for (pp_idx = 0; pp_idx < partdesc->nparts; ++pp_idx)
+				for (pp_idx = 0; pp_idx < partdesc->nparts; pp_idx++)
 				{
-					if (pinfo->relid_map[pd_idx] != partdesc->oids[pp_idx])
+					/* Skip any InvalidOid relid_map entries */
+					while (pd_idx < pinfo->nparts &&
+						   !OidIsValid(pinfo->relid_map[pd_idx]))
+						pd_idx++;
+
+					if (pd_idx < pinfo->nparts &&
+						pinfo->relid_map[pd_idx] == partdesc->oids[pp_idx])
 					{
-						pprune->subplan_map[pp_idx] = -1;
-						pprune->subpart_map[pp_idx] = -1;
-					}
-					else
-					{
+						/* match... */
 						pprune->subplan_map[pp_idx] =
 							pinfo->subplan_map[pd_idx];
 						pprune->subpart_map[pp_idx] =
-							pinfo->subpart_map[pd_idx++];
+							pinfo->subpart_map[pd_idx];
+						pd_idx++;
+					}
+					else
+					{
+						/* this partdesc entry is not in the plan */
+						pprune->subplan_map[pp_idx] = -1;
+						pprune->subpart_map[pp_idx] = -1;
 					}
 				}
-				Assert(pd_idx == pinfo->nparts);
+
+				/*
+				 * It might seem that we need to skip any trailing InvalidOid
+				 * entries in pinfo->relid_map before checking that we scanned
+				 * all of the relid_map.  But we will have skipped them above,
+				 * because they must correspond to some partdesc->oids
+				 * entries; we just couldn't tell which.
+				 */
+				if (pd_idx != pinfo->nparts)
+					elog(ERROR, "could not match partition child tables to plan elements");
 			}
 
 			/* present_parts is also subject to later modification */

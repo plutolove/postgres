@@ -4,7 +4,7 @@
  *	  Low level infrastructure related to expression evaluation
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/execExpr.h
@@ -31,6 +31,20 @@ struct SubscriptingRefState;
 typedef void (*ExecEvalSubroutine) (ExprState *state,
 									struct ExprEvalStep *op,
 									ExprContext *econtext);
+
+/* ExprEvalSteps that cache a composite type's tupdesc need one of these */
+/* (it fits in-line in some step types, otherwise allocate out-of-line) */
+typedef struct ExprEvalRowtypeCache
+{
+	/*
+	 * cacheptr points to composite type's TypeCacheEntry if tupdesc_id is not
+	 * 0; or for an anonymous RECORD type, it points directly at the cached
+	 * tupdesc for the type, and tupdesc_id is 0.  (We'd use separate fields
+	 * if space were not at a premium.)  Initial state is cacheptr == NULL.
+	 */
+	void	   *cacheptr;
+	uint64		tupdesc_id;		/* last-seen tupdesc identifier, or 0 */
+} ExprEvalRowtypeCache;
 
 /*
  * Discriminator for ExprEvalSteps.
@@ -225,10 +239,13 @@ typedef enum ExprEvalOp
 	EEOP_AGG_DESERIALIZE,
 	EEOP_AGG_STRICT_INPUT_CHECK_ARGS,
 	EEOP_AGG_STRICT_INPUT_CHECK_NULLS,
-	EEOP_AGG_INIT_TRANS,
-	EEOP_AGG_STRICT_TRANS_CHECK,
+	EEOP_AGG_PLAIN_PERGROUP_NULLCHECK,
+	EEOP_AGG_PLAIN_TRANS_INIT_STRICT_BYVAL,
+	EEOP_AGG_PLAIN_TRANS_STRICT_BYVAL,
 	EEOP_AGG_PLAIN_TRANS_BYVAL,
-	EEOP_AGG_PLAIN_TRANS,
+	EEOP_AGG_PLAIN_TRANS_INIT_STRICT_BYREF,
+	EEOP_AGG_PLAIN_TRANS_STRICT_BYREF,
+	EEOP_AGG_PLAIN_TRANS_BYREF,
 	EEOP_AGG_ORDERED_TRANS_DATUM,
 	EEOP_AGG_ORDERED_TRANS_TUPLE,
 
@@ -346,8 +363,8 @@ typedef struct ExprEvalStep
 		/* for EEOP_NULLTEST_ROWIS[NOT]NULL */
 		struct
 		{
-			/* cached tupdesc pointer - filled at runtime */
-			TupleDesc	argdesc;
+			/* cached descriptor for composite type - filled at runtime */
+			ExprEvalRowtypeCache rowcache;
 		}			nulltest_row;
 
 		/* for EEOP_PARAM_EXEC/EXTERN */
@@ -472,8 +489,8 @@ typedef struct ExprEvalStep
 		{
 			AttrNumber	fieldnum;	/* field number to extract */
 			Oid			resulttype; /* field's type */
-			/* cached tupdesc pointer - filled at runtime */
-			TupleDesc	argdesc;
+			/* cached descriptor for composite type - filled at runtime */
+			ExprEvalRowtypeCache rowcache;
 		}			fieldselect;
 
 		/* for EEOP_FIELDSTORE_DEFORM / FIELDSTORE_FORM */
@@ -482,9 +499,9 @@ typedef struct ExprEvalStep
 			/* original expression node */
 			FieldStore *fstore;
 
-			/* cached tupdesc pointer - filled at runtime */
-			/* note that a DEFORM and FORM pair share the same tupdesc */
-			TupleDesc  *argdesc;
+			/* cached descriptor for composite type - filled at runtime */
+			/* note that a DEFORM and FORM pair share the same cache */
+			ExprEvalRowtypeCache *rowcache;
 
 			/* workspace for column values */
 			Datum	   *values;
@@ -524,12 +541,12 @@ typedef struct ExprEvalStep
 		/* for EEOP_CONVERT_ROWTYPE */
 		struct
 		{
-			ConvertRowtypeExpr *convert;	/* original expression */
+			Oid			inputtype;	/* input composite type */
+			Oid			outputtype; /* output composite type */
 			/* these three fields are filled at runtime: */
-			TupleDesc	indesc; /* tupdesc for input type */
-			TupleDesc	outdesc;	/* tupdesc for output type */
+			ExprEvalRowtypeCache *incache;	/* cache for input type */
+			ExprEvalRowtypeCache *outcache; /* cache for output type */
 			TupleConversionMap *map;	/* column mapping */
-			bool		initialized;	/* initialized for current types? */
 		}			convert_rowtype;
 
 		/* for EEOP_SCALARARRAYOP */
@@ -569,14 +586,13 @@ typedef struct ExprEvalStep
 		/* for EEOP_GROUPING_FUNC */
 		struct
 		{
-			AggState   *parent; /* parent Agg */
 			List	   *clauses;	/* integer list of column numbers */
 		}			grouping_func;
 
 		/* for EEOP_WINDOW_FUNC */
 		struct
 		{
-			/* out-of-line state, modified by nodeWindowFunc.c */
+			/* out-of-line state, modified by nodeWindowAgg.c */
 			WindowFuncExprState *wfstate;
 		}			window_func;
 
@@ -597,7 +613,6 @@ typedef struct ExprEvalStep
 		/* for EEOP_AGG_*DESERIALIZE */
 		struct
 		{
-			AggState   *aggstate;
 			FunctionCallInfo fcinfo_data;
 			int			jumpnull;
 		}			agg_deserialize;
@@ -622,32 +637,17 @@ typedef struct ExprEvalStep
 			int			jumpnull;
 		}			agg_strict_input_check;
 
-		/* for EEOP_AGG_INIT_TRANS */
+		/* for EEOP_AGG_PLAIN_PERGROUP_NULLCHECK */
 		struct
 		{
-			AggState   *aggstate;
-			AggStatePerTrans pertrans;
-			ExprContext *aggcontext;
-			int			setno;
-			int			transno;
 			int			setoff;
 			int			jumpnull;
-		}			agg_init_trans;
+		}			agg_plain_pergroup_nullcheck;
 
-		/* for EEOP_AGG_STRICT_TRANS_CHECK */
+		/* for EEOP_AGG_PLAIN_TRANS_[INIT_][STRICT_]{BYVAL,BYREF} */
+		/* for EEOP_AGG_ORDERED_TRANS_{DATUM,TUPLE} */
 		struct
 		{
-			AggState   *aggstate;
-			int			setno;
-			int			transno;
-			int			setoff;
-			int			jumpnull;
-		}			agg_strict_trans_check;
-
-		/* for EEOP_AGG_{PLAIN,ORDERED}_TRANS* */
-		struct
-		{
-			AggState   *aggstate;
 			AggStatePerTrans pertrans;
 			ExprContext *aggcontext;
 			int			setno;
@@ -755,7 +755,8 @@ extern void ExecEvalWholeRowVar(ExprState *state, ExprEvalStep *op,
 extern void ExecEvalSysVar(ExprState *state, ExprEvalStep *op,
 						   ExprContext *econtext, TupleTableSlot *slot);
 
-extern void ExecAggInitGroup(AggState *aggstate, AggStatePerTrans pertrans, AggStatePerGroup pergroup);
+extern void ExecAggInitGroup(AggState *aggstate, AggStatePerTrans pertrans, AggStatePerGroup pergroup,
+							 ExprContext *aggcontext);
 extern Datum ExecAggTransReparent(AggState *aggstate, AggStatePerTrans pertrans,
 								  Datum newValue, bool newValueIsNull,
 								  Datum oldValue, bool oldValueIsNull);

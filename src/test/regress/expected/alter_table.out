@@ -457,10 +457,10 @@ ALTER TABLE attmp3 validate constraint attmpconstr;
 ALTER TABLE attmp3 validate constraint attmpconstr;
 -- Try a non-verified CHECK constraint
 ALTER TABLE attmp3 ADD CONSTRAINT b_greater_than_ten CHECK (b > 10); -- fail
-ERROR:  check constraint "b_greater_than_ten" is violated by some row
+ERROR:  check constraint "b_greater_than_ten" of relation "attmp3" is violated by some row
 ALTER TABLE attmp3 ADD CONSTRAINT b_greater_than_ten CHECK (b > 10) NOT VALID; -- succeeds
 ALTER TABLE attmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- fails
-ERROR:  check constraint "b_greater_than_ten" is violated by some row
+ERROR:  check constraint "b_greater_than_ten" of relation "attmp3" is violated by some row
 DELETE FROM attmp3 WHERE NOT b > 10;
 ALTER TABLE attmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- succeeds
 ALTER TABLE attmp3 VALIDATE CONSTRAINT b_greater_than_ten; -- succeeds
@@ -476,7 +476,7 @@ CREATE TABLE attmp7 () INHERITS (attmp3);
 INSERT INTO attmp6 VALUES (6, 30), (7, 16);
 ALTER TABLE attmp3 ADD CONSTRAINT b_le_20 CHECK (b <= 20) NOT VALID;
 ALTER TABLE attmp3 VALIDATE CONSTRAINT b_le_20;	-- fails
-ERROR:  check constraint "b_le_20" is violated by some row
+ERROR:  check constraint "b_le_20" of relation "attmp6" is violated by some row
 DELETE FROM attmp6 WHERE b > 20;
 ALTER TABLE attmp3 VALIDATE CONSTRAINT b_le_20;	-- succeeds
 -- An already validated constraint must not be revalidated
@@ -487,8 +487,8 @@ NOTICE:  boo: 18
 ALTER TABLE attmp3 ADD CONSTRAINT IDENTITY check (b = boo(b)) NOT VALID;
 NOTICE:  merging constraint "identity" with inherited definition
 ALTER TABLE attmp3 VALIDATE CONSTRAINT identity;
-NOTICE:  boo: 16
 NOTICE:  boo: 20
+NOTICE:  boo: 16
 -- A NO INHERIT constraint should not be looked for in children during VALIDATE CONSTRAINT
 create table parent_noinh_convalid (a int);
 create table child_noinh_convalid () inherits (parent_noinh_convalid);
@@ -497,7 +497,7 @@ insert into child_noinh_convalid values (1);
 alter table parent_noinh_convalid add constraint check_a_is_2 check (a = 2) no inherit not valid;
 -- fail, because of the row in parent
 alter table parent_noinh_convalid validate constraint check_a_is_2;
-ERROR:  check constraint "check_a_is_2" is violated by some row
+ERROR:  check constraint "check_a_is_2" of relation "parent_noinh_convalid" is violated by some row
 delete from only parent_noinh_convalid;
 -- ok (parent itself contains no violating rows)
 alter table parent_noinh_convalid validate constraint check_a_is_2;
@@ -540,11 +540,11 @@ explain (costs off) select * from nv_parent where d between '2011-08-01' and '20
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Append
-   ->  Seq Scan on nv_parent
+   ->  Seq Scan on nv_parent nv_parent_1
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
-   ->  Seq Scan on nv_child_2010
+   ->  Seq Scan on nv_child_2010 nv_parent_2
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
-   ->  Seq Scan on nv_child_2011
+   ->  Seq Scan on nv_child_2011 nv_parent_3
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
 (7 rows)
 
@@ -553,11 +553,11 @@ explain (costs off) select * from nv_parent where d between '2011-08-01'::date a
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Append
-   ->  Seq Scan on nv_parent
+   ->  Seq Scan on nv_parent nv_parent_1
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
-   ->  Seq Scan on nv_child_2010
+   ->  Seq Scan on nv_child_2010 nv_parent_2
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
-   ->  Seq Scan on nv_child_2011
+   ->  Seq Scan on nv_child_2011 nv_parent_3
          Filter: ((d >= '08-01-2011'::date) AND (d <= '08-31-2011'::date))
 (7 rows)
 
@@ -565,13 +565,13 @@ explain (costs off) select * from nv_parent where d between '2009-08-01'::date a
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Append
-   ->  Seq Scan on nv_parent
+   ->  Seq Scan on nv_parent nv_parent_1
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
-   ->  Seq Scan on nv_child_2010
+   ->  Seq Scan on nv_child_2010 nv_parent_2
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
-   ->  Seq Scan on nv_child_2011
+   ->  Seq Scan on nv_child_2011 nv_parent_3
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
-   ->  Seq Scan on nv_child_2009
+   ->  Seq Scan on nv_child_2009 nv_parent_4
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
 (9 rows)
 
@@ -581,11 +581,11 @@ explain (costs off) select * from nv_parent where d between '2009-08-01'::date a
                                 QUERY PLAN                                 
 ---------------------------------------------------------------------------
  Append
-   ->  Seq Scan on nv_parent
+   ->  Seq Scan on nv_parent nv_parent_1
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
-   ->  Seq Scan on nv_child_2010
+   ->  Seq Scan on nv_child_2010 nv_parent_2
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
-   ->  Seq Scan on nv_child_2009
+   ->  Seq Scan on nv_child_2009 nv_parent_3
          Filter: ((d >= '08-01-2009'::date) AND (d <= '08-31-2009'::date))
 (7 rows)
 
@@ -754,7 +754,7 @@ create table atacc1 ( test int );
 insert into atacc1 (test) values (2);
 -- add a check constraint (fails)
 alter table atacc1 add constraint atacc_test1 check (test>3);
-ERROR:  check constraint "atacc_test1" is violated by some row
+ERROR:  check constraint "atacc_test1" of relation "atacc1" is violated by some row
 insert into atacc1 (test) values (4);
 drop table atacc1;
 -- let's do one where the check fails because the column doesn't exist
@@ -867,7 +867,7 @@ DETAIL:  Failing row contains (-3).
 insert into atacc1 (test) values (3);
 -- fail, violating row:
 alter table atacc2 add constraint foo check (test>0) no inherit;
-ERROR:  check constraint "foo" is violated by some row
+ERROR:  check constraint "foo" of relation "atacc2" is violated by some row
 drop table atacc2;
 drop table atacc1;
 -- test unique constraint adding
@@ -943,7 +943,7 @@ DETAIL:  Key (test)=(2) already exists.
 insert into atacc1 (test) values (4);
 -- inserting NULL should fail
 insert into atacc1 (test) values(NULL);
-ERROR:  null value in column "test" violates not-null constraint
+ERROR:  null value in column "test" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (4, null).
 -- try adding a second primary key (should fail)
 alter table atacc1 add constraint atacc_oid1 primary key(id);
@@ -970,7 +970,7 @@ create table atacc1 ( test int );
 insert into atacc1 (test) values (NULL);
 -- add a primary key (fails)
 alter table atacc1 add constraint atacc_test1 primary key (test);
-ERROR:  column "test" contains null values
+ERROR:  column "test" of relation "atacc1" contains null values
 insert into atacc1 (test) values (3);
 drop table atacc1;
 -- let's do one where the primary key constraint fails
@@ -986,7 +986,7 @@ create table atacc1 ( test int );
 insert into atacc1 (test) values (0);
 -- add a primary key column without a default (fails).
 alter table atacc1 add column test2 int primary key;
-ERROR:  column "test2" contains null values
+ERROR:  column "test2" of relation "atacc1" contains null values
 -- now add a primary key column with a default (succeeds).
 alter table atacc1 add column test2 int default 0 primary key;
 drop table atacc1;
@@ -996,6 +996,26 @@ insert into atacc1 values(1);
 alter table atacc1
   add column b float8 not null default random(),
   add primary key(a);
+drop table atacc1;
+-- additionally, we've seen issues with foreign key validation not being
+-- properly delayed until after a table rewrite.  Check that works ok.
+create table atacc1 (a int primary key);
+alter table atacc1 add constraint atacc1_fkey foreign key (a) references atacc1 (a) not valid;
+alter table atacc1 validate constraint atacc1_fkey, alter a type bigint;
+drop table atacc1;
+-- we've also seen issues with check constraints being validated at the wrong
+-- time when there's a pending table rewrite.
+create table atacc1 (a bigint, b int);
+insert into atacc1 values(1,1);
+alter table atacc1 add constraint atacc1_chk check(b = 1) not valid;
+alter table atacc1 validate constraint atacc1_chk, alter a type int;
+drop table atacc1;
+-- same as above, but ensure the constraint violation is detected
+create table atacc1 (a bigint, b int);
+insert into atacc1 values(1,2);
+alter table atacc1 add constraint atacc1_chk check(b = 1) not valid;
+alter table atacc1 validate constraint atacc1_chk, alter a type int;
+ERROR:  check constraint "atacc1_chk" of relation "atacc1" is violated by some row
 drop table atacc1;
 -- something a little more complicated
 create table atacc1 ( test int, test2 int);
@@ -1011,13 +1031,13 @@ insert into atacc1 (test,test2) values (4,4);
 ERROR:  duplicate key value violates unique constraint "atacc_test1"
 DETAIL:  Key (test, test2)=(4, 4) already exists.
 insert into atacc1 (test,test2) values (NULL,3);
-ERROR:  null value in column "test" violates not-null constraint
+ERROR:  null value in column "test" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (null, 3).
 insert into atacc1 (test,test2) values (3, NULL);
-ERROR:  null value in column "test2" violates not-null constraint
+ERROR:  null value in column "test2" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (3, null).
 insert into atacc1 (test,test2) values (NULL,NULL);
-ERROR:  null value in column "test" violates not-null constraint
+ERROR:  null value in column "test" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (null, null).
 -- should all succeed
 insert into atacc1 (test,test2) values (4,5);
@@ -1032,7 +1052,7 @@ insert into atacc1 (test2, test) values (2, 3);
 ERROR:  duplicate key value violates unique constraint "atacc1_pkey"
 DETAIL:  Key (test)=(3) already exists.
 insert into atacc1 (test2, test) values (1, NULL);
-ERROR:  null value in column "test" violates not-null constraint
+ERROR:  null value in column "test" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (null, 1).
 drop table atacc1;
 -- alter table / alter column [set/drop] not null tests
@@ -1056,7 +1076,7 @@ alter table atacc1 drop constraint "atacc1_pkey";
 alter table atacc1 alter column test drop not null;
 insert into atacc1 values (null);
 alter table atacc1 alter test set not null;
-ERROR:  column "test" contains null values
+ERROR:  column "test" of relation "atacc1" contains null values
 delete from atacc1;
 alter table atacc1 alter test set not null;
 -- try altering a non-existent column, should fail
@@ -1078,12 +1098,12 @@ insert into atacc1 values (null, 1);
 -- constraint not cover all values, should fail
 alter table atacc1 add constraint atacc1_constr_or check(test_a is not null or test_b < 10);
 alter table atacc1 alter test_a set not null;
-ERROR:  column "test_a" contains null values
+ERROR:  column "test_a" of relation "atacc1" contains null values
 alter table atacc1 drop constraint atacc1_constr_or;
 -- not valid constraint, should fail
 alter table atacc1 add constraint atacc1_constr_invalid check(test_a is not null) not valid;
 alter table atacc1 alter test_a set not null;
-ERROR:  column "test_a" contains null values
+ERROR:  column "test_a" of relation "atacc1" contains null values
 alter table atacc1 drop constraint atacc1_constr_invalid;
 -- with valid constraint
 update atacc1 set test_a = 1;
@@ -1095,10 +1115,10 @@ alter table atacc1 alter test_a drop not null;
 -- test multiple set not null at same time
 -- test_a checked by atacc1_constr_a_valid, test_b should fail by table scan
 alter table atacc1 alter test_a set not null, alter test_b set not null;
-ERROR:  column "test_b" contains null values
+ERROR:  column "test_b" of relation "atacc1" contains null values
 -- commands order has no importance
 alter table atacc1 alter test_b set not null, alter test_a set not null;
-ERROR:  column "test_b" contains null values
+ERROR:  column "test_b" of relation "atacc1" contains null values
 -- valid one by table scan, one by check constraints
 update atacc1 set test_b = 1;
 alter table atacc1 alter test_b set not null, alter test_a set not null;
@@ -1112,31 +1132,31 @@ create table parent (a int);
 create table child (b varchar(255)) inherits (parent);
 alter table parent alter a set not null;
 insert into parent values (NULL);
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "parent" violates not-null constraint
 DETAIL:  Failing row contains (null).
 insert into child (a, b) values (NULL, 'foo');
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "child" violates not-null constraint
 DETAIL:  Failing row contains (null, foo).
 alter table parent alter a drop not null;
 insert into parent values (NULL);
 insert into child (a, b) values (NULL, 'foo');
 alter table only parent alter a set not null;
-ERROR:  column "a" contains null values
+ERROR:  column "a" of relation "parent" contains null values
 alter table child alter a set not null;
-ERROR:  column "a" contains null values
+ERROR:  column "a" of relation "child" contains null values
 delete from parent;
 alter table only parent alter a set not null;
 insert into parent values (NULL);
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "parent" violates not-null constraint
 DETAIL:  Failing row contains (null).
 alter table child alter a set not null;
 insert into child (a, b) values (NULL, 'foo');
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "child" violates not-null constraint
 DETAIL:  Failing row contains (null, foo).
 delete from child;
 alter table child alter a set not null;
 insert into child (a, b) values (NULL, 'foo');
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "child" violates not-null constraint
 DETAIL:  Failing row contains (null, foo).
 drop table child;
 drop table parent;
@@ -1474,7 +1494,7 @@ insert into atacc1(value) values (100);
 ERROR:  new row for relation "atacc1" violates check constraint "atacc1_value_check"
 DETAIL:  Failing row contains (2, 100).
 insert into atacc1(id, value) values (null, 0);
-ERROR:  null value in column "id" violates not-null constraint
+ERROR:  null value in column "id" of relation "atacc1" violates not-null constraint
 DETAIL:  Failing row contains (null, 0).
 drop table atacc1;
 -- test inheritance
@@ -1900,12 +1920,19 @@ select * from anothertab;
 (3 rows)
 
 drop table anothertab;
--- Test alter table column type with constraint indexes (cf. bug #15835)
-create table anothertab(f1 int primary key, f2 int unique, f3 int, f4 int);
+-- Test index handling in alter table column type (cf. bugs #15835, #15865)
+create table anothertab(f1 int primary key, f2 int unique,
+                        f3 int, f4 int, f5 int);
 alter table anothertab
   add exclude using btree (f3 with =);
 alter table anothertab
   add exclude using btree (f4 with =) where (f4 is not null);
+alter table anothertab
+  add exclude using btree (f4 with =) where (f5 > 0);
+alter table anothertab
+  add unique(f1,f4);
+create index on anothertab(f2,f3);
+create unique index on anothertab(f4);
 \d anothertab
              Table "public.anothertab"
  Column |  Type   | Collation | Nullable | Default 
@@ -1914,17 +1941,23 @@ alter table anothertab
  f2     | integer |           |          | 
  f3     | integer |           |          | 
  f4     | integer |           |          | 
+ f5     | integer |           |          | 
 Indexes:
     "anothertab_pkey" PRIMARY KEY, btree (f1)
+    "anothertab_f1_f4_key" UNIQUE CONSTRAINT, btree (f1, f4)
+    "anothertab_f2_f3_idx" btree (f2, f3)
     "anothertab_f2_key" UNIQUE CONSTRAINT, btree (f2)
     "anothertab_f3_excl" EXCLUDE USING btree (f3 WITH =)
     "anothertab_f4_excl" EXCLUDE USING btree (f4 WITH =) WHERE (f4 IS NOT NULL)
+    "anothertab_f4_excl1" EXCLUDE USING btree (f4 WITH =) WHERE (f5 > 0)
+    "anothertab_f4_idx" UNIQUE, btree (f4)
 
 alter table anothertab alter column f1 type bigint;
 alter table anothertab
   alter column f2 type bigint,
   alter column f3 type bigint,
   alter column f4 type bigint;
+alter table anothertab alter column f5 type bigint;
 \d anothertab
             Table "public.anothertab"
  Column |  Type  | Collation | Nullable | Default 
@@ -1933,37 +1966,50 @@ alter table anothertab
  f2     | bigint |           |          | 
  f3     | bigint |           |          | 
  f4     | bigint |           |          | 
+ f5     | bigint |           |          | 
 Indexes:
     "anothertab_pkey" PRIMARY KEY, btree (f1)
+    "anothertab_f1_f4_key" UNIQUE CONSTRAINT, btree (f1, f4)
+    "anothertab_f2_f3_idx" btree (f2, f3)
     "anothertab_f2_key" UNIQUE CONSTRAINT, btree (f2)
     "anothertab_f3_excl" EXCLUDE USING btree (f3 WITH =)
     "anothertab_f4_excl" EXCLUDE USING btree (f4 WITH =) WHERE (f4 IS NOT NULL)
+    "anothertab_f4_excl1" EXCLUDE USING btree (f4 WITH =) WHERE (f5 > 0)
+    "anothertab_f4_idx" UNIQUE, btree (f4)
 
 drop table anothertab;
-create table another (f1 int, f2 text);
-insert into another values(1, 'one');
-insert into another values(2, 'two');
-insert into another values(3, 'three');
+-- test that USING expressions are parsed before column alter type / drop steps
+create table another (f1 int, f2 text, f3 text);
+insert into another values(1, 'one', 'uno');
+insert into another values(2, 'two', 'due');
+insert into another values(3, 'three', 'tre');
 select * from another;
- f1 |  f2   
-----+-------
-  1 | one
-  2 | two
-  3 | three
+ f1 |  f2   | f3  
+----+-------+-----
+  1 | one   | uno
+  2 | two   | due
+  3 | three | tre
 (3 rows)
 
 alter table another
-  alter f1 type text using f2 || ' more',
-  alter f2 type bigint using f1 * 10;
+  alter f1 type text using f2 || ' and ' || f3 || ' more',
+  alter f2 type bigint using f1 * 10,
+  drop column f3;
 select * from another;
-     f1     | f2 
-------------+----
- one more   | 10
- two more   | 20
- three more | 30
+         f1         | f2 
+--------------------+----
+ one and uno more   | 10
+ two and due more   | 20
+ three and tre more | 30
 (3 rows)
 
 drop table another;
+-- Create an index that skips WAL, then perform a SET DATA TYPE that skips
+-- rewriting the index.
+begin;
+create table skip_wal_skip_rewrite_index (c varchar(10) primary key);
+alter table skip_wal_skip_rewrite_index alter c type varchar(20);
+commit;
 -- table's row type
 create table tab1 (a int, b text);
 create table tab2 (x int, y tab1);
@@ -2145,6 +2191,26 @@ where oid = 'test_storage'::regclass;
 -----------------
  t
 (1 row)
+
+-- test that SET STORAGE propagates to index correctly
+create index test_storage_idx on test_storage (b, a);
+alter table test_storage alter column a set storage external;
+\d+ test_storage
+                                Table "public.test_storage"
+ Column |  Type   | Collation | Nullable | Default | Storage  | Stats target | Description 
+--------+---------+-----------+----------+---------+----------+--------------+-------------
+ a      | text    |           |          |         | external |              | 
+ b      | integer |           |          | 0       | plain    |              | 
+Indexes:
+    "test_storage_idx" btree (b, a)
+
+\d+ test_storage_idx
+                Index "public.test_storage_idx"
+ Column |  Type   | Key? | Definition | Storage  | Stats target 
+--------+---------+------+------------+----------+--------------
+ b      | integer | yes  | b          | plain    | 
+ a      | text    | yes  | a          | external | 
+btree, for table "public.test_storage"
 
 -- ALTER COLUMN TYPE with a check constraint and a child table (bug #13779)
 CREATE TABLE test_inh_check (a float check (a > 10.2), b float);
@@ -2418,6 +2484,94 @@ select * from at_view_2;
 drop view at_view_2;
 drop view at_view_1;
 drop table at_base_table;
+-- check adding a column not iself requiring a rewrite, together with
+-- a column requiring a default (bug #16038)
+-- ensure that rewrites aren't silently optimized away, removing the
+-- value of the test
+CREATE FUNCTION check_ddl_rewrite(p_tablename regclass, p_ddl text)
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_relfilenode oid;
+BEGIN
+    v_relfilenode := relfilenode FROM pg_class WHERE oid = p_tablename;
+
+    EXECUTE p_ddl;
+
+    RETURN v_relfilenode <> (SELECT relfilenode FROM pg_class WHERE oid = p_tablename);
+END;
+$$;
+CREATE TABLE rewrite_test(col text);
+INSERT INTO rewrite_test VALUES ('something');
+INSERT INTO rewrite_test VALUES (NULL);
+-- empty[12] don't need rewrite, but notempty[12]_rewrite will force one
+SELECT check_ddl_rewrite('rewrite_test', $$
+  ALTER TABLE rewrite_test
+      ADD COLUMN empty1 text,
+      ADD COLUMN notempty1_rewrite serial;
+$$);
+ check_ddl_rewrite 
+-------------------
+ t
+(1 row)
+
+SELECT check_ddl_rewrite('rewrite_test', $$
+    ALTER TABLE rewrite_test
+        ADD COLUMN notempty2_rewrite serial,
+        ADD COLUMN empty2 text;
+$$);
+ check_ddl_rewrite 
+-------------------
+ t
+(1 row)
+
+-- also check that fast defaults cause no problem, first without rewrite
+SELECT check_ddl_rewrite('rewrite_test', $$
+    ALTER TABLE rewrite_test
+        ADD COLUMN empty3 text,
+        ADD COLUMN notempty3_norewrite int default 42;
+$$);
+ check_ddl_rewrite 
+-------------------
+ f
+(1 row)
+
+SELECT check_ddl_rewrite('rewrite_test', $$
+    ALTER TABLE rewrite_test
+        ADD COLUMN notempty4_norewrite int default 42,
+        ADD COLUMN empty4 text;
+$$);
+ check_ddl_rewrite 
+-------------------
+ f
+(1 row)
+
+-- then with rewrite
+SELECT check_ddl_rewrite('rewrite_test', $$
+    ALTER TABLE rewrite_test
+        ADD COLUMN empty5 text,
+        ADD COLUMN notempty5_norewrite int default 42,
+        ADD COLUMN notempty5_rewrite serial;
+$$);
+ check_ddl_rewrite 
+-------------------
+ t
+(1 row)
+
+SELECT check_ddl_rewrite('rewrite_test', $$
+    ALTER TABLE rewrite_test
+        ADD COLUMN notempty6_rewrite serial,
+        ADD COLUMN empty6 text,
+        ADD COLUMN notempty6_norewrite int default 42;
+$$);
+ check_ddl_rewrite 
+-------------------
+ t
+(1 row)
+
+-- cleanup
+DROP FUNCTION check_ddl_rewrite(regclass, text);
+DROP TABLE rewrite_test;
 --
 -- lock levels
 --
@@ -2442,7 +2596,7 @@ from pg_locks l join pg_class c on l.relation = c.oid
 where virtualtransaction = (
         select virtualtransaction
         from pg_locks
-        where transactionid = txid_current()::integer)
+        where transactionid = pg_current_xact_id()::xid)
 and locktype = 'relation'
 and relnamespace != (select oid from pg_namespace where nspname = 'pg_catalog')
 and c.relname != 'my_locks'
@@ -2605,7 +2759,7 @@ from pg_locks l join pg_class c on l.relation = c.oid
 where virtualtransaction = (
         select virtualtransaction
         from pg_locks
-        where transactionid = txid_current()::integer)
+        where transactionid = pg_current_xact_id()::xid)
 and locktype = 'relation'
 and relnamespace != (select oid from pg_namespace where nspname = 'pg_catalog')
 and c.relname = 'my_locks'
@@ -2695,7 +2849,7 @@ as 'select $1.f1 is not distinct from $2.f1 and $1.f2 is not distinct from $2.f2
 create operator alter1.=(procedure = alter1.same, leftarg  = alter1.ctype, rightarg = alter1.ctype);
 create operator class alter1.ctype_hash_ops default for type alter1.ctype using hash as
   operator 1 alter1.=(alter1.ctype, alter1.ctype);
-create conversion alter1.ascii_to_utf8 for 'sql_ascii' to 'utf8' from ascii_to_utf8;
+create conversion alter1.latin1_to_utf8 for 'latin1' to 'utf8' from iso8859_1_to_utf8;
 create text search parser alter1.prs(start = prsd_start, gettoken = prsd_nexttoken, end = prsd_end, lextypes = prsd_lextype);
 create text search configuration alter1.cfg(parser = alter1.prs);
 create text search template alter1.tmpl(init = dsimple_init, lexize = dsimple_lexize);
@@ -2713,7 +2867,7 @@ alter operator alter1.=(alter1.ctype, alter1.ctype) set schema alter2;
 alter function alter1.same(alter1.ctype, alter1.ctype) set schema alter2;
 alter type alter1.ctype set schema alter1; -- no-op, same schema
 alter type alter1.ctype set schema alter2;
-alter conversion alter1.ascii_to_utf8 set schema alter2;
+alter conversion alter1.latin1_to_utf8 set schema alter2;
 alter text search parser alter1.prs set schema alter2;
 alter text search configuration alter1.cfg set schema alter2;
 alter text search template alter1.tmpl set schema alter2;
@@ -2757,7 +2911,7 @@ drop cascades to type alter2.ctype
 drop cascades to function alter2.same(alter2.ctype,alter2.ctype)
 drop cascades to operator alter2.=(alter2.ctype,alter2.ctype)
 drop cascades to operator family alter2.ctype_hash_ops for access method hash
-drop cascades to conversion alter2.ascii_to_utf8
+drop cascades to conversion alter2.latin1_to_utf8
 drop cascades to text search parser alter2.prs
 drop cascades to text search configuration alter2.cfg
 drop cascades to text search template alter2.tmpl
@@ -3203,10 +3357,6 @@ WHERE c.oid IS NOT NULL OR m.mapped_oid IS NOT NULL;
 
 -- Checks on creating and manipulation of user defined relations in
 -- pg_catalog.
---
--- XXX: It would be useful to add checks around trying to manipulate
--- catalog tables, but that might have ugly consequences when run
--- against an existing server with allow_system_table_mods = on.
 SHOW allow_system_table_mods;
  allow_system_table_mods 
 -------------------------
@@ -3367,7 +3517,7 @@ NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 
 ALTER TABLE test_add_column
 	ADD COLUMN c2 integer, -- fail because c2 already exists
-	ADD COLUMN c3 integer;
+	ADD COLUMN c3 integer primary key;
 ERROR:  column "c2" of relation "test_add_column" already exists
 \d test_add_column
           Table "public.test_add_column"
@@ -3378,7 +3528,7 @@ ERROR:  column "c2" of relation "test_add_column" already exists
 
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
-	ADD COLUMN c3 integer; -- fail because c3 already exists
+	ADD COLUMN c3 integer primary key;
 NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 \d test_add_column
           Table "public.test_add_column"
@@ -3386,11 +3536,13 @@ NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 --------+---------+-----------+----------+---------
  c1     | integer |           |          | 
  c2     | integer |           |          | 
- c3     | integer |           |          | 
+ c3     | integer |           | not null | 
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
 
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
-	ADD COLUMN IF NOT EXISTS c3 integer; -- skipping because c3 already exists
+	ADD COLUMN IF NOT EXISTS c3 integer primary key; -- skipping because c3 already exists
 NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 NOTICE:  column "c3" of relation "test_add_column" already exists, skipping
 \d test_add_column
@@ -3399,12 +3551,14 @@ NOTICE:  column "c3" of relation "test_add_column" already exists, skipping
 --------+---------+-----------+----------+---------
  c1     | integer |           |          | 
  c2     | integer |           |          | 
- c3     | integer |           |          | 
+ c3     | integer |           | not null | 
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
 
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
 	ADD COLUMN IF NOT EXISTS c3 integer, -- skipping because c3 already exists
-	ADD COLUMN c4 integer;
+	ADD COLUMN c4 integer REFERENCES test_add_column;
 NOTICE:  column "c2" of relation "test_add_column" already exists, skipping
 NOTICE:  column "c3" of relation "test_add_column" already exists, skipping
 \d test_add_column
@@ -3413,10 +3567,154 @@ NOTICE:  column "c3" of relation "test_add_column" already exists, skipping
 --------+---------+-----------+----------+---------
  c1     | integer |           |          | 
  c2     | integer |           |          | 
- c3     | integer |           |          | 
+ c3     | integer |           | not null | 
  c4     | integer |           |          | 
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
+Foreign-key constraints:
+    "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+Referenced by:
+    TABLE "test_add_column" CONSTRAINT "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+
+ALTER TABLE test_add_column
+	ADD COLUMN IF NOT EXISTS c4 integer REFERENCES test_add_column;
+NOTICE:  column "c4" of relation "test_add_column" already exists, skipping
+\d test_add_column
+          Table "public.test_add_column"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ c1     | integer |           |          | 
+ c2     | integer |           |          | 
+ c3     | integer |           | not null | 
+ c4     | integer |           |          | 
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
+Foreign-key constraints:
+    "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+Referenced by:
+    TABLE "test_add_column" CONSTRAINT "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+
+ALTER TABLE test_add_column
+	ADD COLUMN IF NOT EXISTS c5 SERIAL CHECK (c5 > 8);
+\d test_add_column
+                            Table "public.test_add_column"
+ Column |  Type   | Collation | Nullable |                   Default                   
+--------+---------+-----------+----------+---------------------------------------------
+ c1     | integer |           |          | 
+ c2     | integer |           |          | 
+ c3     | integer |           | not null | 
+ c4     | integer |           |          | 
+ c5     | integer |           | not null | nextval('test_add_column_c5_seq'::regclass)
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
+Check constraints:
+    "test_add_column_c5_check" CHECK (c5 > 8)
+Foreign-key constraints:
+    "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+Referenced by:
+    TABLE "test_add_column" CONSTRAINT "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+
+ALTER TABLE test_add_column
+	ADD COLUMN IF NOT EXISTS c5 SERIAL CHECK (c5 > 10);
+NOTICE:  column "c5" of relation "test_add_column" already exists, skipping
+\d test_add_column*
+                            Table "public.test_add_column"
+ Column |  Type   | Collation | Nullable |                   Default                   
+--------+---------+-----------+----------+---------------------------------------------
+ c1     | integer |           |          | 
+ c2     | integer |           |          | 
+ c3     | integer |           | not null | 
+ c4     | integer |           |          | 
+ c5     | integer |           | not null | nextval('test_add_column_c5_seq'::regclass)
+Indexes:
+    "test_add_column_pkey" PRIMARY KEY, btree (c3)
+Check constraints:
+    "test_add_column_c5_check" CHECK (c5 > 8)
+Foreign-key constraints:
+    "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+Referenced by:
+    TABLE "test_add_column" CONSTRAINT "test_add_column_c4_fkey" FOREIGN KEY (c4) REFERENCES test_add_column(c3)
+
+               Sequence "public.test_add_column_c5_seq"
+  Type   | Start | Minimum |  Maximum   | Increment | Cycles? | Cache 
+---------+-------+---------+------------+-----------+---------+-------
+ integer |     1 |       1 | 2147483647 |         1 | no      |     1
+Owned by: public.test_add_column.c5
+
+ Index "public.test_add_column_pkey"
+ Column |  Type   | Key? | Definition 
+--------+---------+------+------------
+ c3     | integer | yes  | c3
+primary key, btree, for table "public.test_add_column"
 
 DROP TABLE test_add_column;
+\d test_add_column*
+-- assorted cases with multiple ALTER TABLE steps
+CREATE TABLE ataddindex(f1 INT);
+INSERT INTO ataddindex VALUES (42), (43);
+CREATE UNIQUE INDEX ataddindexi0 ON ataddindex(f1);
+ALTER TABLE ataddindex
+  ADD PRIMARY KEY USING INDEX ataddindexi0,
+  ALTER f1 TYPE BIGINT;
+\d ataddindex
+            Table "public.ataddindex"
+ Column |  Type  | Collation | Nullable | Default 
+--------+--------+-----------+----------+---------
+ f1     | bigint |           | not null | 
+Indexes:
+    "ataddindexi0" PRIMARY KEY, btree (f1)
+
+DROP TABLE ataddindex;
+CREATE TABLE ataddindex(f1 VARCHAR(10));
+INSERT INTO ataddindex(f1) VALUES ('foo'), ('a');
+ALTER TABLE ataddindex
+  ALTER f1 SET DATA TYPE TEXT,
+  ADD EXCLUDE ((f1 LIKE 'a') WITH =);
+\d ataddindex
+           Table "public.ataddindex"
+ Column | Type | Collation | Nullable | Default 
+--------+------+-----------+----------+---------
+ f1     | text |           |          | 
+Indexes:
+    "ataddindex_expr_excl" EXCLUDE USING btree ((f1 ~~ 'a'::text) WITH =)
+
+DROP TABLE ataddindex;
+CREATE TABLE ataddindex(id int, ref_id int);
+ALTER TABLE ataddindex
+  ADD PRIMARY KEY (id),
+  ADD FOREIGN KEY (ref_id) REFERENCES ataddindex;
+\d ataddindex
+             Table "public.ataddindex"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ id     | integer |           | not null | 
+ ref_id | integer |           |          | 
+Indexes:
+    "ataddindex_pkey" PRIMARY KEY, btree (id)
+Foreign-key constraints:
+    "ataddindex_ref_id_fkey" FOREIGN KEY (ref_id) REFERENCES ataddindex(id)
+Referenced by:
+    TABLE "ataddindex" CONSTRAINT "ataddindex_ref_id_fkey" FOREIGN KEY (ref_id) REFERENCES ataddindex(id)
+
+DROP TABLE ataddindex;
+CREATE TABLE ataddindex(id int, ref_id int);
+ALTER TABLE ataddindex
+  ADD UNIQUE (id),
+  ADD FOREIGN KEY (ref_id) REFERENCES ataddindex (id);
+\d ataddindex
+             Table "public.ataddindex"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ id     | integer |           |          | 
+ ref_id | integer |           |          | 
+Indexes:
+    "ataddindex_id_key" UNIQUE CONSTRAINT, btree (id)
+Foreign-key constraints:
+    "ataddindex_ref_id_fkey" FOREIGN KEY (ref_id) REFERENCES ataddindex(id)
+Referenced by:
+    TABLE "ataddindex" CONSTRAINT "ataddindex_ref_id_fkey" FOREIGN KEY (ref_id) REFERENCES ataddindex(id)
+
+DROP TABLE ataddindex;
 -- unsupported constraint types for partitioned tables
 CREATE TABLE partitioned (
 	a int,
@@ -3428,13 +3726,13 @@ LINE 1: ALTER TABLE partitioned ADD EXCLUDE USING gist (a WITH &&);
                                     ^
 -- cannot drop column that is part of the partition key
 ALTER TABLE partitioned DROP COLUMN a;
-ERROR:  cannot drop column named in partition key
+ERROR:  cannot drop column "a" because it is part of the partition key of relation "partitioned"
 ALTER TABLE partitioned ALTER COLUMN a TYPE char(5);
-ERROR:  cannot alter type of column named in partition key
+ERROR:  cannot alter column "a" because it is part of the partition key of relation "partitioned"
 ALTER TABLE partitioned DROP COLUMN b;
-ERROR:  cannot drop column referenced in partition key expression
+ERROR:  cannot drop column "b" because it is part of the partition key of relation "partitioned"
 ALTER TABLE partitioned ALTER COLUMN b TYPE char(5);
-ERROR:  cannot alter type of column referenced in partition key expression
+ERROR:  cannot alter column "b" because it is part of the partition key of relation "partitioned"
 -- partitioned table cannot participate in regular inheritance
 CREATE TABLE nonpartitioned (
 	a int,
@@ -3588,7 +3886,7 @@ CREATE TABLE list_parted2 (
 CREATE TABLE part_2 (LIKE list_parted2);
 INSERT INTO part_2 VALUES (3, 'a');
 ALTER TABLE list_parted2 ATTACH PARTITION part_2 FOR VALUES IN (2);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "part_2" is violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM part_2;
 ALTER TABLE list_parted2 ATTACH PARTITION part_2 FOR VALUES IN (2);
@@ -3597,7 +3895,7 @@ CREATE TABLE list_parted2_def PARTITION OF list_parted2 DEFAULT;
 INSERT INTO list_parted2_def VALUES (11, 'z');
 CREATE TABLE part_3 (LIKE list_parted2);
 ALTER TABLE list_parted2 ATTACH PARTITION part_3 FOR VALUES IN (11);
-ERROR:  updated partition constraint for default partition would be violated by some row
+ERROR:  updated partition constraint for default partition "list_parted2_def" would be violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM list_parted2_def WHERE a = 11;
 ALTER TABLE list_parted2 ATTACH PARTITION part_3 FOR VALUES IN (11);
@@ -3615,11 +3913,9 @@ ALTER TABLE list_parted2 ATTACH PARTITION part_3_4 FOR VALUES IN (3, 4);
 ALTER TABLE list_parted2 DETACH PARTITION part_3_4;
 ALTER TABLE part_3_4 ALTER a SET NOT NULL;
 ALTER TABLE list_parted2 ATTACH PARTITION part_3_4 FOR VALUES IN (3, 4);
-INFO:  partition constraint for table "part_3_4" is implied by existing constraints
 -- check if default partition scan skipped
 ALTER TABLE list_parted2_def ADD CONSTRAINT check_a CHECK (a IN (5, 6));
 CREATE TABLE part_55_66 PARTITION OF list_parted2 FOR VALUES IN (55, 66);
-INFO:  updated partition constraint for default partition "list_parted2_def" is implied by existing constraints
 -- check validation when attaching range partitions
 CREATE TABLE range_parted (
 	a int,
@@ -3633,7 +3929,7 @@ CREATE TABLE part1 (
 INSERT INTO part1 VALUES (1, 10);
 -- Remember the TO bound is exclusive
 ALTER TABLE range_parted ATTACH PARTITION part1 FOR VALUES FROM (1, 1) TO (1, 10);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "part1" is violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM part1;
 ALTER TABLE range_parted ATTACH PARTITION part1 FOR VALUES FROM (1, 1) TO (1, 10);
@@ -3644,7 +3940,6 @@ CREATE TABLE part2 (
 	b int NOT NULL CHECK (b >= 10 AND b < 18)
 );
 ALTER TABLE range_parted ATTACH PARTITION part2 FOR VALUES FROM (1, 10) TO (1, 20);
-INFO:  partition constraint for table "part2" is implied by existing constraints
 -- Create default partition
 CREATE TABLE partr_def1 PARTITION OF range_parted DEFAULT;
 -- Only one default partition is allowed, hence, following should give error
@@ -3655,7 +3950,7 @@ ERROR:  partition "partr_def2" conflicts with existing default partition "partr_
 INSERT INTO partr_def1 VALUES (2, 10);
 CREATE TABLE part3 (LIKE range_parted);
 ALTER TABLE range_parted ATTACH partition part3 FOR VALUES FROM (2, 10) TO (2, 20);
-ERROR:  updated partition constraint for default partition would be violated by some row
+ERROR:  updated partition constraint for default partition "partr_def1" would be violated by some row
 -- Attaching partitions should be successful when there are no overlapping rows
 ALTER TABLE range_parted ATTACH partition part3 FOR VALUES FROM (3, 10) TO (3, 20);
 -- check that leaf partitions are scanned when attaching a partitioned
@@ -3667,18 +3962,16 @@ CREATE TABLE part_5 (
 CREATE TABLE part_5_a PARTITION OF part_5 FOR VALUES IN ('a');
 INSERT INTO part_5_a (a, b) VALUES (6, 'a');
 ALTER TABLE list_parted2 ATTACH PARTITION part_5 FOR VALUES IN (5);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "part_5_a" is violated by some row
 -- delete the faulting row and also add a constraint to skip the scan
 DELETE FROM part_5_a WHERE a NOT IN (3);
 ALTER TABLE part_5 ADD CONSTRAINT check_a CHECK (a IS NOT NULL AND a = 5);
 ALTER TABLE list_parted2 ATTACH PARTITION part_5 FOR VALUES IN (5);
-INFO:  partition constraint for table "part_5" is implied by existing constraints
 ALTER TABLE list_parted2 DETACH PARTITION part_5;
 ALTER TABLE part_5 DROP CONSTRAINT check_a;
 -- scan should again be skipped, even though NOT NULL is now a column property
 ALTER TABLE part_5 ADD CONSTRAINT check_a CHECK (a IN (5)), ALTER a SET NOT NULL;
 ALTER TABLE list_parted2 ATTACH PARTITION part_5 FOR VALUES IN (5);
-INFO:  partition constraint for table "part_5" is implied by existing constraints
 -- Check the case where attnos of the partitioning columns in the table being
 -- attached differs from the parent.  It should not affect the constraint-
 -- checking logic that allows to skip the scan.
@@ -3689,7 +3982,6 @@ CREATE TABLE part_6 (
 );
 ALTER TABLE part_6 DROP c;
 ALTER TABLE list_parted2 ATTACH PARTITION part_6 FOR VALUES IN (6);
-INFO:  partition constraint for table "part_6" is implied by existing constraints
 -- Similar to above, but the table being attached is a partitioned table
 -- whose partition has still different attnos for the root partitioning
 -- columns.
@@ -3707,10 +3999,7 @@ CREATE TABLE part_7_a_null (
 );
 ALTER TABLE part_7_a_null DROP c, DROP d, DROP e;
 ALTER TABLE part_7 ATTACH PARTITION part_7_a_null FOR VALUES IN ('a', null);
-INFO:  partition constraint for table "part_7_a_null" is implied by existing constraints
 ALTER TABLE list_parted2 ATTACH PARTITION part_7 FOR VALUES IN (7);
-INFO:  partition constraint for table "part_7" is implied by existing constraints
-INFO:  updated partition constraint for default partition "list_parted2_def" is implied by existing constraints
 -- Same example, but check this time that the constraint correctly detects
 -- violating rows
 ALTER TABLE list_parted2 DETACH PARTITION part_7;
@@ -3724,8 +4013,7 @@ SELECT tableoid::regclass, a, b FROM part_7 order by a;
 (2 rows)
 
 ALTER TABLE list_parted2 ATTACH PARTITION part_7 FOR VALUES IN (7);
-INFO:  updated partition constraint for default partition "list_parted2_def" is implied by existing constraints
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "part_7_a_null" is violated by some row
 -- check that leaf partitions of default partition are scanned when
 -- attaching a partitioned table.
 ALTER TABLE part_5 DROP CONSTRAINT check_a;
@@ -3734,7 +4022,7 @@ CREATE TABLE part5_def_p1 PARTITION OF part5_def FOR VALUES IN (5);
 INSERT INTO part5_def_p1 VALUES (5, 'y');
 CREATE TABLE part5_p1 (LIKE part_5);
 ALTER TABLE part_5 ATTACH PARTITION part5_p1 FOR VALUES IN ('y');
-ERROR:  updated partition constraint for default partition would be violated by some row
+ERROR:  updated partition constraint for default partition "part5_def_p1" would be violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM part5_def_p1 WHERE b = 'y';
 ALTER TABLE part_5 ATTACH PARTITION part5_p1 FOR VALUES IN ('y');
@@ -3761,16 +4049,14 @@ CREATE TABLE quuux1 (a int, b text);
 ALTER TABLE quuux ATTACH PARTITION quuux1 FOR VALUES IN (1); -- validate!
 CREATE TABLE quuux2 (a int, b text);
 ALTER TABLE quuux ATTACH PARTITION quuux2 FOR VALUES IN (2); -- skip validation
-INFO:  updated partition constraint for default partition "quuux_default1" is implied by existing constraints
 DROP TABLE quuux1, quuux2;
 -- should validate for quuux1, but not for quuux2
 CREATE TABLE quuux1 PARTITION OF quuux FOR VALUES IN (1);
 CREATE TABLE quuux2 PARTITION OF quuux FOR VALUES IN (2);
-INFO:  updated partition constraint for default partition "quuux_default1" is implied by existing constraints
 DROP TABLE quuux;
 -- check validation when attaching hash partitions
 -- Use hand-rolled hash functions and operator class to get predictable result
--- on different matchines. part_test_int4_ops is defined in insert.sql.
+-- on different machines. part_test_int4_ops is defined in insert.sql.
 -- check that the new partition won't overlap with an existing partition
 CREATE TABLE hash_parted (
 	a int,
@@ -3788,7 +4074,7 @@ DROP TABLE fail_part;
 CREATE TABLE hpart_2 (LIKE hash_parted);
 INSERT INTO hpart_2 VALUES (3, 0);
 ALTER TABLE hash_parted ATTACH PARTITION hpart_2 FOR VALUES WITH (MODULUS 4, REMAINDER 1);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "hpart_2" is violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM hpart_2;
 ALTER TABLE hash_parted ATTACH PARTITION hpart_2 FOR VALUES WITH (MODULUS 4, REMAINDER 1);
@@ -3801,7 +4087,7 @@ CREATE TABLE hpart_5 (
 CREATE TABLE hpart_5_a PARTITION OF hpart_5 FOR VALUES IN ('1', '2', '3');
 INSERT INTO hpart_5_a (a, b) VALUES (7, 1);
 ALTER TABLE hash_parted ATTACH PARTITION hpart_5 FOR VALUES WITH (MODULUS 4, REMAINDER 2);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "hpart_5_a" is violated by some row
 -- should be ok after deleting the bad row
 DELETE FROM hpart_5_a;
 ALTER TABLE hash_parted ATTACH PARTITION hpart_5 FOR VALUES WITH (MODULUS 4, REMAINDER 2);
@@ -3927,9 +4213,9 @@ ERROR:  cannot change inheritance of a partition
 -- partitioned tables; for example, part_5, which is list_parted2's
 -- partition, is partitioned on b;
 ALTER TABLE list_parted2 DROP COLUMN b;
-ERROR:  cannot drop column named in partition key
+ERROR:  cannot drop column "b" because it is part of the partition key of relation "part_5"
 ALTER TABLE list_parted2 ALTER COLUMN b TYPE text;
-ERROR:  cannot alter type of column named in partition key
+ERROR:  cannot alter column "b" because it is part of the partition key of relation "part_5"
 -- dropping non-partition key columns should be allowed on the parent table.
 ALTER TABLE list_parted DROP COLUMN b;
 SELECT * FROM list_parted;
@@ -3968,7 +4254,7 @@ alter table p1 attach partition p11 for values from (2) to (5);
 insert into p1 (a, b) values (2, 3);
 -- check that partition validation scan correctly detects violating rows
 alter table p attach partition p1 for values from (1, 2) to (1, 10);
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "p11" is violated by some row
 -- cleanup
 drop table p;
 drop table p1;
@@ -3990,17 +4276,23 @@ DROP USER regress_alter_table_user1;
 -- default partition
 create table defpart_attach_test (a int) partition by list (a);
 create table defpart_attach_test1 partition of defpart_attach_test for values in (1);
-create table defpart_attach_test_d (like defpart_attach_test);
+create table defpart_attach_test_d (b int, a int);
+alter table defpart_attach_test_d drop b;
 insert into defpart_attach_test_d values (1), (2);
 -- error because its constraint as the default partition would be violated
 -- by the row containing 1
 alter table defpart_attach_test attach partition defpart_attach_test_d default;
-ERROR:  partition constraint is violated by some row
+ERROR:  partition constraint of relation "defpart_attach_test_d" is violated by some row
 delete from defpart_attach_test_d where a = 1;
 alter table defpart_attach_test_d add check (a > 1);
 -- should be attached successfully and without needing to be scanned
 alter table defpart_attach_test attach partition defpart_attach_test_d default;
-INFO:  partition constraint for table "defpart_attach_test_d" is implied by existing constraints
+-- check that attaching a partition correctly reports any rows in the default
+-- partition that should not be there for the new partition to be attached
+-- successfully
+create table defpart_attach_test_2 (like defpart_attach_test_d);
+alter table defpart_attach_test attach partition defpart_attach_test_2 for values in (2);
+ERROR:  updated partition constraint for default partition "defpart_attach_test_d" would be violated by some row
 drop table defpart_attach_test;
 -- check combinations of temporary and permanent relations when attaching
 -- partitions.
@@ -4048,3 +4340,89 @@ alter table at_test_sql_partop attach partition at_test_sql_partop_1 for values 
 drop table at_test_sql_partop;
 drop operator class at_test_sql_partop using btree;
 drop function at_test_sql_partop;
+/* Test case for bug #16242 */
+-- We create a parent and child where the child has missing
+-- non-null attribute values, and arrange to pass them through
+-- tuple conversion from the child to the parent tupdesc
+create table bar1 (a integer, b integer not null default 1)
+  partition by range (a);
+create table bar2 (a integer);
+insert into bar2 values (1);
+alter table bar2 add column b integer not null default 1;
+-- (at this point bar2 contains tuple with natts=1)
+alter table bar1 attach partition bar2 default;
+-- this works:
+select * from bar1;
+ a | b 
+---+---
+ 1 | 1
+(1 row)
+
+-- this exercises tuple conversion:
+create function xtrig()
+  returns trigger language plpgsql
+as $$
+  declare
+    r record;
+  begin
+    for r in select * from old loop
+      raise info 'a=%, b=%', r.a, r.b;
+    end loop;
+    return NULL;
+  end;
+$$;
+create trigger xtrig
+  after update on bar1
+  referencing old table as old
+  for each statement execute procedure xtrig();
+update bar1 set a = a + 1;
+INFO:  a=1, b=1
+/* End test case for bug #16242 */
+-- Test that ALTER TABLE rewrite preserves a clustered index
+-- for normal indexes and indexes on constraints.
+create table alttype_cluster (a int);
+alter table alttype_cluster add primary key (a);
+create index alttype_cluster_ind on alttype_cluster (a);
+alter table alttype_cluster cluster on alttype_cluster_ind;
+-- Normal index remains clustered.
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+      indexrelid      | indisclustered 
+----------------------+----------------
+ alttype_cluster_ind  | t
+ alttype_cluster_pkey | f
+(2 rows)
+
+alter table alttype_cluster alter a type bigint;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+      indexrelid      | indisclustered 
+----------------------+----------------
+ alttype_cluster_ind  | t
+ alttype_cluster_pkey | f
+(2 rows)
+
+-- Constraint index remains clustered.
+alter table alttype_cluster cluster on alttype_cluster_pkey;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+      indexrelid      | indisclustered 
+----------------------+----------------
+ alttype_cluster_ind  | f
+ alttype_cluster_pkey | t
+(2 rows)
+
+alter table alttype_cluster alter a type int;
+select indexrelid::regclass, indisclustered from pg_index
+  where indrelid = 'alttype_cluster'::regclass
+  order by indexrelid::regclass::text;
+      indexrelid      | indisclustered 
+----------------------+----------------
+ alttype_cluster_ind  | f
+ alttype_cluster_pkey | t
+(2 rows)
+
+drop table alttype_cluster;

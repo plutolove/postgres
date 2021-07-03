@@ -3,7 +3,7 @@
  * pl_handler.c		- Handler for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,14 +20,12 @@
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "plpgsql.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
-
-#include "plpgsql.h"
-
 
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
@@ -264,20 +262,17 @@ plpgsql_call_handler(PG_FUNCTION_ARGS)
 			retval = (Datum) 0;
 		}
 		else
-			retval = plpgsql_exec_function(func, fcinfo, NULL, !nonatomic);
+			retval = plpgsql_exec_function(func, fcinfo,
+										   NULL, NULL,
+										   !nonatomic);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
-		/* Decrement use-count, restore cur_estate, and propagate error */
+		/* Decrement use-count, restore cur_estate */
 		func->use_count--;
 		func->cur_estate = save_cur_estate;
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	func->use_count--;
-
-	func->cur_estate = save_cur_estate;
 
 	/*
 	 * Disconnect from SPI manager
@@ -304,6 +299,7 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	PLpgSQL_function *func;
 	FmgrInfo	flinfo;
 	EState	   *simple_eval_estate;
+	ResourceOwner simple_eval_resowner;
 	Datum		retval;
 	int			rc;
 
@@ -330,22 +326,34 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	flinfo.fn_oid = InvalidOid;
 	flinfo.fn_mcxt = CurrentMemoryContext;
 
-	/* Create a private EState for simple-expression execution */
+	/*
+	 * Create a private EState and resowner for simple-expression execution.
+	 * Notice that these are NOT tied to transaction-level resources; they
+	 * must survive any COMMIT/ROLLBACK the DO block executes, since we will
+	 * unconditionally try to clean them up below.  (Hence, be wary of adding
+	 * anything that could fail between here and the PG_TRY block.)  See the
+	 * comments for shared_simple_eval_estate.
+	 */
 	simple_eval_estate = CreateExecutorState();
+	simple_eval_resowner =
+		ResourceOwnerCreate(NULL, "PL/pgSQL DO block simple expressions");
 
 	/* And run the function */
 	PG_TRY();
 	{
-		retval = plpgsql_exec_function(func, fake_fcinfo, simple_eval_estate, codeblock->atomic);
+		retval = plpgsql_exec_function(func, fake_fcinfo,
+									   simple_eval_estate,
+									   simple_eval_resowner,
+									   codeblock->atomic);
 	}
 	PG_CATCH();
 	{
 		/*
 		 * We need to clean up what would otherwise be long-lived resources
 		 * accumulated by the failed DO block, principally cached plans for
-		 * statements (which can be flushed with plpgsql_free_function_memory)
-		 * and execution trees for simple expressions, which are in the
-		 * private EState.
+		 * statements (which can be flushed by plpgsql_free_function_memory),
+		 * execution trees for simple expressions, which are in the private
+		 * EState, and cached-plan refcounts held by the private resowner.
 		 *
 		 * Before releasing the private EState, we must clean up any
 		 * simple_econtext_stack entries pointing into it, which we can do by
@@ -358,8 +366,10 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 						   GetCurrentSubTransactionId(),
 						   0, NULL);
 
-		/* Clean up the private EState */
+		/* Clean up the private EState and resowner */
 		FreeExecutorState(simple_eval_estate);
+		ResourceOwnerReleaseAllPlanCacheRefs(simple_eval_resowner);
+		ResourceOwnerDelete(simple_eval_resowner);
 
 		/* Function should now have no remaining use-counts ... */
 		func->use_count--;
@@ -373,8 +383,10 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	/* Clean up the private EState */
+	/* Clean up the private EState and resowner */
 	FreeExecutorState(simple_eval_estate);
+	ResourceOwnerReleaseAllPlanCacheRefs(simple_eval_resowner);
+	ResourceOwnerDelete(simple_eval_resowner);
 
 	/* Function should now have no remaining use-counts ... */
 	func->use_count--;
@@ -428,12 +440,10 @@ plpgsql_validator(PG_FUNCTION_ARGS)
 	functyptype = get_typtype(proc->prorettype);
 
 	/* Disallow pseudotype result */
-	/* except for TRIGGER, RECORD, VOID, or polymorphic */
+	/* except for TRIGGER, EVTTRIGGER, RECORD, VOID, or polymorphic */
 	if (functyptype == TYPTYPE_PSEUDO)
 	{
-		/* we assume OPAQUE with no arguments means a trigger */
-		if (proc->prorettype == TRIGGEROID ||
-			(proc->prorettype == OPAQUEOID && proc->pronargs == 0))
+		if (proc->prorettype == TRIGGEROID)
 			is_dml_trigger = true;
 		else if (proc->prorettype == EVTTRIGGEROID)
 			is_event_trigger = true;

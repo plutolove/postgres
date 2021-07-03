@@ -3,7 +3,7 @@
  * globals.c
  *	  global variable declarations
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,7 +32,7 @@ volatile sig_atomic_t QueryCancelPending = false;
 volatile sig_atomic_t ProcDiePending = false;
 volatile sig_atomic_t ClientConnectionLost = false;
 volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
-volatile sig_atomic_t ConfigReloadPending = false;
+volatile sig_atomic_t ProcSignalBarrierPending = false;
 volatile uint32 InterruptHoldoffCount = 0;
 volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;
@@ -119,6 +119,7 @@ int			IntervalStyle = INTSTYLE_POSTGRES;
 bool		enableFsync = true;
 bool		allowSystemTableMods = false;
 int			work_mem = 1024;
+double		hash_mem_multiplier = 1.0;
 int			maintenance_work_mem = 16384;
 int			max_parallel_maintenance_workers = 2;
 
@@ -140,9 +141,9 @@ int			VacuumCostPageDirty = 20;
 int			VacuumCostLimit = 200;
 double		VacuumCostDelay = 0;
 
-int			VacuumPageHit = 0;
-int			VacuumPageMiss = 0;
-int			VacuumPageDirty = 0;
+int64		VacuumPageHit = 0;
+int64		VacuumPageMiss = 0;
+int64		VacuumPageDirty = 0;
 
 int			VacuumCostBalance = 0;	/* working state for vacuum */
 bool		VacuumCostActive = false;

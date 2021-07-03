@@ -211,10 +211,11 @@ Complete list of usable sgml source files in this directory.
 <!ENTITY pgResetwal         SYSTEM "pg_resetwal.sgml">
 <!ENTITY pgRestore          SYSTEM "pg_restore.sgml">
 <!ENTITY pgRewind           SYSTEM "pg_rewind.sgml">
+<!ENTITY pgVerifyBackup     SYSTEM "pg_verifybackup.sgml">
 <!ENTITY pgtestfsync        SYSTEM "pgtestfsync.sgml">
 <!ENTITY pgtesttiming       SYSTEM "pgtesttiming.sgml">
 <!ENTITY pgupgrade          SYSTEM "pgupgrade.sgml">
-<!ENTITY pgwaldump         SYSTEM "pg_waldump.sgml">
+<!ENTITY pgwaldump          SYSTEM "pg_waldump.sgml">
 <!ENTITY postgres           SYSTEM "postgres-ref.sgml">
 <!ENTITY postmaster         SYSTEM "postmaster.sgml">
 <!ENTITY psqlRef            SYSTEM "psql-ref.sgml">

@@ -5,7 +5,7 @@
  *
  * This should be included _AFTER_ postgres.h and system include files
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1995, Regents of the University of California
  *
  * src/pl/plperl/plperl.h
@@ -64,7 +64,7 @@
  * warnings.  If PostgreSQL does not but Perl does, we need to undefine bool
  * after we include the Perl headers; see below.
  */
-#ifdef USE_STDBOOL
+#ifdef PG_USE_STDBOOL
 #define HAS_BOOL 1
 #endif
 
@@ -84,7 +84,7 @@
  */
 #ifdef PG_NEED_PERL_XSUB_H
 /*
- * On Windows, port_win32.h defines macros for a lot of these same functions.
+ * On Windows, win32_port.h defines macros for a lot of these same functions.
  * To avoid compiler warnings when XSUB.h redefines them, #undef our versions.
  */
 #ifdef WIN32
@@ -175,7 +175,7 @@
  * makes bool a macro, but our own replacement is a typedef, so the undef
  * makes ours visible again).
  */
-#ifndef USE_STDBOOL
+#ifndef PG_USE_STDBOOL
 #ifdef bool
 #undef bool
 #endif

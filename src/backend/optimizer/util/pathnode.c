@@ -3,7 +3,7 @@
  * pathnode.c
  *	  Routines to manipulate pathlists and create path nodes
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,8 +16,8 @@
 
 #include <math.h>
 
-#include "miscadmin.h"
 #include "foreign/fdwapi.h"
+#include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
@@ -35,7 +35,6 @@
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
 
-
 typedef enum
 {
 	COSTS_EQUAL,				/* path costs are fuzzily equal */
@@ -52,8 +51,8 @@ typedef enum
 #define STD_FUZZ_FACTOR 1.01
 
 static List *translate_sub_tlist(List *tlist, int relid);
-static int	append_total_cost_compare(const void *a, const void *b);
-static int	append_startup_cost_compare(const void *a, const void *b);
+static int	append_total_cost_compare(const ListCell *a, const ListCell *b);
+static int	append_startup_cost_compare(const ListCell *a, const ListCell *b);
 static List *reparameterize_pathlist_by_child(PlannerInfo *root,
 											  List *pathlist,
 											  RelOptInfo *child_rel);
@@ -423,11 +422,9 @@ void
 add_path(RelOptInfo *parent_rel, Path *new_path)
 {
 	bool		accept_new = true;	/* unless we find a superior old path */
-	ListCell   *insert_after = NULL;	/* where to insert new item */
+	int			insert_at = 0;	/* where to insert new item */
 	List	   *new_path_pathkeys;
 	ListCell   *p1;
-	ListCell   *p1_prev;
-	ListCell   *p1_next;
 
 	/*
 	 * This is a convenient place to check for query cancel --- no part of the
@@ -442,20 +439,14 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 	 * Loop to check proposed new path against old paths.  Note it is possible
 	 * for more than one old path to be tossed out because new_path dominates
 	 * it.
-	 *
-	 * We can't use foreach here because the loop body may delete the current
-	 * list cell.
 	 */
-	p1_prev = NULL;
-	for (p1 = list_head(parent_rel->pathlist); p1 != NULL; p1 = p1_next)
+	foreach(p1, parent_rel->pathlist)
 	{
 		Path	   *old_path = (Path *) lfirst(p1);
 		bool		remove_old = false; /* unless new proves superior */
 		PathCostComparison costcmp;
 		PathKeysComparison keyscmp;
 		BMS_Comparison outercmp;
-
-		p1_next = lnext(p1);
 
 		/*
 		 * Do a fuzzy cost comparison with standard fuzziness limit.
@@ -593,23 +584,20 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 		 */
 		if (remove_old)
 		{
-			parent_rel->pathlist = list_delete_cell(parent_rel->pathlist,
-													p1, p1_prev);
+			parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
+														  p1);
 
 			/*
 			 * Delete the data pointed-to by the deleted cell, if possible
 			 */
 			if (!IsA(old_path, IndexPath))
 				pfree(old_path);
-			/* p1_prev does not advance */
 		}
 		else
 		{
 			/* new belongs after this old path if it has cost >= old's */
 			if (new_path->total_cost >= old_path->total_cost)
-				insert_after = p1;
-			/* p1_prev advances */
-			p1_prev = p1;
+				insert_at = foreach_current_index(p1) + 1;
 		}
 
 		/*
@@ -624,10 +612,8 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
 	if (accept_new)
 	{
 		/* Accept the new path: insert it at proper place in pathlist */
-		if (insert_after)
-			lappend_cell(parent_rel->pathlist, insert_after, new_path);
-		else
-			parent_rel->pathlist = lcons(new_path, parent_rel->pathlist);
+		parent_rel->pathlist =
+			list_insert_nth(parent_rel->pathlist, insert_at, new_path);
 	}
 	else
 	{
@@ -763,10 +749,8 @@ void
 add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 {
 	bool		accept_new = true;	/* unless we find a superior old path */
-	ListCell   *insert_after = NULL;	/* where to insert new item */
+	int			insert_at = 0;	/* where to insert new item */
 	ListCell   *p1;
-	ListCell   *p1_prev;
-	ListCell   *p1_next;
 
 	/* Check for query cancel. */
 	CHECK_FOR_INTERRUPTS();
@@ -781,20 +765,16 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 	 * As in add_path, throw out any paths which are dominated by the new
 	 * path, but throw out the new path if some existing path dominates it.
 	 */
-	p1_prev = NULL;
-	for (p1 = list_head(parent_rel->partial_pathlist); p1 != NULL;
-		 p1 = p1_next)
+	foreach(p1, parent_rel->partial_pathlist)
 	{
 		Path	   *old_path = (Path *) lfirst(p1);
 		bool		remove_old = false; /* unless new proves superior */
 		PathKeysComparison keyscmp;
 
-		p1_next = lnext(p1);
-
 		/* Compare pathkeys. */
 		keyscmp = compare_pathkeys(new_path->pathkeys, old_path->pathkeys);
 
-		/* Unless pathkeys are incompable, keep just one of the two paths. */
+		/* Unless pathkeys are incompatible, keep just one of the two paths. */
 		if (keyscmp != PATHKEYS_DIFFERENT)
 		{
 			if (new_path->total_cost > old_path->total_cost * STD_FUZZ_FACTOR)
@@ -841,17 +821,14 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 		if (remove_old)
 		{
 			parent_rel->partial_pathlist =
-				list_delete_cell(parent_rel->partial_pathlist, p1, p1_prev);
+				foreach_delete_current(parent_rel->partial_pathlist, p1);
 			pfree(old_path);
-			/* p1_prev does not advance */
 		}
 		else
 		{
 			/* new belongs after this old path if it has cost >= old's */
 			if (new_path->total_cost >= old_path->total_cost)
-				insert_after = p1;
-			/* p1_prev advances */
-			p1_prev = p1;
+				insert_at = foreach_current_index(p1) + 1;
 		}
 
 		/*
@@ -866,11 +843,8 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 	if (accept_new)
 	{
 		/* Accept the new path: insert it at proper place */
-		if (insert_after)
-			lappend_cell(parent_rel->partial_pathlist, insert_after, new_path);
-		else
-			parent_rel->partial_pathlist =
-				lcons(new_path, parent_rel->partial_pathlist);
+		parent_rel->partial_pathlist =
+			list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
 	}
 	else
 	{
@@ -945,29 +919,6 @@ add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
 /*****************************************************************************
  *		PATH NODE CREATION ROUTINES
  *****************************************************************************/
-/*
- * create online scan path
- */
-Path *
-create_onlinescan_path(PlannerInfo *root, RelOptInfo *rel,
-                       Relids required_outer, int parallel_workers)
-{
-    Path	   *pathnode = makeNode(Path);
-
-    pathnode->pathtype = T_OnlineScan;
-    pathnode->parent = rel;
-    pathnode->pathtarget = rel->reltarget;
-    pathnode->param_info = get_baserel_parampathinfo(root, rel,
-                                                     required_outer);
-    pathnode->parallel_aware = parallel_workers > 0 ? true : false;
-    pathnode->parallel_safe = rel->consider_parallel;
-    pathnode->parallel_workers = parallel_workers;
-    pathnode->pathkeys = NIL;	/* seqscan has unordered result */
-
-    cost_seqscan(pathnode, root, rel, pathnode->param_info);
-
-    return pathnode;
-}
 
 /*
  * create_seqscan_path
@@ -1130,11 +1081,27 @@ create_bitmap_and_path(PlannerInfo *root,
 					   List *bitmapquals)
 {
 	BitmapAndPath *pathnode = makeNode(BitmapAndPath);
+	Relids		required_outer = NULL;
+	ListCell   *lc;
 
 	pathnode->path.pathtype = T_BitmapAnd;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = NULL;	/* not used in bitmap trees */
+
+	/*
+	 * Identify the required outer rels as the union of what the child paths
+	 * depend on.  (Alternatively, we could insist that the caller pass this
+	 * in, but it's more convenient and reliable to compute it here.)
+	 */
+	foreach(lc, bitmapquals)
+	{
+		Path	   *bitmapqual = (Path *) lfirst(lc);
+
+		required_outer = bms_add_members(required_outer,
+										 PATH_REQ_OUTER(bitmapqual));
+	}
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+														  required_outer);
 
 	/*
 	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
@@ -1166,11 +1133,27 @@ create_bitmap_or_path(PlannerInfo *root,
 					  List *bitmapquals)
 {
 	BitmapOrPath *pathnode = makeNode(BitmapOrPath);
+	Relids		required_outer = NULL;
+	ListCell   *lc;
 
 	pathnode->path.pathtype = T_BitmapOr;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = NULL;	/* not used in bitmap trees */
+
+	/*
+	 * Identify the required outer rels as the union of what the child paths
+	 * depend on.  (Alternatively, we could insist that the caller pass this
+	 * in, but it's more convenient and reliable to compute it here.)
+	 */
+	foreach(lc, bitmapquals)
+	{
+		Path	   *bitmapqual = (Path *) lfirst(lc);
+
+		required_outer = bms_add_members(required_outer,
+										 PATH_REQ_OUTER(bitmapqual));
+	}
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+														  required_outer);
 
 	/*
 	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
@@ -1287,9 +1270,8 @@ create_append_path(PlannerInfo *root,
 		 */
 		Assert(pathkeys == NIL);
 
-		subpaths = list_qsort(subpaths, append_total_cost_compare);
-		partial_subpaths = list_qsort(partial_subpaths,
-									  append_startup_cost_compare);
+		list_sort(subpaths, append_total_cost_compare);
+		list_sort(partial_subpaths, append_startup_cost_compare);
 	}
 	pathnode->first_partial_path = list_length(subpaths);
 	pathnode->subpaths = list_concat(subpaths, partial_subpaths);
@@ -1344,17 +1326,18 @@ create_append_path(PlannerInfo *root,
 
 /*
  * append_total_cost_compare
- *	  qsort comparator for sorting append child paths by total_cost descending
+ *	  list_sort comparator for sorting append child paths
+ *	  by total_cost descending
  *
  * For equal total costs, we fall back to comparing startup costs; if those
  * are equal too, break ties using bms_compare on the paths' relids.
- * (This is to avoid getting unpredictable results from qsort.)
+ * (This is to avoid getting unpredictable results from list_sort.)
  */
 static int
-append_total_cost_compare(const void *a, const void *b)
+append_total_cost_compare(const ListCell *a, const ListCell *b)
 {
-	Path	   *path1 = (Path *) lfirst(*(ListCell **) a);
-	Path	   *path2 = (Path *) lfirst(*(ListCell **) b);
+	Path	   *path1 = (Path *) lfirst(a);
+	Path	   *path2 = (Path *) lfirst(b);
 	int			cmp;
 
 	cmp = compare_path_costs(path1, path2, TOTAL_COST);
@@ -1365,17 +1348,18 @@ append_total_cost_compare(const void *a, const void *b)
 
 /*
  * append_startup_cost_compare
- *	  qsort comparator for sorting append child paths by startup_cost descending
+ *	  list_sort comparator for sorting append child paths
+ *	  by startup_cost descending
  *
  * For equal startup costs, we fall back to comparing total costs; if those
  * are equal too, break ties using bms_compare on the paths' relids.
- * (This is to avoid getting unpredictable results from qsort.)
+ * (This is to avoid getting unpredictable results from list_sort.)
  */
 static int
-append_startup_cost_compare(const void *a, const void *b)
+append_startup_cost_compare(const ListCell *a, const ListCell *b)
 {
-	Path	   *path1 = (Path *) lfirst(*(ListCell **) a);
-	Path	   *path2 = (Path *) lfirst(*(ListCell **) b);
+	Path	   *path1 = (Path *) lfirst(a);
+	Path	   *path2 = (Path *) lfirst(b);
 	int			cmp;
 
 	cmp = compare_path_costs(path1, path2, STARTUP_COST);
@@ -1736,8 +1720,9 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		 * planner.c).
 		 */
 		int			hashentrysize = subpath->pathtarget->width + 64;
+		int			hash_mem = get_hash_mem();
 
-		if (hashentrysize * pathnode->path.rows > work_mem * 1024L)
+		if (hashentrysize * pathnode->path.rows > hash_mem * 1024L)
 		{
 			/*
 			 * We should not try to hash.  Hack the SpecialJoinInfo to
@@ -1752,7 +1737,8 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 					 NIL,
 					 subpath->startup_cost,
 					 subpath->total_cost,
-					 rel->rows);
+					 rel->rows,
+					 subpath->pathtarget->width);
 	}
 
 	if (sjinfo->semi_can_btree && sjinfo->semi_can_hash)
@@ -2686,7 +2672,7 @@ apply_projection_to_path(PlannerInfo *root,
 	 * workers can help project.  But if there is something that is not
 	 * parallel-safe in the target expressions, then we can't.
 	 */
-	if ((IsA(path, GatherPath) ||IsA(path, GatherMergePath)) &&
+	if ((IsA(path, GatherPath) || IsA(path, GatherMergePath)) &&
 		is_parallel_safe(root, (Node *) target->exprs))
 	{
 		/*
@@ -2798,6 +2784,57 @@ create_set_projection_path(PlannerInfo *root,
 		(pathnode->path.rows - subpath->rows) * cpu_tuple_cost / 2;
 
 	return pathnode;
+}
+
+/*
+ * create_incremental_sort_path
+ *	  Creates a pathnode that represents performing an incremental sort.
+ *
+ * 'rel' is the parent relation associated with the result
+ * 'subpath' is the path representing the source of data
+ * 'pathkeys' represents the desired sort order
+ * 'presorted_keys' is the number of keys by which the input path is
+ *		already sorted
+ * 'limit_tuples' is the estimated bound on the number of output tuples,
+ *		or -1 if no LIMIT or couldn't estimate
+ */
+IncrementalSortPath *
+create_incremental_sort_path(PlannerInfo *root,
+							 RelOptInfo *rel,
+							 Path *subpath,
+							 List *pathkeys,
+							 int presorted_keys,
+							 double limit_tuples)
+{
+	IncrementalSortPath *sort = makeNode(IncrementalSortPath);
+	SortPath   *pathnode = &sort->spath;
+
+	pathnode->path.pathtype = T_IncrementalSort;
+	pathnode->path.parent = rel;
+	/* Sort doesn't project, so use source path's pathtarget */
+	pathnode->path.pathtarget = subpath->pathtarget;
+	/* For now, assume we are above any joins, so no parameterization */
+	pathnode->path.param_info = NULL;
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel &&
+		subpath->parallel_safe;
+	pathnode->path.parallel_workers = subpath->parallel_workers;
+	pathnode->path.pathkeys = pathkeys;
+
+	pathnode->subpath = subpath;
+
+	cost_incremental_sort(&pathnode->path,
+						  root, pathkeys, presorted_keys,
+						  subpath->startup_cost,
+						  subpath->total_cost,
+						  subpath->rows,
+						  subpath->pathtarget->width,
+						  0.0,	/* XXX comparison_cost shouldn't be 0? */
+						  work_mem, limit_tuples);
+
+	sort->nPresortedCols = presorted_keys;
+
+	return sort;
 }
 
 /*
@@ -2997,6 +3034,7 @@ create_agg_path(PlannerInfo *root,
 	pathnode->aggstrategy = aggstrategy;
 	pathnode->aggsplit = aggsplit;
 	pathnode->numGroups = numGroups;
+	pathnode->transitionSpace = aggcosts ? aggcosts->transitionSpace : 0;
 	pathnode->groupClause = groupClause;
 	pathnode->qual = qual;
 
@@ -3005,7 +3043,7 @@ create_agg_path(PlannerInfo *root,
 			 list_length(groupClause), numGroups,
 			 qual,
 			 subpath->startup_cost, subpath->total_cost,
-			 subpath->rows);
+			 subpath->rows, subpath->pathtarget->width);
 
 	/* add tlist eval cost for each output row */
 	pathnode->path.startup_cost += target->cost.startup;
@@ -3084,6 +3122,7 @@ create_groupingsets_path(PlannerInfo *root,
 	pathnode->aggstrategy = aggstrategy;
 	pathnode->rollups = rollups;
 	pathnode->qual = having_qual;
+	pathnode->transitionSpace = agg_costs ? agg_costs->transitionSpace : 0;
 
 	Assert(rollups != NIL);
 	Assert(aggstrategy != AGG_PLAIN || list_length(rollups) == 1);
@@ -3115,7 +3154,8 @@ create_groupingsets_path(PlannerInfo *root,
 					 having_qual,
 					 subpath->startup_cost,
 					 subpath->total_cost,
-					 subpath->rows);
+					 subpath->rows,
+					 subpath->pathtarget->width);
 			is_first = false;
 			if (!rollup->is_hashed)
 				is_first_sort = false;
@@ -3138,7 +3178,8 @@ create_groupingsets_path(PlannerInfo *root,
 						 rollup->numGroups,
 						 having_qual,
 						 0.0, 0.0,
-						 subpath->rows);
+						 subpath->rows,
+						 subpath->pathtarget->width);
 				if (!rollup->is_hashed)
 					is_first_sort = false;
 			}
@@ -3163,7 +3204,8 @@ create_groupingsets_path(PlannerInfo *root,
 						 having_qual,
 						 sort_path.startup_cost,
 						 sort_path.total_cost,
-						 sort_path.rows);
+						 sort_path.rows,
+						 subpath->pathtarget->width);
 			}
 
 			pathnode->path.total_cost += agg_path.total_cost;
@@ -3593,6 +3635,7 @@ LimitPath *
 create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 				  Path *subpath,
 				  Node *limitOffset, Node *limitCount,
+				  LimitOption limitOption,
 				  int64 offset_est, int64 count_est)
 {
 	LimitPath  *pathnode = makeNode(LimitPath);
@@ -3614,6 +3657,7 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->subpath = subpath;
 	pathnode->limitOffset = limitOffset;
 	pathnode->limitCount = limitCount;
+	pathnode->limitOption = limitOption;
 
 	/*
 	 * Adjust the output rows count and costs according to the offset/limit.
@@ -3848,7 +3892,7 @@ do { \
 	(path) = reparameterize_path_by_child(root, (path), child_rel); \
 	if ((path) == NULL) \
 		return NULL; \
-} while(0);
+} while(0)
 
 #define REPARAMETERIZE_CHILD_PATH_LIST(pathlist) \
 do { \
@@ -3859,7 +3903,7 @@ do { \
 		if ((pathlist) == NIL) \
 			return NULL; \
 	} \
-} while(0);
+} while(0)
 
 	Path	   *new_path;
 	ParamPathInfo *new_ppi;
@@ -3874,7 +3918,18 @@ do { \
 		!bms_overlap(PATH_REQ_OUTER(path), child_rel->top_parent_relids))
 		return path;
 
-	/* Reparameterize a copy of given path. */
+	/*
+	 * If possible, reparameterize the given path, making a copy.
+	 *
+	 * This function is currently only applied to the inner side of a nestloop
+	 * join that is being partitioned by the partitionwise-join code.  Hence,
+	 * we need only support path types that plausibly arise in that context.
+	 * (In particular, supporting sorted path types would be a waste of code
+	 * and cycles: even if we translated them here, they'd just lose in
+	 * subsequent cost comparisons.)  If we do see an unsupported path type,
+	 * that just means we won't be able to generate a partitionwise-join plan
+	 * using that path type.
+	 */
 	switch (nodeTag(path))
 	{
 		case T_Path:
@@ -3918,16 +3973,6 @@ do { \
 				FLAT_COPY_PATH(bopath, path, BitmapOrPath);
 				REPARAMETERIZE_CHILD_PATH_LIST(bopath->bitmapquals);
 				new_path = (Path *) bopath;
-			}
-			break;
-
-		case T_TidPath:
-			{
-				TidPath    *tpath;
-
-				FLAT_COPY_PATH(tpath, path, TidPath);
-				ADJUST_CHILD_ATTRS(tpath->tidquals);
-				new_path = (Path *) tpath;
 			}
 			break;
 
@@ -4021,37 +4066,6 @@ do { \
 			}
 			break;
 
-		case T_MergeAppendPath:
-			{
-				MergeAppendPath *mapath;
-
-				FLAT_COPY_PATH(mapath, path, MergeAppendPath);
-				REPARAMETERIZE_CHILD_PATH_LIST(mapath->subpaths);
-				new_path = (Path *) mapath;
-			}
-			break;
-
-		case T_MaterialPath:
-			{
-				MaterialPath *mpath;
-
-				FLAT_COPY_PATH(mpath, path, MaterialPath);
-				REPARAMETERIZE_CHILD_PATH(mpath->subpath);
-				new_path = (Path *) mpath;
-			}
-			break;
-
-		case T_UniquePath:
-			{
-				UniquePath *upath;
-
-				FLAT_COPY_PATH(upath, path, UniquePath);
-				REPARAMETERIZE_CHILD_PATH(upath->subpath);
-				ADJUST_CHILD_ATTRS(upath->uniq_exprs);
-				new_path = (Path *) upath;
-			}
-			break;
-
 		case T_GatherPath:
 			{
 				GatherPath *gpath;
@@ -4059,16 +4073,6 @@ do { \
 				FLAT_COPY_PATH(gpath, path, GatherPath);
 				REPARAMETERIZE_CHILD_PATH(gpath->subpath);
 				new_path = (Path *) gpath;
-			}
-			break;
-
-		case T_GatherMergePath:
-			{
-				GatherMergePath *gmpath;
-
-				FLAT_COPY_PATH(gmpath, path, GatherMergePath);
-				REPARAMETERIZE_CHILD_PATH(gmpath->subpath);
-				new_path = (Path *) gmpath;
 			}
 			break;
 

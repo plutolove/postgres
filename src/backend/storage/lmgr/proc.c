@@ -3,7 +3,7 @@
  * proc.c
  *	  routines to manage per-process shared memory data structure
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -45,7 +45,6 @@
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
-#include "storage/standby.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/pmsignal.h"
@@ -53,9 +52,9 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/spin.h"
+#include "storage/standby.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
-
 
 /* GUC variables */
 int			DeadlockTimeout = 1000;
@@ -222,7 +221,7 @@ InitProcGlobal(void)
 		/* Common initialization for all PGPROCs, regardless of type. */
 
 		/*
-		 * Set up per-PGPROC semaphore, latch, and backendLock. Prepared xact
+		 * Set up per-PGPROC semaphore, latch, and fpInfoLock.  Prepared xact
 		 * dummy PGPROCs don't need these though - they're never associated
 		 * with a real process
 		 */
@@ -230,7 +229,7 @@ InitProcGlobal(void)
 		{
 			procs[i].sem = PGSemaphoreCreate();
 			InitSharedLatch(&(procs[i].procLatch));
-			LWLockInitialize(&(procs[i].backendLock), LWTRANCHE_PROC);
+			LWLockInitialize(&(procs[i].fpInfoLock), LWTRANCHE_LOCK_FASTPATH);
 		}
 		procs[i].pgprocno = i;
 
@@ -397,7 +396,7 @@ InitProcess(void)
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyPgXact->delayChkpt = false;
+	MyProc->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
 	if (IsAutoVacuumWorkerProcess())
@@ -579,7 +578,7 @@ InitAuxiliaryProcess(void)
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyPgXact->delayChkpt = false;
+	MyProc->delayChkpt = false;
 	MyPgXact->vacuumFlags = 0;
 	MyProc->lwWaiting = false;
 	MyProc->lwWaitMode = 0;
@@ -636,7 +635,7 @@ PublishStartupProcessInformation(void)
 }
 
 /*
- * Used from bufgr to share the value of the buffer that Startup waits on,
+ * Used from bufmgr to share the value of the buffer that Startup waits on,
  * or to reset the value to "not waiting" (-1). This allows processing
  * of recovery conflicts for buffer pins. Set is made before backends look
  * at this value, so locking not required, especially since the set is
@@ -852,7 +851,7 @@ ProcKill(int code, Datum arg)
 
 	/*
 	 * Detach from any lock group of which we are a member.  If the leader
-	 * exist before all other group members, it's PGPROC will remain allocated
+	 * exist before all other group members, its PGPROC will remain allocated
 	 * until the last group process exits; that process must return the
 	 * leader's PGPROC to the appropriate list.
 	 */
@@ -1078,7 +1077,13 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 	/*
 	 * If group locking is in use, locks held by members of my locking group
-	 * need to be included in myHeldLocks.
+	 * need to be included in myHeldLocks.  This is not required for relation
+	 * extension or page locks which conflict among group members. However,
+	 * including them in myHeldLocks will give group members the priority to
+	 * get those locks as compared to other backends which are also trying to
+	 * acquire those locks.  OTOH, we can avoid giving priority to group
+	 * members for that kind of locks, but there doesn't appear to be a clear
+	 * advantage of the same.
 	 */
 	if (leader != NULL)
 	{
@@ -1150,10 +1155,8 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 				}
 				/* I must go before this waiter.  Check special case. */
 				if ((lockMethodTable->conflictTab[lockmode] & aheadRequests) == 0 &&
-					LockCheckConflicts(lockMethodTable,
-									   lockmode,
-									   lock,
-									   proclock) == STATUS_OK)
+					!LockCheckConflicts(lockMethodTable, lockmode, lock,
+										proclock))
 				{
 					/* Skip the wait and just grant myself the lock. */
 					GrantLock(lock, proclock, lockmode);
@@ -1196,8 +1199,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 	/*
 	 * If we detected deadlock, give up without waiting.  This must agree with
-	 * CheckDeadLock's recovery code, except that we shouldn't release the
-	 * semaphore since we haven't tried to lock it yet.
+	 * CheckDeadLock's recovery code.
 	 */
 	if (early_deadlock)
 	{
@@ -1233,9 +1235,9 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 	/*
 	 * Set timer so we can wake up after awhile and check for a deadlock. If a
-	 * deadlock is detected, the handler releases the process's semaphore and
-	 * sets MyProc->waitStatus = STATUS_ERROR, allowing us to know that we
-	 * must report failure rather than success.
+	 * deadlock is detected, the handler sets MyProc->waitStatus =
+	 * STATUS_ERROR, allowing us to know that we must report failure rather
+	 * than success.
 	 *
 	 * By delaying the check until we've waited for a bit, we can avoid
 	 * running the rather expensive deadlock-check code in most cases.
@@ -1371,7 +1373,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 			else
 				LWLockRelease(ProcArrayLock);
 
-			/* prevent signal from being resent more than once */
+			/* prevent signal from being sent again more than once */
 			allow_autovacuum_cancel = false;
 		}
 
@@ -1578,7 +1580,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 
 
 /*
- * ProcWakeup -- wake up a process by releasing its private semaphore.
+ * ProcWakeup -- wake up a process by setting its latch.
  *
  *	 Also remove the process from the wait queue and set its links invalid.
  *	 RETURN: the next process in the wait queue.
@@ -1650,10 +1652,8 @@ ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock)
 		 * (b) doesn't conflict with already-held locks.
 		 */
 		if ((lockMethodTable->conflictTab[lockmode] & aheadRequests) == 0 &&
-			LockCheckConflicts(lockMethodTable,
-							   lockmode,
-							   lock,
-							   proc->waitProcLock) == STATUS_OK)
+			!LockCheckConflicts(lockMethodTable, lockmode, lock,
+								proc->waitProcLock))
 		{
 			/* OK to waken */
 			GrantLock(lock, proc->waitProcLock, lockmode);
@@ -1713,8 +1713,7 @@ CheckDeadLock(void)
 	 * we know that we don't have to wait anymore.
 	 *
 	 * We check by looking to see if we've been unlinked from the wait queue.
-	 * This is quicker than checking our semaphore's state, since no kernel
-	 * call is needed, and it is safe because we hold the lock partition lock.
+	 * This is safe because we hold the lock partition lock.
 	 */
 	if (MyProc->links.prev == NULL ||
 		MyProc->links.next == NULL)
@@ -1785,6 +1784,9 @@ CheckDeadLockAlert(void)
 	 * Have to set the latch again, even if handle_sig_alarm already did. Back
 	 * then got_deadlock_timeout wasn't yet set... It's unlikely that this
 	 * ever would be a problem, but setting a set latch again is cheap.
+	 *
+	 * Note that, when this function runs inside procsignal_sigusr1_handler(),
+	 * the handler function sets the latch again after the latch is set here.
 	 */
 	SetLatch(MyLatch);
 	errno = save_errno;

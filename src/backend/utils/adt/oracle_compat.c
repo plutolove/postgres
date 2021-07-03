@@ -2,7 +2,7 @@
  * oracle_compat.c
  *	Oracle compatible functions.
  *
- * Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *	Author: Edmund Mergl <E.Mergl@bawue.de>
  *	Multibyte enhancement: Tatsuo Ishii <ishii@postgresql.org>
@@ -16,38 +16,15 @@
 #include "postgres.h"
 
 #include "common/int.h"
+#include "mb/pg_wchar.h"
+#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/formatting.h"
-#include "mb/pg_wchar.h"
-
 
 static text *dotrim(const char *string, int stringlen,
 					const char *set, int setlen,
 					bool doltrim, bool dortrim);
 
-
-/*
- test user define builtin function
- */
-Datum
-helloworld(PG_FUNCTION_ARGS) {
-	char* hello = "hello world";
-	text *result = cstring_to_text(hello);
-	PG_RETURN_TEXT_P(result);
-}
-
-Datum
-strcon(PG_FUNCTION_ARGS) {
-	text* final;
-	text* str1 = PG_GETARG_TEXT_PP(0);
-	text* str2 = PG_GETARG_TEXT_PP(1);
-	char* result = palloc(VARSIZE_ANY_EXHDR(str1)+ VARSIZE_ANY_EXHDR(str2)+1);
-	memcpy(result, VARDATA_ANY(str1), VARSIZE_ANY_EXHDR(str1));
-	memcpy(result+VARSIZE_ANY_EXHDR(str1), VARDATA_ANY(str2), VARSIZE_ANY_EXHDR(str2));
-	result[VARSIZE_ANY_EXHDR(str1)+ VARSIZE_ANY_EXHDR(str2)] = '\0';
-	final = cstring_to_text(result);
-	PG_RETURN_TEXT_P(final);
-}
 
 /********************************************************************
  *
@@ -550,7 +527,7 @@ dotrim(const char *string, int stringlen,
  *
  * Syntax:
  *
- *	 bytea byteatrim(byta string, bytea set)
+ *	 bytea byteatrim(bytea string, bytea set)
  *
  * Purpose:
  *
@@ -1085,6 +1062,7 @@ repeat(PG_FUNCTION_ARGS)
 	{
 		memcpy(cp, sp, slen);
 		cp += slen;
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	PG_RETURN_TEXT_P(result);

@@ -3,6 +3,8 @@
 --
 SET DateStyle = 'Postgres, MDY';
 
+SHOW TimeZone;  -- Many of these tests depend on the prevailing setting
+
 --
 -- Test various input formats
 --
@@ -122,7 +124,8 @@ SELECT (timestamp with time zone 'tomorrow' = (timestamp with time zone 'yesterd
 SELECT (timestamp with time zone 'tomorrow' > 'now') as "True";
 
 -- timestamp with time zone, interval arithmetic around DST change
-SET TIME ZONE 'CST7CDT';
+-- (just for fun, let's use an intentionally nonstandard POSIX zone spec)
+SET TIME ZONE 'CST7CDT,M4.1.0,M10.5.0';
 SELECT timestamp with time zone '2005-04-02 12:00-07' + interval '1 day' as "Apr 3, 12:00";
 SELECT timestamp with time zone '2005-04-02 12:00-07' + interval '24 hours' as "Apr 3, 13:00";
 SELECT timestamp with time zone '2005-04-03 12:00-06' - interval '1 day' as "Apr 2, 12:00";
@@ -279,6 +282,31 @@ SELECT '' AS "16", f1 AS "timestamp", date(f1) AS date
 DROP TABLE TEMP_TIMESTAMP;
 
 --
+-- Comparisons between datetime types, especially overflow cases
+---
+
+SELECT '2202020-10-05'::date::timestamp;  -- fail
+SELECT '2202020-10-05'::date > '2020-10-05'::timestamp as t;
+SELECT '2020-10-05'::timestamp > '2202020-10-05'::date as f;
+
+SELECT '2202020-10-05'::date::timestamptz;  -- fail
+SELECT '2202020-10-05'::date > '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz > '2202020-10-05'::date as f;
+
+-- This conversion may work depending on timezone
+SELECT '4714-11-24 BC'::date::timestamptz;
+SET TimeZone = 'UTC-2';
+SELECT '4714-11-24 BC'::date::timestamptz;  -- fail
+
+SELECT '4714-11-24 BC'::date < '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz >= '4714-11-24 BC'::date as t;
+
+SELECT '4714-11-24 BC'::timestamp < '2020-10-05'::timestamptz as t;
+SELECT '2020-10-05'::timestamptz >= '4714-11-24 BC'::timestamp as t;
+
+RESET TimeZone;
+
+--
 -- Formats
 --
 
@@ -365,6 +393,9 @@ SELECT to_timestamp('20000-1116', 'YYYY-MMDD');
 SELECT to_timestamp('1997 AD 11 16', 'YYYY BC MM DD');
 SELECT to_timestamp('1997 BC 11 16', 'YYYY BC MM DD');
 
+SELECT to_timestamp('1997 A.D. 11 16', 'YYYY B.C. MM DD');
+SELECT to_timestamp('1997 B.C. 11 16', 'YYYY B.C. MM DD');
+
 SELECT to_timestamp('9-1116', 'Y-MMDD');
 
 SELECT to_timestamp('95-1116', 'YY-MMDD');
@@ -396,11 +427,42 @@ SELECT to_timestamp('  20050302', 'YYYYMMDD');
 SELECT to_timestamp('2011-12-18 11:38 AM', 'YYYY-MM-DD HH12:MI PM');
 SELECT to_timestamp('2011-12-18 11:38 PM', 'YYYY-MM-DD HH12:MI PM');
 
+SELECT to_timestamp('2011-12-18 11:38 A.M.', 'YYYY-MM-DD HH12:MI P.M.');
+SELECT to_timestamp('2011-12-18 11:38 P.M.', 'YYYY-MM-DD HH12:MI P.M.');
+
 SELECT to_timestamp('2011-12-18 11:38 +05',    'YYYY-MM-DD HH12:MI TZH');
 SELECT to_timestamp('2011-12-18 11:38 -05',    'YYYY-MM-DD HH12:MI TZH');
 SELECT to_timestamp('2011-12-18 11:38 +05:20', 'YYYY-MM-DD HH12:MI TZH:TZM');
 SELECT to_timestamp('2011-12-18 11:38 -05:20', 'YYYY-MM-DD HH12:MI TZH:TZM');
 SELECT to_timestamp('2011-12-18 11:38 20',     'YYYY-MM-DD HH12:MI TZM');
+
+SELECT to_timestamp('2011-12-18 11:38 PST', 'YYYY-MM-DD HH12:MI TZ');  -- NYI
+
+SELECT to_timestamp('2018-11-02 12:34:56.025', 'YYYY-MM-DD HH24:MI:SS.MS');
+
+SELECT i, to_timestamp('2018-11-02 12:34:56', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.1', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.12', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.123', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.1234', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.12345', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.123456', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('2018-11-02 12:34:56.123456789', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+
+SELECT to_date('1 4 1902', 'Q MM YYYY');  -- Q is ignored
+SELECT to_date('3 4 21 01', 'W MM CC YY');
+SELECT to_date('2458872', 'J');
+
+--
+-- Check handling of BC dates
+--
+
+SELECT to_date('44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_date('-44-02-01','YYYY-MM-DD');
+SELECT to_date('-44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_timestamp('44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
+SELECT to_timestamp('-44-02-01 11:12:13','YYYY-MM-DD HH24:MI:SS');
+SELECT to_timestamp('-44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
 
 --
 -- Check handling of multiple spaces in format and/or input
@@ -450,6 +512,11 @@ SELECT to_timestamp('19971', 'YYYYMMDD');
 -- Insufficient digit characters for a single node:
 SELECT to_timestamp('19971)24', 'YYYYMMDD');
 
+-- We don't accept full-length day or month names if short form is specified:
+SELECT to_timestamp('Friday 1-January-1999', 'DY DD MON YYYY');
+SELECT to_timestamp('Fri 1-January-1999', 'DY DD MON YYYY');
+SELECT to_timestamp('Fri 1-Jan-1999', 'DY DD MON YYYY');  -- ok
+
 -- Value clobbering:
 SELECT to_timestamp('1997-11-Jan-16', 'YYYY-MM-Mon-DD');
 
@@ -471,6 +538,8 @@ SELECT to_timestamp('2016-02-29 15:50:55', 'YYYY-MM-DD HH24:MI:SS');  -- ok
 SELECT to_timestamp('2015-02-29 15:50:55', 'YYYY-MM-DD HH24:MI:SS');
 SELECT to_timestamp('2015-02-11 86000', 'YYYY-MM-DD SSSS');  -- ok
 SELECT to_timestamp('2015-02-11 86400', 'YYYY-MM-DD SSSS');
+SELECT to_timestamp('2015-02-11 86000', 'YYYY-MM-DD SSSSS');  -- ok
+SELECT to_timestamp('2015-02-11 86400', 'YYYY-MM-DD SSSSS');
 SELECT to_date('2016-13-10', 'YYYY-MM-DD');
 SELECT to_date('2016-02-30', 'YYYY-MM-DD');
 SELECT to_date('2016-02-29', 'YYYY-MM-DD');  -- ok
@@ -480,6 +549,7 @@ SELECT to_date('2015 366', 'YYYY DDD');
 SELECT to_date('2016 365', 'YYYY DDD');  -- ok
 SELECT to_date('2016 366', 'YYYY DDD');  -- ok
 SELECT to_date('2016 367', 'YYYY DDD');
+SELECT to_date('0000-02-01','YYYY-MM-DD');  -- allowed, though it shouldn't be
 
 --
 -- Check behavior with SQL-style fixed-GMT-offset time zone (cf bug #8572)
@@ -494,5 +564,7 @@ SELECT '2012-12-12 12:00'::timestamptz;
 SELECT '2012-12-12 12:00 America/New_York'::timestamptz;
 
 SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD HH:MI:SS TZ');
+SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD SSSS');
+SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD SSSSS');
 
 RESET TIME ZONE;

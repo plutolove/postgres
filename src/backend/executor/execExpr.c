@@ -19,7 +19,7 @@
  *	and "Expression Evaluation" sections.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -42,6 +42,8 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
+#include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -64,7 +66,7 @@ static void ExecInitFunc(ExprEvalStep *scratch, Expr *node, List *args,
 static void ExecInitExprSlots(ExprState *state, Node *node);
 static void ExecPushExprSlots(ExprState *state, LastAttnumInfo *info);
 static bool get_last_attnums_walker(Node *node, LastAttnumInfo *info);
-static void ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op);
+static bool ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op);
 static void ExecInitWholeRowVar(ExprEvalStep *scratch, Var *variable,
 								ExprState *state);
 static void ExecInitSubscriptingRef(ExprEvalStep *scratch,
@@ -78,7 +80,8 @@ static void ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 static void ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 								  ExprEvalStep *scratch,
 								  FunctionCallInfo fcinfo, AggStatePerTrans pertrans,
-								  int transno, int setno, int setoff, bool ishash);
+								  int transno, int setno, int setoff, bool ishash,
+								  bool nullcheck);
 
 
 /*
@@ -353,6 +356,32 @@ ExecBuildProjectionInfo(List *targetList,
 						PlanState *parent,
 						TupleDesc inputDesc)
 {
+	return ExecBuildProjectionInfoExt(targetList,
+									  econtext,
+									  slot,
+									  true,
+									  parent,
+									  inputDesc);
+}
+
+/*
+ *		ExecBuildProjectionInfoExt
+ *
+ * As above, with one additional option.
+ *
+ * If assignJunkEntries is true (the usual case), resjunk entries in the tlist
+ * are not handled specially: they are evaluated and assigned to the proper
+ * column of the result slot.  If assignJunkEntries is false, resjunk entries
+ * are evaluated, but their result is discarded without assignment.
+ */
+ProjectionInfo *
+ExecBuildProjectionInfoExt(List *targetList,
+						   ExprContext *econtext,
+						   TupleTableSlot *slot,
+						   bool assignJunkEntries,
+						   PlanState *parent,
+						   TupleDesc inputDesc)
+{
 	ProjectionInfo *projInfo = makeNode(ProjectionInfo);
 	ExprState  *state;
 	ExprEvalStep scratch = {0};
@@ -360,7 +389,7 @@ ExecBuildProjectionInfo(List *targetList,
 
 	projInfo->pi_exprContext = econtext;
 	/* We embed ExprState into ProjectionInfo instead of doing extra palloc */
-	projInfo->pi_state.tag.type = T_ExprState;
+	projInfo->pi_state.tag = T_ExprState;
 	state = &projInfo->pi_state;
 	state->expr = (Expr *) targetList;
 	state->parent = parent;
@@ -389,7 +418,8 @@ ExecBuildProjectionInfo(List *targetList,
 		 */
 		if (tle->expr != NULL &&
 			IsA(tle->expr, Var) &&
-			((Var *) tle->expr)->varattno > 0)
+			((Var *) tle->expr)->varattno > 0 &&
+			(assignJunkEntries || !tle->resjunk))
 		{
 			/* Non-system Var, but how safe is it? */
 			variable = (Var *) tle->expr;
@@ -452,6 +482,10 @@ ExecBuildProjectionInfo(List *targetList,
 			 */
 			ExecInitExprRec(tle->expr, state,
 							&state->resvalue, &state->resnull);
+
+			/* This makes it easy to discard resjunk results when told to. */
+			if (!assignJunkEntries && tle->resjunk)
+				continue;
 
 			/*
 			 * Column might be referenced multiple times in upper nodes, so
@@ -786,7 +820,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				{
 					AggState   *aggstate = (AggState *) state->parent;
 
-					aggstate->aggs = lcons(astate, aggstate->aggs);
+					aggstate->aggs = lappend(aggstate->aggs, astate);
 					aggstate->numaggs++;
 				}
 				else
@@ -809,7 +843,6 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					elog(ERROR, "GroupingFunc found in non-Agg plan node");
 
 				scratch.opcode = EEOP_GROUPING_FUNC;
-				scratch.d.grouping_func.parent = (AggState *) state->parent;
 
 				agg = (Agg *) (state->parent->plan);
 
@@ -834,7 +867,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					WindowAggState *winstate = (WindowAggState *) state->parent;
 					int			nfuncs;
 
-					winstate->funcs = lcons(wfstate, winstate->funcs);
+					winstate->funcs = lappend(winstate->funcs, wfstate);
 					nfuncs = ++winstate->numfuncs;
 					if (wfunc->winagg)
 						winstate->numaggs++;
@@ -1130,7 +1163,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				scratch.opcode = EEOP_FIELDSELECT;
 				scratch.d.fieldselect.fieldnum = fselect->fieldnum;
 				scratch.d.fieldselect.resulttype = fselect->resulttype;
-				scratch.d.fieldselect.argdesc = NULL;
+				scratch.d.fieldselect.rowcache.cacheptr = NULL;
 
 				ExprEvalPushStep(state, &scratch);
 				break;
@@ -1140,7 +1173,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 			{
 				FieldStore *fstore = (FieldStore *) node;
 				TupleDesc	tupDesc;
-				TupleDesc  *descp;
+				ExprEvalRowtypeCache *rowcachep;
 				Datum	   *values;
 				bool	   *nulls;
 				int			ncolumns;
@@ -1156,9 +1189,9 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				values = (Datum *) palloc(sizeof(Datum) * ncolumns);
 				nulls = (bool *) palloc(sizeof(bool) * ncolumns);
 
-				/* create workspace for runtime tupdesc cache */
-				descp = (TupleDesc *) palloc(sizeof(TupleDesc));
-				*descp = NULL;
+				/* create shared composite-type-lookup cache struct */
+				rowcachep = palloc(sizeof(ExprEvalRowtypeCache));
+				rowcachep->cacheptr = NULL;
 
 				/* emit code to evaluate the composite input value */
 				ExecInitExprRec(fstore->arg, state, resv, resnull);
@@ -1166,7 +1199,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				/* next, deform the input tuple into our workspace */
 				scratch.opcode = EEOP_FIELDSTORE_DEFORM;
 				scratch.d.fieldstore.fstore = fstore;
-				scratch.d.fieldstore.argdesc = descp;
+				scratch.d.fieldstore.rowcache = rowcachep;
 				scratch.d.fieldstore.values = values;
 				scratch.d.fieldstore.nulls = nulls;
 				scratch.d.fieldstore.ncolumns = ncolumns;
@@ -1200,12 +1233,12 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					 * field's values[]/nulls[] entries as both the caseval
 					 * source and the result address for this subexpression.
 					 * That's okay only because (1) both FieldStore and
-					 * ArrayRef evaluate their arg or refexpr inputs first,
-					 * and (2) any such CaseTestExpr is directly the arg or
-					 * refexpr input.  So any read of the caseval will occur
-					 * before there's a chance to overwrite it.  Also, if
-					 * multiple entries in the newvals/fieldnums lists target
-					 * the same field, they'll effectively be applied
+					 * SubscriptingRef evaluate their arg or refexpr inputs
+					 * first, and (2) any such CaseTestExpr is directly the
+					 * arg or refexpr input.  So any read of the caseval will
+					 * occur before there's a chance to overwrite it.  Also,
+					 * if multiple entries in the newvals/fieldnums lists
+					 * target the same field, they'll effectively be applied
 					 * left-to-right which is what we want.
 					 */
 					save_innermost_caseval = state->innermost_caseval;
@@ -1224,7 +1257,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				/* finally, form result tuple */
 				scratch.opcode = EEOP_FIELDSTORE_FORM;
 				scratch.d.fieldstore.fstore = fstore;
-				scratch.d.fieldstore.argdesc = descp;
+				scratch.d.fieldstore.rowcache = rowcachep;
 				scratch.d.fieldstore.values = values;
 				scratch.d.fieldstore.nulls = nulls;
 				scratch.d.fieldstore.ncolumns = ncolumns;
@@ -1370,17 +1403,24 @@ ExecInitExprRec(Expr *node, ExprState *state,
 		case T_ConvertRowtypeExpr:
 			{
 				ConvertRowtypeExpr *convert = (ConvertRowtypeExpr *) node;
+				ExprEvalRowtypeCache *rowcachep;
+
+				/* cache structs must be out-of-line for space reasons */
+				rowcachep = palloc(2 * sizeof(ExprEvalRowtypeCache));
+				rowcachep[0].cacheptr = NULL;
+				rowcachep[1].cacheptr = NULL;
 
 				/* evaluate argument into step's result area */
 				ExecInitExprRec(convert->arg, state, resv, resnull);
 
 				/* and push conversion step */
 				scratch.opcode = EEOP_CONVERT_ROWTYPE;
-				scratch.d.convert_rowtype.convert = convert;
-				scratch.d.convert_rowtype.indesc = NULL;
-				scratch.d.convert_rowtype.outdesc = NULL;
+				scratch.d.convert_rowtype.inputtype =
+					exprType((Node *) convert->arg);
+				scratch.d.convert_rowtype.outputtype = convert->resulttype;
+				scratch.d.convert_rowtype.incache = &rowcachep[0];
+				scratch.d.convert_rowtype.outcache = &rowcachep[1];
 				scratch.d.convert_rowtype.map = NULL;
-				scratch.d.convert_rowtype.initialized = false;
 
 				ExprEvalPushStep(state, &scratch);
 				break;
@@ -1775,7 +1815,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				scratch.d.rowcompare_final.rctype = rcexpr->rctype;
 				ExprEvalPushStep(state, &scratch);
 
-				/* adjust jump targetss */
+				/* adjust jump targets */
 				foreach(lc, adjust_jumps)
 				{
 					ExprEvalStep *as = &state->steps[lfirst_int(lc)];
@@ -2005,7 +2045,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 						 (int) ntest->nulltesttype);
 				}
 				/* initialize cache in case it's a row test */
-				scratch.d.nulltest_row.argdesc = NULL;
+				scratch.d.nulltest_row.rowcache.cacheptr = NULL;
 
 				/* first evaluate argument into result variable */
 				ExecInitExprRec(ntest->arg, state,
@@ -2284,8 +2324,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.fixed = false;
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
-		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (ExecComputeSlotInfo(state, &scratch))
+			ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_outer > 0)
 	{
@@ -2294,8 +2334,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.fixed = false;
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
-		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (ExecComputeSlotInfo(state, &scratch))
+			ExprEvalPushStep(state, &scratch);
 	}
 	if (info->last_scan > 0)
 	{
@@ -2304,8 +2344,8 @@ ExecPushExprSlots(ExprState *state, LastAttnumInfo *info)
 		scratch.d.fetch.fixed = false;
 		scratch.d.fetch.kind = NULL;
 		scratch.d.fetch.known_desc = NULL;
-		ExecComputeSlotInfo(state, &scratch);
-		ExprEvalPushStep(state, &scratch);
+		if (ExecComputeSlotInfo(state, &scratch))
+			ExprEvalPushStep(state, &scratch);
 	}
 }
 
@@ -2363,14 +2403,21 @@ get_last_attnums_walker(Node *node, LastAttnumInfo *info)
  * The goal is to determine whether a slot is 'fixed', that is, every
  * evaluation of the expression will have the same type of slot, with an
  * equivalent descriptor.
+ *
+ * Returns true if the deforming step is required, false otherwise.
  */
-static void
+static bool
 ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 {
 	PlanState  *parent = state->parent;
 	TupleDesc	desc = NULL;
 	const TupleTableSlotOps *tts_ops = NULL;
 	bool		isfixed = false;
+	ExprEvalOp	opcode = op->opcode;
+
+	Assert(opcode == EEOP_INNER_FETCHSOME ||
+		   opcode == EEOP_OUTER_FETCHSOME ||
+		   opcode == EEOP_SCAN_FETCHSOME);
 
 	if (op->d.fetch.known_desc != NULL)
 	{
@@ -2382,7 +2429,7 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 	{
 		isfixed = false;
 	}
-	else if (op->opcode == EEOP_INNER_FETCHSOME)
+	else if (opcode == EEOP_INNER_FETCHSOME)
 	{
 		PlanState  *is = innerPlanState(parent);
 
@@ -2394,6 +2441,7 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 		{
 			isfixed = true;
 			tts_ops = parent->innerops;
+			desc = ExecGetResultType(is);
 		}
 		else if (is)
 		{
@@ -2401,7 +2449,7 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 			desc = ExecGetResultType(is);
 		}
 	}
-	else if (op->opcode == EEOP_OUTER_FETCHSOME)
+	else if (opcode == EEOP_OUTER_FETCHSOME)
 	{
 		PlanState  *os = outerPlanState(parent);
 
@@ -2413,6 +2461,7 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 		{
 			isfixed = true;
 			tts_ops = parent->outerops;
+			desc = ExecGetResultType(os);
 		}
 		else if (os)
 		{
@@ -2420,11 +2469,11 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 			desc = ExecGetResultType(os);
 		}
 	}
-	else if (op->opcode == EEOP_SCAN_FETCHSOME)
+	else if (opcode == EEOP_SCAN_FETCHSOME)
 	{
 		desc = parent->scandesc;
 
-		if (parent && parent->scanops)
+		if (parent->scanops)
 			tts_ops = parent->scanops;
 
 		if (parent->scanopsset)
@@ -2443,6 +2492,12 @@ ExecComputeSlotInfo(ExprState *state, ExprEvalStep *op)
 		op->d.fetch.kind = NULL;
 		op->d.fetch.known_desc = NULL;
 	}
+
+	/* if the slot is known to always virtual we never need to deform */
+	if (op->d.fetch.fixed && op->d.fetch.kind == &TTSOpsVirtual)
+		return false;
+
+	return true;
 }
 
 /*
@@ -2763,12 +2818,7 @@ static void
 ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 					   ExprState *state, Datum *resv, bool *resnull)
 {
-	ExprEvalStep scratch2 = {0};
 	DomainConstraintRef *constraint_ref;
-	Datum	   *domainval = NULL;
-	bool	   *domainnull = NULL;
-	Datum	   *save_innermost_domainval;
-	bool	   *save_innermost_domainnull;
 	ListCell   *l;
 
 	scratch->d.domaincheck.resulttype = ctest->resulttype;
@@ -2815,6 +2865,10 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 	foreach(l, constraint_ref->constraints)
 	{
 		DomainConstraintState *con = (DomainConstraintState *) lfirst(l);
+		Datum	   *domainval = NULL;
+		bool	   *domainnull = NULL;
+		Datum	   *save_innermost_domainval;
+		bool	   *save_innermost_domainnull;
 
 		scratch->d.domaincheck.constraintname = con->name;
 
@@ -2846,6 +2900,8 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
 					 */
 					if (get_typlen(ctest->resulttype) == -1)
 					{
+						ExprEvalStep scratch2 = {0};
+
 						/* Yes, so make output workspace for MAKE_READONLY */
 						domainval = (Datum *) palloc(sizeof(Datum));
 						domainnull = (bool *) palloc(sizeof(bool));
@@ -2908,16 +2964,17 @@ ExecInitCoerceToDomain(ExprEvalStep *scratch, CoerceToDomain *ctest,
  * check for filters, evaluate aggregate input, check that that input is not
  * NULL for a strict transition function, and then finally invoke the
  * transition for each of the concurrently computed grouping sets.
+ *
+ * If nullcheck is true, the generated code will check for a NULL pointer to
+ * the array of AggStatePerGroup, and skip evaluation if so.
  */
 ExprState *
 ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
-				  bool doSort, bool doHash)
+				  bool doSort, bool doHash, bool nullcheck)
 {
 	ExprState  *state = makeNode(ExprState);
 	PlanState  *parent = &aggstate->ss.ps;
 	ExprEvalStep scratch = {0};
-	int			transno = 0;
-	int			setoff = 0;
 	bool		isCombine = DO_AGGSPLIT_COMBINE(aggstate->aggsplit);
 	LastAttnumInfo deform = {0, 0, 0};
 
@@ -2931,7 +2988,7 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 	 * First figure out which slots, and how many columns from each, we're
 	 * going to need.
 	 */
-	for (transno = 0; transno < aggstate->numtrans; transno++)
+	for (int transno = 0; transno < aggstate->numtrans; transno++)
 	{
 		AggStatePerTrans pertrans = &aggstate->pertrans[transno];
 
@@ -2951,17 +3008,15 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 	/*
 	 * Emit instructions for each transition value / grouping set combination.
 	 */
-	for (transno = 0; transno < aggstate->numtrans; transno++)
+	for (int transno = 0; transno < aggstate->numtrans; transno++)
 	{
 		AggStatePerTrans pertrans = &aggstate->pertrans[transno];
-		int			argno;
-		int			setno;
 		FunctionCallInfo trans_fcinfo = pertrans->transfn_fcinfo;
-		ListCell   *arg;
-		ListCell   *bail;
 		List	   *adjust_bailout = NIL;
 		NullableDatum *strictargs = NULL;
 		bool	   *strictnulls = NULL;
+		int			argno;
+		ListCell   *bail;
 
 		/*
 		 * If filter present, emit. Do so before evaluating the input, to
@@ -3037,15 +3092,16 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				else
 					scratch.opcode = EEOP_AGG_DESERIALIZE;
 
-				scratch.d.agg_deserialize.aggstate = aggstate;
 				scratch.d.agg_deserialize.fcinfo_data = ds_fcinfo;
 				scratch.d.agg_deserialize.jumpnull = -1;	/* adjust later */
 				scratch.resvalue = &trans_fcinfo->args[argno + 1].value;
 				scratch.resnull = &trans_fcinfo->args[argno + 1].isnull;
 
 				ExprEvalPushStep(state, &scratch);
-				adjust_bailout = lappend_int(adjust_bailout,
-											 state->steps_len - 1);
+				/* don't add an adjustment unless the function is strict */
+				if (pertrans->deserialfn.fn_strict)
+					adjust_bailout = lappend_int(adjust_bailout,
+												 state->steps_len - 1);
 
 				/* restore normal settings of scratch fields */
 				scratch.resvalue = &state->resvalue;
@@ -3055,6 +3111,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 		}
 		else if (pertrans->numSortCols == 0)
 		{
+			ListCell   *arg;
+
 			/*
 			 * Normal transition function without ORDER BY / DISTINCT.
 			 */
@@ -3097,6 +3155,7 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 			 */
 			Datum	   *values = pertrans->sortslot->tts_values;
 			bool	   *nulls = pertrans->sortslot->tts_isnull;
+			ListCell   *arg;
 
 			strictnulls = nulls;
 
@@ -3136,15 +3195,16 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 		 * grouping set). Do so for both sort and hash based computations, as
 		 * applicable.
 		 */
-		setoff = 0;
 		if (doSort)
 		{
 			int			processGroupingSets = Max(phase->numsets, 1);
+			int			setoff = 0;
 
-			for (setno = 0; setno < processGroupingSets; setno++)
+			for (int setno = 0; setno < processGroupingSets; setno++)
 			{
 				ExecBuildAggTransCall(state, aggstate, &scratch, trans_fcinfo,
-									  pertrans, transno, setno, setoff, false);
+									  pertrans, transno, setno, setoff, false,
+									  nullcheck);
 				setoff++;
 			}
 		}
@@ -3152,6 +3212,7 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 		if (doHash)
 		{
 			int			numHashes = aggstate->num_hashes;
+			int			setoff;
 
 			/* in MIXED mode, there'll be preceding transition values */
 			if (aggstate->aggstrategy != AGG_HASHED)
@@ -3159,10 +3220,11 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 			else
 				setoff = 0;
 
-			for (setno = 0; setno < numHashes; setno++)
+			for (int setno = 0; setno < numHashes; setno++)
 			{
 				ExecBuildAggTransCall(state, aggstate, &scratch, trans_fcinfo,
-									  pertrans, transno, setno, setoff, true);
+									  pertrans, transno, setno, setoff, true,
+									  nullcheck);
 				setoff++;
 			}
 		}
@@ -3188,6 +3250,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				Assert(as->d.agg_deserialize.jumpnull == -1);
 				as->d.agg_deserialize.jumpnull = state->steps_len;
 			}
+			else
+				Assert(false);
 		}
 	}
 
@@ -3210,72 +3274,89 @@ static void
 ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 					  ExprEvalStep *scratch,
 					  FunctionCallInfo fcinfo, AggStatePerTrans pertrans,
-					  int transno, int setno, int setoff, bool ishash)
+					  int transno, int setno, int setoff, bool ishash,
+					  bool nullcheck)
 {
-	int			adjust_init_jumpnull = -1;
-	int			adjust_strict_jumpnull = -1;
 	ExprContext *aggcontext;
+	int			adjust_jumpnull = -1;
 
 	if (ishash)
 		aggcontext = aggstate->hashcontext;
 	else
 		aggcontext = aggstate->aggcontexts[setno];
 
+	/* add check for NULL pointer? */
+	if (nullcheck)
+	{
+		scratch->opcode = EEOP_AGG_PLAIN_PERGROUP_NULLCHECK;
+		scratch->d.agg_plain_pergroup_nullcheck.setoff = setoff;
+		/* adjust later */
+		scratch->d.agg_plain_pergroup_nullcheck.jumpnull = -1;
+		ExprEvalPushStep(state, scratch);
+		adjust_jumpnull = state->steps_len - 1;
+	}
+
 	/*
+	 * Determine appropriate transition implementation.
+	 *
+	 * For non-ordered aggregates:
+	 *
 	 * If the initial value for the transition state doesn't exist in the
 	 * pg_aggregate table then we will let the first non-NULL value returned
 	 * from the outer procNode become the initial value. (This is useful for
 	 * aggregates like max() and min().) The noTransValue flag signals that we
-	 * still need to do this.
+	 * need to do so. If true, generate a
+	 * EEOP_AGG_INIT_STRICT_PLAIN_TRANS{,_BYVAL} step. This step also needs to
+	 * do the work described next:
+	 *
+	 * If the function is strict, but does have an initial value, choose
+	 * EEOP_AGG_STRICT_PLAIN_TRANS{,_BYVAL}, which skips the transition
+	 * function if the transition value has become NULL (because a previous
+	 * transition function returned NULL). This step also needs to do the work
+	 * described next:
+	 *
+	 * Otherwise we call EEOP_AGG_PLAIN_TRANS{,_BYVAL}, which does not have to
+	 * perform either of the above checks.
+	 *
+	 * Having steps with overlapping responsibilities is not nice, but
+	 * aggregations are very performance sensitive, making this worthwhile.
+	 *
+	 * For ordered aggregates:
+	 *
+	 * Only need to choose between the faster path for a single orderred
+	 * column, and the one between multiple columns. Checking strictness etc
+	 * is done when finalizing the aggregate. See
+	 * process_ordered_aggregate_{single, multi} and
+	 * advance_transition_function.
 	 */
-	if (pertrans->numSortCols == 0 &&
-		fcinfo->flinfo->fn_strict &&
-		pertrans->initValueIsNull)
+	if (pertrans->numSortCols == 0)
 	{
-		scratch->opcode = EEOP_AGG_INIT_TRANS;
-		scratch->d.agg_init_trans.aggstate = aggstate;
-		scratch->d.agg_init_trans.pertrans = pertrans;
-		scratch->d.agg_init_trans.setno = setno;
-		scratch->d.agg_init_trans.setoff = setoff;
-		scratch->d.agg_init_trans.transno = transno;
-		scratch->d.agg_init_trans.aggcontext = aggcontext;
-		scratch->d.agg_init_trans.jumpnull = -1;	/* adjust later */
-		ExprEvalPushStep(state, scratch);
-
-		/* see comment about jumping out below */
-		adjust_init_jumpnull = state->steps_len - 1;
+		if (pertrans->transtypeByVal)
+		{
+			if (fcinfo->flinfo->fn_strict &&
+				pertrans->initValueIsNull)
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_INIT_STRICT_BYVAL;
+			else if (fcinfo->flinfo->fn_strict)
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_STRICT_BYVAL;
+			else
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_BYVAL;
+		}
+		else
+		{
+			if (fcinfo->flinfo->fn_strict &&
+				pertrans->initValueIsNull)
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_INIT_STRICT_BYREF;
+			else if (fcinfo->flinfo->fn_strict)
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_STRICT_BYREF;
+			else
+				scratch->opcode = EEOP_AGG_PLAIN_TRANS_BYREF;
+		}
 	}
-
-	if (pertrans->numSortCols == 0 &&
-		fcinfo->flinfo->fn_strict)
-	{
-		scratch->opcode = EEOP_AGG_STRICT_TRANS_CHECK;
-		scratch->d.agg_strict_trans_check.aggstate = aggstate;
-		scratch->d.agg_strict_trans_check.setno = setno;
-		scratch->d.agg_strict_trans_check.setoff = setoff;
-		scratch->d.agg_strict_trans_check.transno = transno;
-		scratch->d.agg_strict_trans_check.jumpnull = -1;	/* adjust later */
-		ExprEvalPushStep(state, scratch);
-
-		/*
-		 * Note, we don't push into adjust_bailout here - those jump to the
-		 * end of all transition value computations. Here a single transition
-		 * value is NULL, so just skip processing the individual value.
-		 */
-		adjust_strict_jumpnull = state->steps_len - 1;
-	}
-
-	/* invoke appropriate transition implementation */
-	if (pertrans->numSortCols == 0 && pertrans->transtypeByVal)
-		scratch->opcode = EEOP_AGG_PLAIN_TRANS_BYVAL;
-	else if (pertrans->numSortCols == 0)
-		scratch->opcode = EEOP_AGG_PLAIN_TRANS;
 	else if (pertrans->numInputs == 1)
 		scratch->opcode = EEOP_AGG_ORDERED_TRANS_DATUM;
 	else
 		scratch->opcode = EEOP_AGG_ORDERED_TRANS_TUPLE;
 
-	scratch->d.agg_trans.aggstate = aggstate;
 	scratch->d.agg_trans.pertrans = pertrans;
 	scratch->d.agg_trans.setno = setno;
 	scratch->d.agg_trans.setoff = setoff;
@@ -3283,20 +3364,14 @@ ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 	scratch->d.agg_trans.aggcontext = aggcontext;
 	ExprEvalPushStep(state, scratch);
 
-	/* adjust jumps so they jump till after transition invocation */
-	if (adjust_init_jumpnull != -1)
+	/* fix up jumpnull */
+	if (adjust_jumpnull != -1)
 	{
-		ExprEvalStep *as = &state->steps[adjust_init_jumpnull];
+		ExprEvalStep *as = &state->steps[adjust_jumpnull];
 
-		Assert(as->d.agg_init_trans.jumpnull == -1);
-		as->d.agg_init_trans.jumpnull = state->steps_len;
-	}
-	if (adjust_strict_jumpnull != -1)
-	{
-		ExprEvalStep *as = &state->steps[adjust_strict_jumpnull];
-
-		Assert(as->d.agg_strict_trans_check.jumpnull == -1);
-		as->d.agg_strict_trans_check.jumpnull = state->steps_len;
+		Assert(as->opcode == EEOP_AGG_PLAIN_PERGROUP_NULLCHECK);
+		Assert(as->d.agg_plain_pergroup_nullcheck.jumpnull == -1);
+		as->d.agg_plain_pergroup_nullcheck.jumpnull = state->steps_len;
 	}
 }
 
@@ -3322,7 +3397,6 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 {
 	ExprState  *state = makeNode(ExprState);
 	ExprEvalStep scratch = {0};
-	int			natt;
 	int			maxatt = -1;
 	List	   *adjust_jumps = NIL;
 	ListCell   *lc;
@@ -3342,7 +3416,7 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 	scratch.resnull = &state->resnull;
 
 	/* compute max needed attribute */
-	for (natt = 0; natt < numCols; natt++)
+	for (int natt = 0; natt < numCols; natt++)
 	{
 		int			attno = keyColIdx[natt];
 
@@ -3357,22 +3431,22 @@ ExecBuildGroupingEqual(TupleDesc ldesc, TupleDesc rdesc,
 	scratch.d.fetch.fixed = false;
 	scratch.d.fetch.known_desc = ldesc;
 	scratch.d.fetch.kind = lops;
-	ExecComputeSlotInfo(state, &scratch);
-	ExprEvalPushStep(state, &scratch);
+	if (ExecComputeSlotInfo(state, &scratch))
+		ExprEvalPushStep(state, &scratch);
 
 	scratch.opcode = EEOP_OUTER_FETCHSOME;
 	scratch.d.fetch.last_var = maxatt;
 	scratch.d.fetch.fixed = false;
 	scratch.d.fetch.known_desc = rdesc;
 	scratch.d.fetch.kind = rops;
-	ExecComputeSlotInfo(state, &scratch);
-	ExprEvalPushStep(state, &scratch);
+	if (ExecComputeSlotInfo(state, &scratch))
+		ExprEvalPushStep(state, &scratch);
 
 	/*
 	 * Start comparing at the last field (least significant sort key). That's
 	 * the most likely to be different if we are dealing with sorted input.
 	 */
-	for (natt = numCols; --natt >= 0;)
+	for (int natt = numCols; --natt >= 0;)
 	{
 		int			attno = keyColIdx[natt];
 		Form_pg_attribute latt = TupleDescAttr(ldesc, attno - 1);

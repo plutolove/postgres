@@ -17,7 +17,7 @@
  *	sync.
  *
  *
- *	Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ *	Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *	Portions Copyright (c) 1994, Regents of the University of California
  *	Portions Copyright (c) 2000, Philip Warner
  *
@@ -34,13 +34,13 @@
  */
 #include "postgres_fe.h"
 
+#include <dirent.h>
+#include <sys/stat.h>
+
+#include "common/file_utils.h"
 #include "compress_io.h"
 #include "parallel.h"
 #include "pg_backup_utils.h"
-#include "common/file_utils.h"
-
-#include <dirent.h>
-#include <sys/stat.h>
 
 typedef struct
 {
@@ -346,12 +346,15 @@ _WriteData(ArchiveHandle *AH, const void *data, size_t dLen)
 {
 	lclContext *ctx = (lclContext *) AH->formatData;
 
+	errno = 0;
 	if (dLen > 0 && cfwrite(data, dLen, ctx->dataFH) != dLen)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
 		fatal("could not write to output file: %s",
 			  get_cfp_error(ctx->dataFH));
-
-
-	return;
+	}
 }
 
 /*
@@ -399,8 +402,8 @@ _PrintFileData(ArchiveHandle *AH, char *filename)
 	}
 
 	free(buf);
-	if (cfclose(cfp) !=0)
-		fatal("could not close data file: %m");
+	if (cfclose(cfp) != 0)
+		fatal("could not close data file \"%s\": %m", filename);
 }
 
 /*
@@ -484,9 +487,15 @@ _WriteByte(ArchiveHandle *AH, const int i)
 	unsigned char c = (unsigned char) i;
 	lclContext *ctx = (lclContext *) AH->formatData;
 
+	errno = 0;
 	if (cfwrite(&c, 1, ctx->dataFH) != 1)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
 		fatal("could not write to output file: %s",
 			  get_cfp_error(ctx->dataFH));
+	}
 
 	return 1;
 }
@@ -514,11 +523,15 @@ _WriteBuf(ArchiveHandle *AH, const void *buf, size_t len)
 {
 	lclContext *ctx = (lclContext *) AH->formatData;
 
+	errno = 0;
 	if (cfwrite(buf, len, ctx->dataFH) != len)
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
 		fatal("could not write to output file: %s",
 			  get_cfp_error(ctx->dataFH));
-
-	return;
+	}
 }
 
 /*
@@ -537,8 +550,6 @@ _ReadBuf(ArchiveHandle *AH, void *buf, size_t len)
 	 */
 	if (cfread(buf, len, ctx->dataFH) != len)
 		fatal("could not read from input file: end of file");
-
-	return;
 }
 
 /*

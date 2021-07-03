@@ -3,7 +3,7 @@
  * heapam_handler.c
  *	  heap table access method code
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,17 +19,13 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
-#include "miscadmin.h"
-
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
-#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
@@ -37,18 +33,16 @@
 #include "catalog/storage_xlog.h"
 #include "commands/progress.h"
 #include "executor/executor.h"
-#include "optimizer/plancat.h"
+#include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
-#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
-
 
 static void reform_and_rewrite_tuple(HeapTuple tuple,
 									 Relation OldHeap, Relation NewHeap,
@@ -426,7 +420,9 @@ tuple_lock_retry:
 
 					/* otherwise xmin should not be dirty... */
 					if (TransactionIdIsValid(SnapshotDirty.xmin))
-						elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("t_xmin is uncommitted in tuple to be updated")));
 
 					/*
 					 * If tuple is being updated by other transaction then we
@@ -557,17 +553,6 @@ tuple_lock_retry:
 	ExecStorePinnedBufferHeapTuple(tuple, slot, buffer);
 
 	return result;
-}
-
-static void
-heapam_finish_bulk_insert(Relation relation, int options)
-{
-	/*
-	 * If we skipped writing WAL, then we need to sync the heap (but not
-	 * indexes since those use WAL anyway / don't go through tableam)
-	 */
-	if (options & HEAP_INSERT_SKIP_WAL)
-		heap_sync(relation);
 }
 
 
@@ -702,7 +687,6 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	IndexScanDesc indexScan;
 	TableScanDesc tableScan;
 	HeapScanDesc heapScan;
-	bool		use_wal;
 	bool		is_system_catalog;
 	Tuplesortstate *tuplesort;
 	TupleDesc	oldTupDesc = RelationGetDescr(OldHeap);
@@ -712,17 +696,15 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	Datum	   *values;
 	bool	   *isnull;
 	BufferHeapTupleTableSlot *hslot;
+	BlockNumber prev_cblock = InvalidBlockNumber;
 
 	/* Remember if it's a system catalog */
 	is_system_catalog = IsSystemRelation(OldHeap);
 
 	/*
-	 * We need to log the copied data in WAL iff WAL archiving/streaming is
-	 * enabled AND it's a WAL-logged rel.
+	 * Valid smgr_targblock implies something already wrote to the relation.
+	 * This may be harmless, but this function hasn't planned for it.
 	 */
-	use_wal = XLogIsNeeded() && RelationNeedsWAL(NewHeap);
-
-	/* use_wal off requires smgr_targblock be initially invalid */
 	Assert(RelationGetTargetBlock(NewHeap) == InvalidBlockNumber);
 
 	/* Preallocate values/isnull arrays */
@@ -732,7 +714,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 	/* Initialize the rewrite operation */
 	rwstate = begin_heap_rewrite(OldHeap, NewHeap, OldestXmin, *xid_cutoff,
-								 *multi_cutoff, use_wal);
+								 *multi_cutoff);
 
 
 	/* Set up sorting if wanted */
@@ -810,14 +792,38 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		else
 		{
 			if (!table_scan_getnextslot(tableScan, ForwardScanDirection, slot))
+			{
+				/*
+				 * If the last pages of the scan were empty, we would go to
+				 * the next phase while heap_blks_scanned != heap_blks_total.
+				 * Instead, to ensure that heap_blks_scanned is equivalent to
+				 * total_heap_blks after the table scan phase, this parameter
+				 * is manually updated to the correct value when the table
+				 * scan finishes.
+				 */
+				pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
+											 heapScan->rs_nblocks);
 				break;
+			}
 
 			/*
 			 * In scan-and-sort mode and also VACUUM FULL, set heap blocks
 			 * scanned
+			 *
+			 * Note that heapScan may start at an offset and wrap around, i.e.
+			 * rs_startblock may be >0, and rs_cblock may end with a number
+			 * below rs_startblock. To prevent showing this wraparound to the
+			 * user, we offset rs_cblock by rs_startblock (modulo rs_nblocks).
 			 */
-			pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
-										 heapScan->rs_cblock + 1);
+			if (prev_cblock != heapScan->rs_cblock)
+			{
+				pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
+											 (heapScan->rs_cblock +
+											  heapScan->rs_nblocks -
+											  heapScan->rs_startblock
+											  ) % heapScan->rs_nblocks + 1);
+				prev_cblock = heapScan->rs_cblock;
+			}
 		}
 
 		tuple = ExecFetchSlotHeapTuple(slot, false, NULL);
@@ -1113,11 +1119,11 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 				 * concurrent transaction never commits.
 				 */
 				if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(targtuple->t_data)))
-					deadrows += 1;
+					*deadrows += 1;
 				else
 				{
 					sample_it = true;
-					liverows += 1;
+					*liverows += 1;
 				}
 				break;
 
@@ -1340,6 +1346,12 @@ heapam_index_build_range_scan(Relation heapRelation,
 		 * ordinary insert/update/delete should occur; and we hold pin on the
 		 * buffer continuously while visiting the page, so no pruning
 		 * operation can occur either.
+		 *
+		 * In cases with only ShareUpdateExclusiveLock on the table, it's
+		 * possible for some HOT tuples to appear that we didn't know about
+		 * when we first read the page.  To handle that case, we re-obtain the
+		 * list of root offsets when a HOT tuple points to a root item that we
+		 * don't know about.
 		 *
 		 * Also, although our opinions about tuple liveness could change while
 		 * we scan the page (due to concurrent transaction commits/aborts),
@@ -1637,11 +1649,24 @@ heapam_index_build_range_scan(Relation heapRelation,
 			 * For a heap-only tuple, pretend its TID is that of the root. See
 			 * src/backend/access/heap/README.HOT for discussion.
 			 */
-			HeapTupleData rootTuple;
+			ItemPointerData tid;
 			OffsetNumber offnum;
 
-			rootTuple = *heapTuple;
 			offnum = ItemPointerGetOffsetNumber(&heapTuple->t_self);
+
+			/*
+			 * If a HOT tuple points to a root that we don't know
+			 * about, obtain root items afresh.  If that still fails,
+			 * report it as corruption.
+			 */
+			if (root_offsets[offnum - 1] == InvalidOffsetNumber)
+			{
+				Page	page = BufferGetPage(hscan->rs_cbuf);
+
+				LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
+				heap_get_root_tuples(page, root_offsets);
+				LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+			}
 
 			if (!OffsetNumberIsValid(root_offsets[offnum - 1]))
 				ereport(ERROR,
@@ -1651,18 +1676,18 @@ heapam_index_build_range_scan(Relation heapRelation,
 										 offnum,
 										 RelationGetRelationName(heapRelation))));
 
-			ItemPointerSetOffsetNumber(&rootTuple.t_self,
-									   root_offsets[offnum - 1]);
+			ItemPointerSet(&tid, ItemPointerGetBlockNumber(&heapTuple->t_self),
+						   root_offsets[offnum - 1]);
 
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, &rootTuple, values, isnull, tupleIsAlive,
+			callback(indexRelation, &tid, values, isnull, tupleIsAlive,
 					 callback_state);
 		}
 		else
 		{
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, heapTuple, values, isnull, tupleIsAlive,
-					 callback_state);
+			callback(indexRelation, &heapTuple->t_self, values, isnull,
+					 tupleIsAlive, callback_state);
 		}
 	}
 
@@ -1991,26 +2016,6 @@ heapam_scan_get_blocks_done(HeapScanDesc hscan)
  * ------------------------------------------------------------------------
  */
 
-static uint64
-heapam_relation_size(Relation rel, ForkNumber forkNumber)
-{
-	uint64		nblocks = 0;
-
-	/* Open it at the smgr level if not already done */
-	RelationOpenSmgr(rel);
-
-	/* InvalidForkNumber indicates returning the size for all forks */
-	if (forkNumber == InvalidForkNumber)
-	{
-		for (int i = 0; i < MAX_FORKNUM; i++)
-			nblocks += smgrnblocks(rel->rd_smgr, i);
-	}
-	else
-		nblocks = smgrnblocks(rel->rd_smgr, forkNumber);
-
-	return nblocks * BLCKSZ;
-}
-
 /*
  * Check to see whether the table needs a TOAST table.  It does only if
  * (1) there are any toastable attributes, and (2) the maximum length
@@ -2048,7 +2053,7 @@ heapam_relation_needs_toast_table(Relation rel)
 				maxlength_unknown = true;
 			else
 				data_length += maxlen;
-			if (att->attstorage != 'p')
+			if (att->attstorage != TYPSTORAGE_PLAIN)
 				has_toastable_attrs = true;
 		}
 	}
@@ -2062,112 +2067,35 @@ heapam_relation_needs_toast_table(Relation rel)
 	return (tuple_length > TOAST_TUPLE_THRESHOLD);
 }
 
+/*
+ * TOAST tables for heap relations are just heap relations.
+ */
+static Oid
+heapam_relation_toast_am(Relation rel)
+{
+	return rel->rd_rel->relam;
+}
+
 
 /* ------------------------------------------------------------------------
  * Planner related callbacks for the heap AM
  * ------------------------------------------------------------------------
  */
 
+#define HEAP_OVERHEAD_BYTES_PER_TUPLE \
+	(MAXALIGN(SizeofHeapTupleHeader) + sizeof(ItemIdData))
+#define HEAP_USABLE_BYTES_PER_PAGE \
+	(BLCKSZ - SizeOfPageHeaderData)
+
 static void
 heapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 						 BlockNumber *pages, double *tuples,
 						 double *allvisfrac)
 {
-	BlockNumber curpages;
-	BlockNumber relpages;
-	double		reltuples;
-	BlockNumber relallvisible;
-	double		density;
-
-	/* it has storage, ok to call the smgr */
-	curpages = RelationGetNumberOfBlocks(rel);
-
-	/* coerce values in pg_class to more desirable types */
-	relpages = (BlockNumber) rel->rd_rel->relpages;
-	reltuples = (double) rel->rd_rel->reltuples;
-	relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
-
-	/*
-	 * HACK: if the relation has never yet been vacuumed, use a minimum size
-	 * estimate of 10 pages.  The idea here is to avoid assuming a
-	 * newly-created table is really small, even if it currently is, because
-	 * that may not be true once some data gets loaded into it.  Once a vacuum
-	 * or analyze cycle has been done on it, it's more reasonable to believe
-	 * the size is somewhat stable.
-	 *
-	 * (Note that this is only an issue if the plan gets cached and used again
-	 * after the table has been filled.  What we're trying to avoid is using a
-	 * nestloop-type plan on a table that has grown substantially since the
-	 * plan was made.  Normally, autovacuum/autoanalyze will occur once enough
-	 * inserts have happened and cause cached-plan invalidation; but that
-	 * doesn't happen instantaneously, and it won't happen at all for cases
-	 * such as temporary tables.)
-	 *
-	 * We approximate "never vacuumed" by "has relpages = 0", which means this
-	 * will also fire on genuinely empty relations.  Not great, but
-	 * fortunately that's a seldom-seen case in the real world, and it
-	 * shouldn't degrade the quality of the plan too much anyway to err in
-	 * this direction.
-	 *
-	 * If the table has inheritance children, we don't apply this heuristic.
-	 * Totally empty parent tables are quite common, so we should be willing
-	 * to believe that they are empty.
-	 */
-	if (curpages < 10 &&
-		relpages == 0 &&
-		!rel->rd_rel->relhassubclass)
-		curpages = 10;
-
-	/* report estimated # pages */
-	*pages = curpages;
-	/* quick exit if rel is clearly empty */
-	if (curpages == 0)
-	{
-		*tuples = 0;
-		*allvisfrac = 0;
-		return;
-	}
-
-	/* estimate number of tuples from previous tuple density */
-	if (relpages > 0)
-		density = reltuples / (double) relpages;
-	else
-	{
-		/*
-		 * When we have no data because the relation was truncated, estimate
-		 * tuple width from attribute datatypes.  We assume here that the
-		 * pages are completely full, which is OK for tables (since they've
-		 * presumably not been VACUUMed yet) but is probably an overestimate
-		 * for indexes.  Fortunately get_relation_info() can clamp the
-		 * overestimate to the parent table's size.
-		 *
-		 * Note: this code intentionally disregards alignment considerations,
-		 * because (a) that would be gilding the lily considering how crude
-		 * the estimate is, and (b) it creates platform dependencies in the
-		 * default plans which are kind of a headache for regression testing.
-		 */
-		int32		tuple_width;
-
-		tuple_width = get_rel_data_width(rel, attr_widths);
-		tuple_width += MAXALIGN(SizeofHeapTupleHeader);
-		tuple_width += sizeof(ItemIdData);
-		/* note: integer division is intentional here */
-		density = (BLCKSZ - SizeOfPageHeaderData) / tuple_width;
-	}
-	*tuples = rint(density * (double) curpages);
-
-	/*
-	 * We use relallvisible as-is, rather than scaling it up like we do for
-	 * the pages and tuples counts, on the theory that any pages added since
-	 * the last VACUUM are most likely not marked all-visible.  But costsize.c
-	 * wants it converted to a fraction.
-	 */
-	if (relallvisible == 0 || curpages <= 0)
-		*allvisfrac = 0;
-	else if ((double) relallvisible >= curpages)
-		*allvisfrac = 1;
-	else
-		*allvisfrac = (double) relallvisible / curpages;
+	table_block_relation_estimate_size(rel, attr_widths, pages,
+									   tuples, allvisfrac,
+									   HEAP_OVERHEAD_BYTES_PER_TUPLE,
+									   HEAP_USABLE_BYTES_PER_PAGE);
 }
 
 
@@ -2273,10 +2201,11 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			if (valid)
 			{
 				hscan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
+				PredicateLockTID(scan->rs_rd, &loctup.t_self, snapshot,
+								 HeapTupleHeaderGetXmin(loctup.t_data));
 			}
-			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-											buffer, snapshot);
+			HeapCheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+												buffer, snapshot);
 		}
 	}
 
@@ -2463,8 +2392,8 @@ heapam_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 
 			/* in pagemode, heapgetpage did this for us */
 			if (!pagemode)
-				CheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
-												hscan->rs_cbuf, scan->rs_snapshot);
+				HeapCheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
+													hscan->rs_cbuf, scan->rs_snapshot);
 
 			/* Try next tuple from same page. */
 			if (!visible)
@@ -2626,7 +2555,6 @@ static const TableAmRoutine heapam_methods = {
 	.tuple_delete = heapam_tuple_delete,
 	.tuple_update = heapam_tuple_update,
 	.tuple_lock = heapam_tuple_lock,
-	.finish_bulk_insert = heapam_finish_bulk_insert,
 
 	.tuple_fetch_row_version = heapam_fetch_row_version,
 	.tuple_get_latest_tid = heap_get_latest_tid,
@@ -2644,8 +2572,10 @@ static const TableAmRoutine heapam_methods = {
 	.index_build_range_scan = heapam_index_build_range_scan,
 	.index_validate_scan = heapam_index_validate_scan,
 
-	.relation_size = heapam_relation_size,
+	.relation_size = table_block_relation_size,
 	.relation_needs_toast_table = heapam_relation_needs_toast_table,
+	.relation_toast_am = heapam_relation_toast_am,
+	.relation_fetch_toast_slice = heap_fetch_toast_slice,
 
 	.relation_estimate_size = heapam_estimate_rel_size,
 

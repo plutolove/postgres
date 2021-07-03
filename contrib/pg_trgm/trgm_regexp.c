@@ -73,7 +73,7 @@
  * (two prefix colors plus a state number from the original NFA) an
  * "enter key".
  *
- * Each arc of the expanded graph is labelled with a trigram that must be
+ * Each arc of the expanded graph is labeled with a trigram that must be
  * present in the string to match.  We can construct this from an out-arc of
  * the underlying NFA state by combining the expanded state's prefix with the
  * color label of the underlying out-arc, if neither prefix position is
@@ -123,7 +123,7 @@
  * false positives that we would have to traverse a large fraction of the
  * index, the graph is simplified further in a lossy fashion by removing
  * color trigrams. When a color trigram is removed, the states connected by
- * any arcs labelled with that trigram are merged.
+ * any arcs labeled with that trigram are merged.
  *
  * Trigrams do not all have equivalent value for searching: some of them are
  * more frequent and some of them are less frequent. Ideally, we would like
@@ -181,7 +181,7 @@
  * 7) Mark state 3 final because state 5 of source NFA is marked as final.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -191,13 +191,11 @@
  */
 #include "postgres.h"
 
-#include "trgm.h"
-
 #include "regex/regexport.h"
+#include "trgm.h"
 #include "tsearch/ts_locale.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
-
 
 /*
  * Uncomment (or use -DTRGM_REGEXP_DEBUG) to print debug info,
@@ -441,9 +439,9 @@ typedef struct
 struct TrgmPackedGraph
 {
 	/*
-	 * colorTrigramsCount and colorTrigramsGroups contain information about
-	 * how trigrams are grouped into color trigrams.  "colorTrigramsCount" is
-	 * the count of color trigrams and "colorTrigramGroups" contains number of
+	 * colorTrigramsCount and colorTrigramGroups contain information about how
+	 * trigrams are grouped into color trigrams.  "colorTrigramsCount" is the
+	 * count of color trigrams and "colorTrigramGroups" contains number of
 	 * simple trigrams for each color trigram.  The array of simple trigrams
 	 * (stored separately from this struct) is ordered so that the simple
 	 * trigrams for each color trigram are consecutive, and they're in order
@@ -557,14 +555,11 @@ createTrgmNFA(text *text_re, Oid collation,
 	{
 		trg = createTrgmNFAInternal(&regex, graph, rcontext);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		pg_regfree(&regex);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	pg_regfree(&regex);
 
 	/* Clean up all the cruft we created */
 	MemoryContextSwitchTo(oldcontext);
@@ -1013,9 +1008,7 @@ addKey(TrgmNFA *trgmNFA, TrgmState *state, TrgmStateKey *key)
 {
 	regex_arc_t *arcs;
 	TrgmStateKey destKey;
-	ListCell   *cell,
-			   *prev,
-			   *next;
+	ListCell   *cell;
 	int			i,
 				arcsCount;
 
@@ -1030,13 +1023,10 @@ addKey(TrgmNFA *trgmNFA, TrgmState *state, TrgmStateKey *key)
 	 * redundancy.  We can drop either old key(s) or the new key if we find
 	 * redundancy.
 	 */
-	prev = NULL;
-	cell = list_head(state->enterKeys);
-	while (cell)
+	foreach(cell, state->enterKeys)
 	{
 		TrgmStateKey *existingKey = (TrgmStateKey *) lfirst(cell);
 
-		next = lnext(cell);
 		if (existingKey->nstate == key->nstate)
 		{
 			if (prefixContains(&existingKey->prefix, &key->prefix))
@@ -1050,15 +1040,10 @@ addKey(TrgmNFA *trgmNFA, TrgmState *state, TrgmStateKey *key)
 				 * The new key covers this old key. Remove the old key, it's
 				 * no longer needed once we add this key to the list.
 				 */
-				state->enterKeys = list_delete_cell(state->enterKeys,
-													cell, prev);
+				state->enterKeys = foreach_delete_current(state->enterKeys,
+														  cell);
 			}
-			else
-				prev = cell;
 		}
-		else
-			prev = cell;
-		cell = next;
 	}
 
 	/* No redundancy, so add this key to the state's list */
