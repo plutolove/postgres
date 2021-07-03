@@ -4,7 +4,7 @@
  *
  *	  Routines for operator manipulation commands
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -27,9 +27,6 @@
  *		"create operator":
  *				operators
  *
- *		Most of the parse-tree manipulation routines are defined in
- *		commands/manip.c.
- *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -47,6 +44,7 @@
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_type.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -299,6 +297,7 @@ ValidateJoinEstimator(List *joinName)
 {
 	Oid			typeId[5];
 	Oid			joinOid;
+	Oid			joinOid2;
 	AclResult	aclresult;
 
 	typeId[0] = INTERNALOID;	/* PlannerInfo */
@@ -309,15 +308,26 @@ ValidateJoinEstimator(List *joinName)
 
 	/*
 	 * As of Postgres 8.4, the preferred signature for join estimators has 5
-	 * arguments, but we still allow the old 4-argument form. Try the
-	 * preferred form first.
+	 * arguments, but we still allow the old 4-argument form.  Whine about
+	 * ambiguity if both forms exist.
 	 */
 	joinOid = LookupFuncName(joinName, 5, typeId, true);
-	if (!OidIsValid(joinOid))
-		joinOid = LookupFuncName(joinName, 4, typeId, true);
-	/* If not found, reference the 5-argument signature in error msg */
-	if (!OidIsValid(joinOid))
-		joinOid = LookupFuncName(joinName, 5, typeId, false);
+	joinOid2 = LookupFuncName(joinName, 4, typeId, true);
+	if (OidIsValid(joinOid))
+	{
+		if (OidIsValid(joinOid2))
+			ereport(ERROR,
+					(errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+					 errmsg("join estimator function %s has multiple matches",
+							NameListToString(joinName))));
+	}
+	else
+	{
+		joinOid = joinOid2;
+		/* If not found, reference the 5-argument signature in error msg */
+		if (!OidIsValid(joinOid))
+			joinOid = LookupFuncName(joinName, 5, typeId, false);
+	}
 
 	/* estimators must return float8 */
 	if (get_func_rettype(joinOid) != FLOAT8OID)

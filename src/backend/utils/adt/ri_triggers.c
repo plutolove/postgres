@@ -14,7 +14,7 @@
  *	plan --- consider improving this someday.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/ri_triggers.c
  *
@@ -36,9 +36,9 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "lib/ilist.h"
+#include "miscadmin.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
-#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -53,7 +53,6 @@
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
-
 
 /*
  * Local definitions
@@ -209,8 +208,7 @@ static const RI_ConstraintInfo *ri_FetchConstraintInfo(Trigger *trigger,
 													   Relation trig_rel, bool rel_is_pk);
 static const RI_ConstraintInfo *ri_LoadConstraintInfo(Oid constraintOid);
 static SPIPlanPtr ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
-							   RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel,
-							   bool cache_plan);
+							   RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel);
 static bool ri_PerformCheck(const RI_ConstraintInfo *riinfo,
 							RI_QueryKey *qkey, SPIPlanPtr qplan,
 							Relation fk_rel, Relation pk_rel,
@@ -385,7 +383,7 @@ RI_FKey_check(TriggerData *trigdata)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -512,7 +510,7 @@ ri_Check_Pk_Match(Relation pk_rel, Relation fk_rel,
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -704,7 +702,7 @@ ri_restrict(TriggerData *trigdata, bool is_no_action)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -809,7 +807,7 @@ RI_FKey_cascade_del(PG_FUNCTION_ARGS)
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -927,11 +925,11 @@ RI_FKey_cascade_upd(PG_FUNCTION_ARGS)
 			queryoids[i] = pk_type;
 			queryoids[j] = pk_type;
 		}
-		appendStringInfoString(&querybuf, qualbuf.data);
+		appendBinaryStringInfo(&querybuf, qualbuf.data, qualbuf.len);
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys * 2, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -1106,11 +1104,11 @@ ri_set(TriggerData *trigdata, bool is_set_null)
 			qualsep = "AND";
 			queryoids[i] = pk_type;
 		}
-		appendStringInfoString(&querybuf, qualbuf.data);
+		appendBinaryStringInfo(&querybuf, qualbuf.data, qualbuf.len);
 
 		/* Prepare and save the plan */
 		qplan = ri_PlanCheck(querybuf.data, riinfo->nkeys, queryoids,
-							 &qkey, fk_rel, pk_rel, true);
+							 &qkey, fk_rel, pk_rel);
 	}
 
 	/*
@@ -1452,7 +1450,9 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 * enough to not use a multiple of work_mem, and one typically would not
 	 * have many large foreign-key validations happening concurrently.  So
 	 * this seems to meet the criteria for being considered a "maintenance"
-	 * operation, and accordingly we use maintenance_work_mem.
+	 * operation, and accordingly we use maintenance_work_mem.  However, we
+	 * must also set hash_mem_multiplier to 1, since it is surely not okay to
+	 * let that get applied to the maintenance_work_mem value.
 	 *
 	 * We use the equivalent of a function SET option to allow the setting to
 	 * persist for exactly the duration of the check query.  guc.c also takes
@@ -1462,6 +1462,9 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 
 	snprintf(workmembuf, sizeof(workmembuf), "%d", maintenance_work_mem);
 	(void) set_config_option("work_mem", workmembuf,
+							 PGC_USERSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("hash_mem_multiplier", "1",
 							 PGC_USERSET, PGC_S_SESSION,
 							 GUC_ACTION_SAVE, true, 0, false);
 
@@ -1555,7 +1558,7 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 		elog(ERROR, "SPI_finish failed");
 
 	/*
-	 * Restore work_mem.
+	 * Restore work_mem and hash_mem_multiplier.
 	 */
 	AtEOXact_GUC(true, save_nestlevel);
 
@@ -1687,7 +1690,9 @@ RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 * enough to not use a multiple of work_mem, and one typically would not
 	 * have many large foreign-key validations happening concurrently.  So
 	 * this seems to meet the criteria for being considered a "maintenance"
-	 * operation, and accordingly we use maintenance_work_mem.
+	 * operation, and accordingly we use maintenance_work_mem.  However, we
+	 * must also set hash_mem_multiplier to 1, since it is surely not okay to
+	 * let that get applied to the maintenance_work_mem value.
 	 *
 	 * We use the equivalent of a function SET option to allow the setting to
 	 * persist for exactly the duration of the check query.  guc.c also takes
@@ -1697,6 +1702,9 @@ RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 
 	snprintf(workmembuf, sizeof(workmembuf), "%d", maintenance_work_mem);
 	(void) set_config_option("work_mem", workmembuf,
+							 PGC_USERSET, PGC_S_SESSION,
+							 GUC_ACTION_SAVE, true, 0, false);
+	(void) set_config_option("hash_mem_multiplier", "1",
 							 PGC_USERSET, PGC_S_SESSION,
 							 GUC_ACTION_SAVE, true, 0, false);
 
@@ -1765,7 +1773,7 @@ RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 		elog(ERROR, "SPI_finish failed");
 
 	/*
-	 * Restore work_mem.
+	 * Restore work_mem and hash_mem_multiplier.
 	 */
 	AtEOXact_GUC(true, save_nestlevel);
 }
@@ -2122,14 +2130,10 @@ InvalidateConstraintCacheCallBack(Datum arg, int cacheid, uint32 hashvalue)
 
 /*
  * Prepare execution plan for a query to enforce an RI restriction
- *
- * If cache_plan is true, the plan is saved into our plan hashtable
- * so that we don't need to plan it again.
  */
 static SPIPlanPtr
 ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
-			 RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel,
-			 bool cache_plan)
+			 RI_QueryKey *qkey, Relation fk_rel, Relation pk_rel)
 {
 	SPIPlanPtr	qplan;
 	Relation	query_rel;
@@ -2160,12 +2164,9 @@ ri_PlanCheck(const char *querystr, int nargs, Oid *argtypes,
 	/* Restore UID and security context */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
 
-	/* Save the plan if requested */
-	if (cache_plan)
-	{
-		SPI_keepplan(qplan);
-		ri_HashPreparedPlan(qkey, qplan);
-	}
+	/* Save the plan */
+	SPI_keepplan(qplan);
+	ri_HashPreparedPlan(qkey, qplan);
 
 	return qplan;
 }
@@ -2456,9 +2457,10 @@ ri_ReportViolation(const RI_ConstraintInfo *riinfo,
 				 errmsg("removing partition \"%s\" violates foreign key constraint \"%s\"",
 						RelationGetRelationName(pk_rel),
 						NameStr(riinfo->conname)),
-				 errdetail("Key (%s)=(%s) still referenced from table \"%s\".",
+				 errdetail("Key (%s)=(%s) is still referenced from table \"%s\".",
 						   key_names.data, key_values.data,
-						   RelationGetRelationName(fk_rel))));
+						   RelationGetRelationName(fk_rel)),
+				 errtableconstraint(fk_rel, NameStr(riinfo->conname))));
 	else if (onfk)
 		ereport(ERROR,
 				(errcode(ERRCODE_FOREIGN_KEY_VIOLATION),

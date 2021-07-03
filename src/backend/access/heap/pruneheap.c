@@ -3,7 +3,7 @@
  * pruneheap.c
  *	  heap page pruning and HOT-chain management code
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,15 +16,15 @@
 
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
-#include "access/transam.h"
 #include "access/htup_details.h"
+#include "access/transam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
-#include "utils/snapmgr.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 /* Working data for heap_page_prune and subroutines */
 typedef struct
@@ -256,7 +256,7 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		MarkBufferDirty(buffer);
 
 		/*
-		 * Emit a WAL HEAP_CLEAN record showing what we did
+		 * Emit a WAL XLOG_HEAP2_CLEAN record showing what we did
 		 */
 		if (RelationNeedsWAL(relation))
 		{
@@ -732,7 +732,7 @@ heap_page_prune_execute(Buffer buffer,
  * root_offsets[k - 1] = j.
  *
  * The passed-in root_offsets array must have MaxHeapTuplesPerPage entries.
- * We zero out all unused entries.
+ * Unused entries are filled with InvalidOffsetNumber (zero).
  *
  * The function must be called with at least share lock on the buffer, to
  * prevent concurrent prune operations.
@@ -747,7 +747,8 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 	OffsetNumber offnum,
 				maxoff;
 
-	MemSet(root_offsets, 0, MaxHeapTuplesPerPage * sizeof(OffsetNumber));
+	MemSet(root_offsets, InvalidOffsetNumber,
+		   MaxHeapTuplesPerPage * sizeof(OffsetNumber));
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))

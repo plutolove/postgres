@@ -3,12 +3,12 @@
  * pg_inherits.c
  *	  routines to support manipulation of the pg_inherits relation
  *
- * Note: currently, this module only contains inquiry functions; the actual
- * creation and deletion of pg_inherits entries is done in tablecmds.c.
+ * Note: currently, this module mostly contains inquiry functions; actual
+ * creation and deletion of pg_inherits entries is mostly done in tablecmds.c.
  * Perhaps someday that code should be moved here, but it'd have to be
  * disentangled from other stuff such as pg_depend updates.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -37,7 +37,7 @@
 typedef struct SeenRelsEntry
 {
 	Oid			rel_id;			/* relation oid */
-	ListCell   *numparents_cell;	/* corresponding list cell */
+	int			list_index;		/* its position in output list(s) */
 } SeenRelsEntry;
 
 /*
@@ -186,7 +186,9 @@ find_all_inheritors(Oid parentrelId, LOCKMODE lockmode, List **numparents)
 	 * indirect children.  We can use a single list as both the record of
 	 * already-found rels and the agenda of rels yet to be scanned for more
 	 * children.  This is a bit tricky but works because the foreach() macro
-	 * doesn't fetch the next list element until the bottom of the loop.
+	 * doesn't fetch the next list element until the bottom of the loop.  Note
+	 * that we can't keep pointers into the output lists; but an index is
+	 * sufficient.
 	 */
 	rels_list = list_make1_oid(parentrelId);
 	rel_numparents = list_make1_int(0);
@@ -217,14 +219,18 @@ find_all_inheritors(Oid parentrelId, LOCKMODE lockmode, List **numparents)
 			if (found)
 			{
 				/* if the rel is already there, bump number-of-parents counter */
-				lfirst_int(hash_entry->numparents_cell)++;
+				ListCell   *numparents_cell;
+
+				numparents_cell = list_nth_cell(rel_numparents,
+												hash_entry->list_index);
+				lfirst_int(numparents_cell)++;
 			}
 			else
 			{
 				/* if it's not there, add it. expect 1 parent, initially. */
+				hash_entry->list_index = list_length(rels_list);
 				rels_list = lappend_oid(rels_list, child_oid);
 				rel_numparents = lappend_int(rel_numparents, 1);
-				hash_entry->numparents_cell = rel_numparents->tail;
 			}
 		}
 	}
@@ -272,9 +278,11 @@ has_subclass(Oid relationId)
 }
 
 /*
- * has_superclass - does this relation inherit from another?  The caller
- * should hold a lock on the given relation so that it can't be concurrently
- * added to or removed from an inheritance hierarchy.
+ * has_superclass - does this relation inherit from another?
+ *
+ * Unlike has_subclass, this can be relied on to give an accurate answer.
+ * However, the caller must hold a lock on the given relation so that it
+ * can't be concurrently added to or removed from an inheritance hierarchy.
  */
 bool
 has_superclass(Oid relationId)

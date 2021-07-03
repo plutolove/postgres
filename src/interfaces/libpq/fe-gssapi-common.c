@@ -3,7 +3,7 @@
  * fe-gssapi-common.c
  *     The front-end (client) GSSAPI common code
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -20,10 +20,10 @@
 
 /*
  * Fetch all errors of a specific type and append to "str".
+ * Each error string is preceded by a space.
  */
 static void
-pg_GSS_error_int(PQExpBuffer str, const char *mprefix,
-				 OM_uint32 stat, int type)
+pg_GSS_error_int(PQExpBuffer str, OM_uint32 stat, int type)
 {
 	OM_uint32	lmin_s;
 	gss_buffer_desc lmsg;
@@ -31,9 +31,10 @@ pg_GSS_error_int(PQExpBuffer str, const char *mprefix,
 
 	do
 	{
-		gss_display_status(&lmin_s, stat, type,
-						   GSS_C_NO_OID, &msg_ctx, &lmsg);
-		appendPQExpBuffer(str, "%s: %s\n", mprefix, (char *) lmsg.value);
+		if (gss_display_status(&lmin_s, stat, type, GSS_C_NO_OID,
+							   &msg_ctx, &lmsg) != GSS_S_COMPLETE)
+			break;
+		appendPQExpBuffer(str, " %s", (char *) lmsg.value);
 		gss_release_buffer(&lmin_s, &lmsg);
 	} while (msg_ctx);
 }
@@ -46,19 +47,18 @@ pg_GSS_error(const char *mprefix, PGconn *conn,
 			 OM_uint32 maj_stat, OM_uint32 min_stat)
 {
 	resetPQExpBuffer(&conn->errorMessage);
-
-	/* Fetch major error codes */
-	pg_GSS_error_int(&conn->errorMessage, mprefix, maj_stat, GSS_C_GSS_CODE);
-
-	/* Add the minor codes as well */
-	pg_GSS_error_int(&conn->errorMessage, mprefix, min_stat, GSS_C_MECH_CODE);
+	appendPQExpBuffer(&conn->errorMessage, "%s:", mprefix);
+	pg_GSS_error_int(&conn->errorMessage, maj_stat, GSS_C_GSS_CODE);
+	appendPQExpBufferChar(&conn->errorMessage, ':');
+	pg_GSS_error_int(&conn->errorMessage, min_stat, GSS_C_MECH_CODE);
+	appendPQExpBufferChar(&conn->errorMessage, '\n');
 }
 
 /*
  * Check if we can acquire credentials at all (and yield them if so).
  */
 bool
-pg_GSS_have_ccache(gss_cred_id_t *cred_out)
+pg_GSS_have_cred_cache(gss_cred_id_t *cred_out)
 {
 	OM_uint32	major,
 				minor;
@@ -103,7 +103,7 @@ pg_GSS_load_servicename(PGconn *conn)
 	 * Import service principal name so the proper ticket can be acquired by
 	 * the GSSAPI system.
 	 */
-	maxlen = NI_MAXHOST + strlen(conn->krbsrvname) + 2;
+	maxlen = strlen(conn->krbsrvname) + strlen(host) + 2;
 	temp_gbuf.value = (char *) malloc(maxlen);
 	if (!temp_gbuf.value)
 	{

@@ -4,7 +4,7 @@
  *	  tuple table support stuff
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/tuptable.h
@@ -15,9 +15,9 @@
 #define TUPTABLE_H
 
 #include "access/htup.h"
+#include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/tupdesc.h"
-#include "access/htup_details.h"
 #include "storage/buf.h"
 
 /*----------
@@ -68,8 +68,8 @@
  * A TupleTableSlot can also be "empty", indicated by flag TTS_FLAG_EMPTY set
  * in tts_flags, holding no valid data.  This is the only valid state for a
  * freshly-created slot that has not yet had a tuple descriptor assigned to
- * it.  In this state, TTS_SHOULDFREE should not be set in tts_flag, tts_tuple
- * must be NULL, tts_buffer InvalidBuffer, and tts_nvalid zero.
+ * it.  In this state, TTS_SHOULDFREE should not be set in tts_flags, tts_tuple
+ * must be NULL and tts_nvalid zero.
  *
  * The tupleDescriptor is simply referenced, not copied, by the TupleTableSlot
  * code.  The caller of ExecSetSlotDescriptor() is responsible for providing
@@ -87,7 +87,7 @@
  * the descriptor is provided), or when a descriptor is assigned to the slot;
  * they are of length equal to the descriptor's natts.
  *
- * The TTS_FLAG_SLOW flag and tts_off are saved state for
+ * The TTS_FLAG_SLOW flag is saved state for
  * slot_deform_heap_tuple, and should not be touched by any other code.
  *----------
  */
@@ -261,9 +261,8 @@ typedef struct BufferHeapTupleTableSlot
 	/*
 	 * If buffer is not InvalidBuffer, then the slot is holding a pin on the
 	 * indicated buffer page; drop the pin when we release the slot's
-	 * reference to that buffer.  (TTS_FLAG_SHOULDFREE should not be set be
-	 * false in such a case, since presumably tts_tuple is pointing at the
-	 * buffer page.)
+	 * reference to that buffer.  (TTS_FLAG_SHOULDFREE should not be set in
+	 * such a case, since presumably tts_tuple is pointing into the buffer.)
 	 */
 	Buffer		buffer;			/* tuple's buffer, or InvalidBuffer */
 } BufferHeapTupleTableSlot;
@@ -476,6 +475,7 @@ static inline TupleTableSlot *
 ExecCopySlot(TupleTableSlot *dstslot, TupleTableSlot *srcslot)
 {
 	Assert(!TTS_EMPTY(srcslot));
+	AssertArg(srcslot != dstslot);
 
 	dstslot->tts_ops->copyslot(dstslot, srcslot);
 

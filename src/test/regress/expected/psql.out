@@ -76,6 +76,28 @@ four  | 4
 (1 row)
 
 \unset FETCH_COUNT
+-- \g/\gx with pset options
+SELECT 1 as one, 2 as two \g (format=csv csv_fieldsep='\t')
+one	two
+1	2
+\g
+ one | two 
+-----+-----
+   1 |   2
+(1 row)
+
+SELECT 1 as one, 2 as two \gx (title='foo bar')
+foo bar
+-[ RECORD 1 ]
+one | 1
+two | 2
+
+\g
+ one | two 
+-----+-----
+   1 |   2
+(1 row)
+
 -- \gset
 select 10 as test01, 20 as test02, 'Hello' as test03 \gset pref01_
 \echo :pref01_test01 :pref01_test02 :pref01_test03
@@ -84,6 +106,10 @@ select 10 as test01, 20 as test02, 'Hello' as test03 \gset pref01_
 select 10 as "bad name"
 \gset
 invalid variable name: "bad name"
+select 97 as "EOF", 'ok' as _foo \gset IGNORE
+attempt to \gset into specially treated variable "IGNOREEOF" ignored
+\echo :IGNORE_foo :IGNOREEOF
+ok 0
 -- multiple backslash commands in one line
 select 1 as x, 2 as y \gset pref01_ \\ \echo :pref01_x
 1
@@ -4180,6 +4206,25 @@ drop table psql_serial_tab;
 \pset format aligned
 \pset expanded off
 \pset border 1
+-- \echo and allied features
+\echo this is a test
+this is a test
+\echo -n without newline
+without newline\echo with -n newline
+with -n newline
+\echo '-n' with newline
+-n with newline
+\set foo bar
+\echo foo = :foo
+foo = bar
+\qecho this is a test
+this is a test
+\qecho foo = :foo
+foo = bar
+\warn this is a test
+this is a test
+\warn foo = :foo
+foo = bar
 -- tests for \if ... \endif
 \if true
   select 'okay';
@@ -4256,6 +4301,17 @@ all true
 	\echo 'all false'
 all false
 \endif
+-- test true-false elif after initial true branch
+\if true
+	\echo 'should print #2-5'
+should print #2-5
+\elif true
+	\echo 'should not print #2-6'
+\elif false
+	\echo 'should not print #2-7'
+\else
+	\echo 'should not print #2-8'
+\endif
 -- test simple true-then-else
 \if true
 	\echo 'first thing true'
@@ -4329,22 +4385,60 @@ bar 'bar' "bar"
 	:try_to_quit
 	\echo `nosuchcommand` :foo :'foo' :"foo"
 	\pset fieldsep | `nosuchcommand` :foo :'foo' :"foo"
-	\a \C arg1 \c arg1 arg2 arg3 arg4 \cd arg1 \conninfo
+	\a
+	\C arg1
+	\c arg1 arg2 arg3 arg4
+	\cd arg1
+	\conninfo
 	\copy arg1 arg2 arg3 arg4 arg5 arg6
-	\copyright \dt arg1 \e arg1 arg2
+	\copyright
+	SELECT 1 as one, 2, 3 \crosstabview
+	\dt arg1
+	\e arg1 arg2
 	\ef whole_line
 	\ev whole_line
-	\echo arg1 arg2 arg3 arg4 arg5 \echo arg1 \encoding arg1 \errverbose
-	\g arg1 \gx arg1 \gexec \h \html \i arg1 \ir arg1 \l arg1 \lo arg1 arg2
-	\o arg1 \p \password arg1 \prompt arg1 arg2 \pset arg1 arg2 \q
-	\reset \s arg1 \set arg1 arg2 arg3 arg4 arg5 arg6 arg7 \setenv arg1 arg2
+	\echo arg1 arg2 arg3 arg4 arg5
+	\echo arg1
+	\encoding arg1
+	\errverbose
+	\f arg1
+	\g arg1
+	\gx arg1
+	\gexec
+	SELECT 1 AS one \gset
+	\h
+	\?
+	\html
+	\i arg1
+	\ir arg1
+	\l arg1
+	\lo arg1 arg2
+invalid command \lo
+	\lo_list
+	\o arg1
+	\p
+	\password arg1
+	\prompt arg1 arg2
+	\pset arg1 arg2
+	\q
+	\reset
+	\s arg1
+	\set arg1 arg2 arg3 arg4 arg5 arg6 arg7
+	\setenv arg1 arg2
 	\sf whole_line
 	\sv whole_line
-	\t arg1 \T arg1 \timing arg1 \unset arg1 \w arg1 \watch arg1 \x arg1
+	\t arg1
+	\T arg1
+	\timing arg1
+	\unset arg1
+	\w arg1
+	\watch arg1
+	\x arg1
 	-- \else here is eaten as part of OT_FILEPIPE argument
 	\w |/no/such/file \else
 	-- \endif here is eaten as part of whole-line argument
 	\! whole_line \endif
+	\z
 \else
 	\echo 'should print #8-1'
 should print #8-1
@@ -4599,9 +4693,9 @@ last error message: division by zero
 last error code: 22012
 \unset FETCH_COUNT
 create schema testpart;
-create role testrole_partitioning;
-alter schema testpart owner to testrole_partitioning;
-set role to testrole_partitioning;
+create role regress_partitioning_role;
+alter schema testpart owner to regress_partitioning_role;
+set role to regress_partitioning_role;
 -- run test inside own schema and hide other partitions
 set search_path to testpart;
 create table testtable_apple(logdate date);
@@ -4614,25 +4708,25 @@ create index testpart_apple_index on testpart_apple(logdate);
 create index testpart_orange_index on testpart_orange(logdate);
 -- only partition related object should be displayed
 \dP test*apple*
-                                       List of partitioned relations
-  Schema  |         Name         |         Owner         |       Type        | Parent name |     Table      
-----------+----------------------+-----------------------+-------------------+-------------+----------------
- testpart | testpart_apple       | testrole_partitioning | partitioned table |             | 
- testpart | testpart_apple_index | testrole_partitioning | partitioned index |             | testpart_apple
+                                         List of partitioned relations
+  Schema  |         Name         |           Owner           |       Type        | Parent name |     Table      
+----------+----------------------+---------------------------+-------------------+-------------+----------------
+ testpart | testpart_apple       | regress_partitioning_role | partitioned table |             | 
+ testpart | testpart_apple_index | regress_partitioning_role | partitioned index |             | testpart_apple
 (2 rows)
 
 \dPt test*apple*
-                   List of partitioned tables
-  Schema  |      Name      |         Owner         | Parent name 
-----------+----------------+-----------------------+-------------
- testpart | testpart_apple | testrole_partitioning | 
+                     List of partitioned tables
+  Schema  |      Name      |           Owner           | Parent name 
+----------+----------------+---------------------------+-------------
+ testpart | testpart_apple | regress_partitioning_role | 
 (1 row)
 
 \dPi test*apple*
-                              List of partitioned indexes
-  Schema  |         Name         |         Owner         | Parent name |     Table      
-----------+----------------------+-----------------------+-------------+----------------
- testpart | testpart_apple_index | testrole_partitioning |             | testpart_apple
+                                List of partitioned indexes
+  Schema  |         Name         |           Owner           | Parent name |     Table      
+----------+----------------------+---------------------------+-------------+----------------
+ testpart | testpart_apple_index | regress_partitioning_role |             | testpart_apple
 (1 row)
 
 drop table testtable_apple;
@@ -4657,75 +4751,268 @@ create table child_35_40 partition of child_30_40
    for values from (35) to (40);
 insert into parent_tab values (generate_series(30,39));
 \dPt
-          List of partitioned tables
-  Schema  |    Name    |         Owner         
-----------+------------+-----------------------
- testpart | parent_tab | testrole_partitioning
+            List of partitioned tables
+  Schema  |    Name    |           Owner           
+----------+------------+---------------------------
+ testpart | parent_tab | regress_partitioning_role
 (1 row)
 
 \dPi
-                 List of partitioned indexes
-  Schema  |     Name     |         Owner         |   Table    
-----------+--------------+-----------------------+------------
- testpart | parent_index | testrole_partitioning | parent_tab
+                   List of partitioned indexes
+  Schema  |     Name     |           Owner           |   Table    
+----------+--------------+---------------------------+------------
+ testpart | parent_index | regress_partitioning_role | parent_tab
 (1 row)
 
 \dP testpart.*
-                                     List of partitioned relations
-  Schema  |        Name        |         Owner         |       Type        | Parent name  |    Table    
-----------+--------------------+-----------------------+-------------------+--------------+-------------
- testpart | parent_tab         | testrole_partitioning | partitioned table |              | 
- testpart | child_30_40        | testrole_partitioning | partitioned table | parent_tab   | 
- testpart | parent_index       | testrole_partitioning | partitioned index |              | parent_tab
- testpart | child_30_40_id_idx | testrole_partitioning | partitioned index | parent_index | child_30_40
+                                       List of partitioned relations
+  Schema  |        Name        |           Owner           |       Type        | Parent name  |    Table    
+----------+--------------------+---------------------------+-------------------+--------------+-------------
+ testpart | parent_tab         | regress_partitioning_role | partitioned table |              | 
+ testpart | child_30_40        | regress_partitioning_role | partitioned table | parent_tab   | 
+ testpart | parent_index       | regress_partitioning_role | partitioned index |              | parent_tab
+ testpart | child_30_40_id_idx | regress_partitioning_role | partitioned index | parent_index | child_30_40
 (4 rows)
 
 \dP
-                          List of partitioned relations
-  Schema  |     Name     |         Owner         |       Type        |   Table    
-----------+--------------+-----------------------+-------------------+------------
- testpart | parent_tab   | testrole_partitioning | partitioned table | 
- testpart | parent_index | testrole_partitioning | partitioned index | parent_tab
+                            List of partitioned relations
+  Schema  |     Name     |           Owner           |       Type        |   Table    
+----------+--------------+---------------------------+-------------------+------------
+ testpart | parent_tab   | regress_partitioning_role | partitioned table | 
+ testpart | parent_index | regress_partitioning_role | partitioned index | parent_tab
 (2 rows)
 
 \dPtn
-                  List of partitioned tables
-  Schema  |    Name     |         Owner         | Parent name 
-----------+-------------+-----------------------+-------------
- testpart | parent_tab  | testrole_partitioning | 
- testpart | child_30_40 | testrole_partitioning | parent_tab
+                    List of partitioned tables
+  Schema  |    Name     |           Owner           | Parent name 
+----------+-------------+---------------------------+-------------
+ testpart | parent_tab  | regress_partitioning_role | 
+ testpart | child_30_40 | regress_partitioning_role | parent_tab
 (2 rows)
 
 \dPin
-                            List of partitioned indexes
-  Schema  |        Name        |         Owner         | Parent name  |    Table    
-----------+--------------------+-----------------------+--------------+-------------
- testpart | parent_index       | testrole_partitioning |              | parent_tab
- testpart | child_30_40_id_idx | testrole_partitioning | parent_index | child_30_40
+                              List of partitioned indexes
+  Schema  |        Name        |           Owner           | Parent name  |    Table    
+----------+--------------------+---------------------------+--------------+-------------
+ testpart | parent_index       | regress_partitioning_role |              | parent_tab
+ testpart | child_30_40_id_idx | regress_partitioning_role | parent_index | child_30_40
 (2 rows)
 
 \dPn
-                                     List of partitioned relations
-  Schema  |        Name        |         Owner         |       Type        | Parent name  |    Table    
-----------+--------------------+-----------------------+-------------------+--------------+-------------
- testpart | parent_tab         | testrole_partitioning | partitioned table |              | 
- testpart | child_30_40        | testrole_partitioning | partitioned table | parent_tab   | 
- testpart | parent_index       | testrole_partitioning | partitioned index |              | parent_tab
- testpart | child_30_40_id_idx | testrole_partitioning | partitioned index | parent_index | child_30_40
+                                       List of partitioned relations
+  Schema  |        Name        |           Owner           |       Type        | Parent name  |    Table    
+----------+--------------------+---------------------------+-------------------+--------------+-------------
+ testpart | parent_tab         | regress_partitioning_role | partitioned table |              | 
+ testpart | child_30_40        | regress_partitioning_role | partitioned table | parent_tab   | 
+ testpart | parent_index       | regress_partitioning_role | partitioned index |              | parent_tab
+ testpart | child_30_40_id_idx | regress_partitioning_role | partitioned index | parent_index | child_30_40
 (4 rows)
 
 \dPn testpart.*
-                                     List of partitioned relations
-  Schema  |        Name        |         Owner         |       Type        | Parent name  |    Table    
-----------+--------------------+-----------------------+-------------------+--------------+-------------
- testpart | parent_tab         | testrole_partitioning | partitioned table |              | 
- testpart | child_30_40        | testrole_partitioning | partitioned table | parent_tab   | 
- testpart | parent_index       | testrole_partitioning | partitioned index |              | parent_tab
- testpart | child_30_40_id_idx | testrole_partitioning | partitioned index | parent_index | child_30_40
+                                       List of partitioned relations
+  Schema  |        Name        |           Owner           |       Type        | Parent name  |    Table    
+----------+--------------------+---------------------------+-------------------+--------------+-------------
+ testpart | parent_tab         | regress_partitioning_role | partitioned table |              | 
+ testpart | child_30_40        | regress_partitioning_role | partitioned table | parent_tab   | 
+ testpart | parent_index       | regress_partitioning_role | partitioned index |              | parent_tab
+ testpart | child_30_40_id_idx | regress_partitioning_role | partitioned index | parent_index | child_30_40
 (4 rows)
 
 drop table parent_tab cascade;
 drop schema testpart;
 set search_path to default;
 set role to default;
-drop role testrole_partitioning;
+drop role regress_partitioning_role;
+-- \d on toast table (use pg_statistic's toast table, which has a known name)
+\d pg_toast.pg_toast_2619
+TOAST table "pg_toast.pg_toast_2619"
+   Column   |  Type   
+------------+---------
+ chunk_id   | oid
+ chunk_seq  | integer
+ chunk_data | bytea
+Owning table: "pg_catalog.pg_statistic"
+Indexes:
+    "pg_toast_2619_index" PRIMARY KEY, btree (chunk_id, chunk_seq)
+
+-- check printing info about access methods
+\dA
+List of access methods
+  Name  | Type  
+--------+-------
+ brin   | Index
+ btree  | Index
+ gin    | Index
+ gist   | Index
+ hash   | Index
+ heap   | Table
+ heap2  | Table
+ spgist | Index
+(8 rows)
+
+\dA *
+List of access methods
+  Name  | Type  
+--------+-------
+ brin   | Index
+ btree  | Index
+ gin    | Index
+ gist   | Index
+ hash   | Index
+ heap   | Table
+ heap2  | Table
+ spgist | Index
+(8 rows)
+
+\dA h*
+List of access methods
+ Name  | Type  
+-------+-------
+ hash  | Index
+ heap  | Table
+ heap2 | Table
+(3 rows)
+
+\dA foo
+List of access methods
+ Name | Type 
+------+------
+(0 rows)
+
+\dA foo bar
+List of access methods
+ Name | Type 
+------+------
+(0 rows)
+
+\dA: extra argument "bar" ignored
+\dA+
+                             List of access methods
+  Name  | Type  |       Handler        |              Description               
+--------+-------+----------------------+----------------------------------------
+ brin   | Index | brinhandler          | block range index (BRIN) access method
+ btree  | Index | bthandler            | b-tree index access method
+ gin    | Index | ginhandler           | GIN index access method
+ gist   | Index | gisthandler          | GiST index access method
+ hash   | Index | hashhandler          | hash index access method
+ heap   | Table | heap_tableam_handler | heap table access method
+ heap2  | Table | heap_tableam_handler | 
+ spgist | Index | spghandler           | SP-GiST index access method
+(8 rows)
+
+\dA+ *
+                             List of access methods
+  Name  | Type  |       Handler        |              Description               
+--------+-------+----------------------+----------------------------------------
+ brin   | Index | brinhandler          | block range index (BRIN) access method
+ btree  | Index | bthandler            | b-tree index access method
+ gin    | Index | ginhandler           | GIN index access method
+ gist   | Index | gisthandler          | GiST index access method
+ hash   | Index | hashhandler          | hash index access method
+ heap   | Table | heap_tableam_handler | heap table access method
+ heap2  | Table | heap_tableam_handler | 
+ spgist | Index | spghandler           | SP-GiST index access method
+(8 rows)
+
+\dA+ h*
+                     List of access methods
+ Name  | Type  |       Handler        |       Description        
+-------+-------+----------------------+--------------------------
+ hash  | Index | hashhandler          | hash index access method
+ heap  | Table | heap_tableam_handler | heap table access method
+ heap2 | Table | heap_tableam_handler | 
+(3 rows)
+
+\dA+ foo
+       List of access methods
+ Name | Type | Handler | Description 
+------+------+---------+-------------
+(0 rows)
+
+\dAc brin pg*.oid*
+                   List of operator classes
+  AM  | Input type | Storage type | Operator class | Default? 
+------+------------+--------------+----------------+----------
+ brin | oid        |              | oid_minmax_ops | yes
+(1 row)
+
+\dAf spgist
+          List of operator families
+   AM   | Operator family | Applicable types 
+--------+-----------------+------------------
+ spgist | box_ops         | box
+ spgist | kd_point_ops    | point
+ spgist | network_ops     | inet
+ spgist | poly_ops        | polygon
+ spgist | quad_point_ops  | point
+ spgist | range_ops       | anyrange
+ spgist | text_ops        | text
+(7 rows)
+
+\dAf btree int4
+              List of operator families
+  AM   | Operator family |     Applicable types      
+-------+-----------------+---------------------------
+ btree | integer_ops     | smallint, integer, bigint
+(1 row)
+
+\dAo+ btree float_ops
+                                List of operators of operator families
+  AM   | Operator family |               Operator                | Strategy | Purpose | Sort opfamily 
+-------+-----------------+---------------------------------------+----------+---------+---------------
+ btree | float_ops       | <(double precision,double precision)  |        1 | search  | 
+ btree | float_ops       | <=(double precision,double precision) |        2 | search  | 
+ btree | float_ops       | =(double precision,double precision)  |        3 | search  | 
+ btree | float_ops       | >=(double precision,double precision) |        4 | search  | 
+ btree | float_ops       | >(double precision,double precision)  |        5 | search  | 
+ btree | float_ops       | <(real,real)                          |        1 | search  | 
+ btree | float_ops       | <=(real,real)                         |        2 | search  | 
+ btree | float_ops       | =(real,real)                          |        3 | search  | 
+ btree | float_ops       | >=(real,real)                         |        4 | search  | 
+ btree | float_ops       | >(real,real)                          |        5 | search  | 
+ btree | float_ops       | <(double precision,real)              |        1 | search  | 
+ btree | float_ops       | <=(double precision,real)             |        2 | search  | 
+ btree | float_ops       | =(double precision,real)              |        3 | search  | 
+ btree | float_ops       | >=(double precision,real)             |        4 | search  | 
+ btree | float_ops       | >(double precision,real)              |        5 | search  | 
+ btree | float_ops       | <(real,double precision)              |        1 | search  | 
+ btree | float_ops       | <=(real,double precision)             |        2 | search  | 
+ btree | float_ops       | =(real,double precision)              |        3 | search  | 
+ btree | float_ops       | >=(real,double precision)             |        4 | search  | 
+ btree | float_ops       | >(real,double precision)              |        5 | search  | 
+(20 rows)
+
+\dAo * pg_catalog.jsonb_path_ops
+             List of operators of operator families
+ AM  | Operator family |      Operator      | Strategy | Purpose 
+-----+-----------------+--------------------+----------+---------
+ gin | jsonb_path_ops  | @>(jsonb,jsonb)    |        7 | search
+ gin | jsonb_path_ops  | @?(jsonb,jsonpath) |       15 | search
+ gin | jsonb_path_ops  | @@(jsonb,jsonpath) |       16 | search
+(3 rows)
+
+\dAp+ btree float_ops
+                                                         List of support functions of operator families
+  AM   | Operator family | Registered left type | Registered right type | Number |                                   Function                                   
+-------+-----------------+----------------------+-----------------------+--------+------------------------------------------------------------------------------
+ btree | float_ops       | double precision     | double precision      |      1 | btfloat8cmp(double precision,double precision)
+ btree | float_ops       | double precision     | double precision      |      2 | btfloat8sortsupport(internal)
+ btree | float_ops       | double precision     | double precision      |      3 | in_range(double precision,double precision,double precision,boolean,boolean)
+ btree | float_ops       | real                 | real                  |      1 | btfloat4cmp(real,real)
+ btree | float_ops       | real                 | real                  |      2 | btfloat4sortsupport(internal)
+ btree | float_ops       | double precision     | real                  |      1 | btfloat84cmp(double precision,real)
+ btree | float_ops       | real                 | double precision      |      1 | btfloat48cmp(real,double precision)
+ btree | float_ops       | real                 | double precision      |      3 | in_range(real,real,double precision,boolean,boolean)
+(8 rows)
+
+\dAp * pg_catalog.uuid_ops
+                            List of support functions of operator families
+  AM   | Operator family | Registered left type | Registered right type | Number |      Function      
+-------+-----------------+----------------------+-----------------------+--------+--------------------
+ btree | uuid_ops        | uuid                 | uuid                  |      1 | uuid_cmp
+ btree | uuid_ops        | uuid                 | uuid                  |      2 | uuid_sortsupport
+ btree | uuid_ops        | uuid                 | uuid                  |      4 | btequalimage
+ hash  | uuid_ops        | uuid                 | uuid                  |      1 | uuid_hash
+ hash  | uuid_ops        | uuid                 | uuid                  |      2 | uuid_hash_extended
+(5 rows)
+

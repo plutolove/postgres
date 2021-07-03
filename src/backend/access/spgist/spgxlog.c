@@ -4,7 +4,7 @@
  *	  WAL replay logic for SP-GiST
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1008,6 +1008,6 @@ spg_mask(char *pagedata, BlockNumber blkno)
 	 * Mask the unused space, but only if the page's pd_lower appears to have
 	 * been set correctly.
 	 */
-	if (pagehdr->pd_lower > SizeOfPageHeaderData)
+	if (pagehdr->pd_lower >= SizeOfPageHeaderData)
 		mask_unused_space(page);
 }

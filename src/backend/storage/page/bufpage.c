@@ -3,7 +3,7 @@
  * bufpage.c
  *	  POSTGRES standard buffer page code.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -62,6 +62,18 @@ PageInit(Page page, Size pageSize, Size specialSize)
 
 /*
  * PageIsVerified
+ *		Utility wrapper for PageIsVerifiedExtended().
+ */
+bool
+PageIsVerified(Page page, BlockNumber blkno)
+{
+	return PageIsVerifiedExtended(page, blkno,
+								  PIV_LOG_WARNING | PIV_REPORT_STAT);
+}
+
+
+/*
+ * PageIsVerifiedExtended
  *		Check that the page header and checksum (if any) appear valid.
  *
  * This is called when a page has just been read in from disk.  The idea is
@@ -77,9 +89,15 @@ PageInit(Page page, Size pageSize, Size specialSize)
  * allow zeroed pages here, and are careful that the page access macros
  * treat such a page as empty and without free space.  Eventually, VACUUM
  * will clean up such a page and make it usable.
+ *
+ * If flag PIV_LOG_WARNING is set, a WARNING is logged in the event of
+ * a checksum failure.
+ *
+ * If flag PIV_REPORT_STAT is set, a checksum failure is reported directly
+ * to pgstat.
  */
 bool
-PageIsVerified(Page page, BlockNumber blkno)
+PageIsVerifiedExtended(Page page, BlockNumber blkno, int flags)
 {
 	PageHeader	p = (PageHeader) page;
 	size_t	   *pagebytes;
@@ -119,14 +137,7 @@ PageIsVerified(Page page, BlockNumber blkno)
 			return true;
 	}
 
-	/*
-	 * Check all-zeroes case. Luckily BLCKSZ is guaranteed to always be a
-	 * multiple of size_t - and it's much faster to compare memory using the
-	 * native word size.
-	 */
-	StaticAssertStmt(BLCKSZ == (BLCKSZ / sizeof(size_t)) * sizeof(size_t),
-					 "BLCKSZ has to be a multiple of sizeof(size_t)");
-
+	/* Check all-zeroes case */
 	all_zeroes = true;
 	pagebytes = (size_t *) page;
 	for (i = 0; i < (BLCKSZ / sizeof(size_t)); i++)
@@ -147,12 +158,14 @@ PageIsVerified(Page page, BlockNumber blkno)
 	 */
 	if (checksum_failure)
 	{
-		ereport(WARNING,
-				(ERRCODE_DATA_CORRUPTED,
-				 errmsg("page verification failed, calculated checksum %u but expected %u",
-						checksum, p->pd_checksum)));
+		if ((flags & PIV_LOG_WARNING) != 0)
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("page verification failed, calculated checksum %u but expected %u",
+							checksum, p->pd_checksum)));
 
-		pgstat_report_checksum_failure();
+		if ((flags & PIV_REPORT_STAT) != 0)
+			pgstat_report_checksum_failure();
 
 		if (header_sane && ignore_checksum_failure)
 			return true;
@@ -1055,8 +1068,10 @@ PageIndexTupleDeleteNoCompact(Page page, OffsetNumber offnum)
  * This is better than deleting and reinserting the tuple, because it
  * avoids any data shifting when the tuple size doesn't change; and
  * even when it does, we avoid moving the line pointers around.
- * Conceivably this could also be of use to an index AM that cares about
- * the physical order of tuples as well as their ItemId order.
+ * This could be used by an index AM that doesn't want to unset the
+ * LP_DEAD bit when it happens to be set.  It could conceivably also be
+ * used by an index AM that cares about the physical order of tuples as
+ * well as their logical/ItemId order.
  *
  * If there's insufficient space for the new tuple, return false.  Other
  * errors represent data-corruption problems, so we just elog.
@@ -1141,8 +1156,9 @@ PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 		}
 	}
 
-	/* Update the item's tuple length (other fields shouldn't change) */
-	ItemIdSetNormal(tupid, offset + size_diff, newsize);
+	/* Update the item's tuple length without changing its lp_flags field */
+	tupid->lp_off = offset + size_diff;
+	tupid->lp_len = newsize;
 
 	/* Copy new tuple data onto page */
 	memcpy(PageGetItem(page, tupid), newtup, newsize);

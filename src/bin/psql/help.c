@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/help.c
  */
@@ -21,10 +21,9 @@
 #include <termios.h>
 #endif
 
+#include "common.h"
 #include "common/logging.h"
 #include "common/username.h"
-
-#include "common.h"
 #include "help.h"
 #include "input.h"
 #include "settings.h"
@@ -69,7 +68,7 @@ usage(unsigned short int pager)
 	 * Keep this line count in sync with the number of lines printed below!
 	 * Use "psql --help=options | wc" to count correctly.
 	 */
-	output = PageOutput(62, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(63, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("psql is the PostgreSQL interactive terminal.\n\n"));
 	fprintf(output, _("Usage:\n"));
@@ -145,7 +144,8 @@ usage(unsigned short int pager)
 	fprintf(output, _("\nFor more information, type \"\\?\" (for internal commands) or \"\\help\" (for SQL\n"
 					  "commands) from within psql, or consult the psql section in the PostgreSQL\n"
 					  "documentation.\n\n"));
-	fprintf(output, _("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	fprintf(output, _("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	fprintf(output, _("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 
 	ClosePager(output);
 }
@@ -169,17 +169,18 @@ slashUsage(unsigned short int pager)
 	 * Use "psql --help=commands | wc" to count correctly.  It's okay to count
 	 * the USE_READLINE line even in builds without that.
 	 */
-	output = PageOutput(127, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(133, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("General\n"));
 	fprintf(output, _("  \\copyright             show PostgreSQL usage and distribution terms\n"));
 	fprintf(output, _("  \\crosstabview [COLUMNS] execute query and display results in crosstab\n"));
 	fprintf(output, _("  \\errverbose            show most recent error message at maximum verbosity\n"));
-	fprintf(output, _("  \\g [FILE] or ;         execute query (and send results to file or |pipe)\n"));
+	fprintf(output, _("  \\g [(OPTIONS)] [FILE]  execute query (and send results to file or |pipe);\n"
+					  "                         \\g with no arguments is equivalent to a semicolon\n"));
 	fprintf(output, _("  \\gdesc                 describe result of query, without executing it\n"));
 	fprintf(output, _("  \\gexec                 execute query, then execute each value in its result\n"));
 	fprintf(output, _("  \\gset [PREFIX]         execute query and store results in psql variables\n"));
-	fprintf(output, _("  \\gx [FILE]             as \\g, but forces expanded output mode\n"));
+	fprintf(output, _("  \\gx [(OPTIONS)] [FILE] as \\g, but forces expanded output mode\n"));
 	fprintf(output, _("  \\q                     quit psql\n"));
 	fprintf(output, _("  \\watch [SEC]           execute query every SEC seconds\n"));
 	fprintf(output, "\n");
@@ -206,11 +207,12 @@ slashUsage(unsigned short int pager)
 
 	fprintf(output, _("Input/Output\n"));
 	fprintf(output, _("  \\copy ...              perform SQL COPY with data stream to the client host\n"));
-	fprintf(output, _("  \\echo [STRING]         write string to standard output\n"));
+	fprintf(output, _("  \\echo [-n] [STRING]    write string to standard output (-n for no newline)\n"));
 	fprintf(output, _("  \\i FILE                execute commands from file\n"));
 	fprintf(output, _("  \\ir FILE               as \\i, but relative to location of current script\n"));
 	fprintf(output, _("  \\o [FILE]              send all query results to file or |pipe\n"));
-	fprintf(output, _("  \\qecho [STRING]        write string to query output stream (see \\o)\n"));
+	fprintf(output, _("  \\qecho [-n] [STRING]   write string to \\o output stream (-n for no newline)\n"));
+	fprintf(output, _("  \\warn [-n] [STRING]    write string to standard error (-n for no newline)\n"));
 	fprintf(output, "\n");
 
 	fprintf(output, _("Conditional\n"));
@@ -226,6 +228,10 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\d[S+]  NAME           describe table, view, sequence, or index\n"));
 	fprintf(output, _("  \\da[S]  [PATTERN]      list aggregates\n"));
 	fprintf(output, _("  \\dA[+]  [PATTERN]      list access methods\n"));
+	fprintf(output, _("  \\dAc[+] [AMPTRN [TYPEPTRN]]  list operator classes\n"));
+	fprintf(output, _("  \\dAf[+] [AMPTRN [TYPEPTRN]]  list operator families\n"));
+	fprintf(output, _("  \\dAo[+] [AMPTRN [OPFPTRN]]   list operators of operator families\n"));
+	fprintf(output, _("  \\dAp    [AMPTRN [OPFPTRN]]   list support functions of operator families\n"));
 	fprintf(output, _("  \\db[+]  [PATTERN]      list tablespaces\n"));
 	fprintf(output, _("  \\dc[S+] [PATTERN]      list conversions\n"));
 	fprintf(output, _("  \\dC[+]  [PATTERN]      list casts\n"));
@@ -251,7 +257,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\do[S]  [PATTERN]      list operators\n"));
 	fprintf(output, _("  \\dO[S+] [PATTERN]      list collations\n"));
 	fprintf(output, _("  \\dp     [PATTERN]      list table, view, and sequence access privileges\n"));
-	fprintf(output, _("  \\dP[tin+] [PATTERN]    list [only table/index] partitioned relations\n"));
+	fprintf(output, _("  \\dP[itn+] [PATTERN]    list [only index/table] partitioned relations [n=nested]\n"));
 	fprintf(output, _("  \\drds [PATRN1 [PATRN2]] list per-database role settings\n"));
 	fprintf(output, _("  \\dRp[+] [PATTERN]      list replication publications\n"));
 	fprintf(output, _("  \\dRs[+] [PATTERN]      list replication subscriptions\n"));
@@ -528,6 +534,7 @@ helpSQL(const char *topic, unsigned short int pager)
 		int			i;
 		int			j;
 
+		/* Find screen width to determine how many columns will fit */
 #ifdef TIOCGWINSZ
 		struct winsize screen_size;
 
@@ -565,56 +572,63 @@ helpSQL(const char *topic, unsigned short int pager)
 	else
 	{
 		int			i,
-					j,
-					x = 0;
-		bool		help_found = false;
+					pass;
 		FILE	   *output = NULL;
 		size_t		len,
-					wordlen;
-		int			nl_count = 0;
+					wordlen,
+					j;
+		int			nl_count;
 
 		/*
+		 * len is the amount of the input to compare to the help topic names.
 		 * We first try exact match, then first + second words, then first
 		 * word only.
 		 */
 		len = strlen(topic);
 
-		for (x = 1; x <= 3; x++)
+		for (pass = 1; pass <= 3; pass++)
 		{
-			if (x > 1)			/* Nothing on first pass - try the opening
+			if (pass > 1)		/* Nothing on first pass - try the opening
 								 * word(s) */
 			{
 				wordlen = j = 1;
-				while (topic[j] != ' ' && j++ < len)
+				while (j < len && topic[j++] != ' ')
 					wordlen++;
-				if (x == 2)
+				if (pass == 2 && j < len)
 				{
-					j++;
-					while (topic[j] != ' ' && j++ <= len)
+					wordlen++;
+					while (j < len && topic[j++] != ' ')
 						wordlen++;
 				}
-				if (wordlen >= len) /* Don't try again if the same word */
+				if (wordlen >= len)
 				{
-					if (!output)
-						output = PageOutput(nl_count, pager ? &(pset.popt.topt) : NULL);
-					break;
+					/* Failed to shorten input, so try next pass if any */
+					continue;
 				}
 				len = wordlen;
 			}
 
-			/* Count newlines for pager */
+			/*
+			 * Count newlines for pager.  This logic must agree with what the
+			 * following loop will do!
+			 */
+			nl_count = 0;
 			for (i = 0; QL_HELP[i].cmd; i++)
 			{
 				if (pg_strncasecmp(topic, QL_HELP[i].cmd, len) == 0 ||
 					strcmp(topic, "*") == 0)
 				{
-					nl_count += 5 + QL_HELP[i].nl_count;
+					/* magic constant here must match format below! */
+					nl_count += 7 + QL_HELP[i].nl_count;
 
 					/* If we have an exact match, exit.  Fixes \h SELECT */
 					if (pg_strcasecmp(topic, QL_HELP[i].cmd) == 0)
 						break;
 				}
 			}
+			/* If no matches, don't open the output yet */
+			if (nl_count == 0)
+				continue;
 
 			if (!output)
 				output = PageOutput(nl_count, pager ? &(pset.popt.topt) : NULL);
@@ -629,10 +643,10 @@ helpSQL(const char *topic, unsigned short int pager)
 
 					initPQExpBuffer(&buffer);
 					QL_HELP[i].syntaxfunc(&buffer);
-					help_found = true;
 					url = psprintf("https://www.postgresql.org/docs/%s/%s.html",
 								   strstr(PG_VERSION, "devel") ? "devel" : PG_MAJORVERSION,
 								   QL_HELP[i].docbook_id);
+					/* # of newlines in format must match constant above! */
 					fprintf(output, _("Command:     %s\n"
 									  "Description: %s\n"
 									  "Syntax:\n%s\n\n"
@@ -642,17 +656,24 @@ helpSQL(const char *topic, unsigned short int pager)
 							buffer.data,
 							url);
 					free(url);
+					termPQExpBuffer(&buffer);
+
 					/* If we have an exact match, exit.  Fixes \h SELECT */
 					if (pg_strcasecmp(topic, QL_HELP[i].cmd) == 0)
 						break;
 				}
 			}
-			if (help_found)		/* Don't keep trying if we got a match */
-				break;
+			break;
 		}
 
-		if (!help_found)
-			fprintf(output, _("No help available for \"%s\".\nTry \\h with no arguments to see available help.\n"), topic);
+		/* If we never found anything, report that */
+		if (!output)
+		{
+			output = PageOutput(2, pager ? &(pset.popt.topt) : NULL);
+			fprintf(output, _("No help available for \"%s\".\n"
+							  "Try \\h with no arguments to see available help.\n"),
+					topic);
+		}
 
 		ClosePager(output);
 	}
@@ -663,10 +684,9 @@ helpSQL(const char *topic, unsigned short int pager)
 void
 print_copyright(void)
 {
-	puts(
-		 "PostgreSQL Database Management System\n"
+	puts("PostgreSQL Database Management System\n"
 		 "(formerly known as Postgres, then as Postgres95)\n\n"
-		 "Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group\n\n"
+		 "Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group\n\n"
 		 "Portions Copyright (c) 1994, The Regents of the University of California\n\n"
 		 "Permission to use, copy, modify, and distribute this software and its\n"
 		 "documentation for any purpose, without fee, and without a written agreement\n"
@@ -681,6 +701,5 @@ print_copyright(void)
 		 "INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY\n"
 		 "AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS\n"
 		 "ON AN \"AS IS\" BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATIONS TO\n"
-		 "PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.\n"
-		);
+		 "PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.\n");
 }

@@ -3,7 +3,7 @@
  * arrayfuncs.c
  *	  Support functions for arrays.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,6 +24,7 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/optimizer.h"
+#include "port/pg_bitutils.h"
 #include "utils/array.h"
 #include "utils/arrayaccess.h"
 #include "utils/builtins.h"
@@ -139,7 +140,7 @@ static void array_insert_slice(ArrayType *destArray, ArrayType *origArray,
 							   int *st, int *endp,
 							   int typlen, bool typbyval, char typalign);
 static int	array_cmp(FunctionCallInfo fcinfo);
-static ArrayType *create_array_envelope(int ndims, int *dimv, int *lbv, int nbytes,
+static ArrayType *create_array_envelope(int ndims, int *dimv, int *lbsv, int nbytes,
 										Oid elmtype, int dataoffset);
 static ArrayType *array_fill_internal(ArrayType *dims, ArrayType *lbs,
 									  Datum value, bool isnull, Oid elmtype,
@@ -371,6 +372,8 @@ array_in(PG_FUNCTION_ARGS)
 
 	/* This checks for overflow of the array dimensions */
 	nitems = ArrayGetNItems(ndim, dim);
+	ArrayCheckBounds(ndim, dim, lBound);
+
 	/* Empty array? */
 	if (nitems == 0)
 		PG_RETURN_ARRAYTYPE_P(construct_empty_array(element_type));
@@ -1320,24 +1323,11 @@ array_recv(PG_FUNCTION_ARGS)
 	{
 		dim[i] = pq_getmsgint(buf, 4);
 		lBound[i] = pq_getmsgint(buf, 4);
-
-		/*
-		 * Check overflow of upper bound. (ArrayNItems() below checks that
-		 * dim[i] >= 0)
-		 */
-		if (dim[i] != 0)
-		{
-			int			ub = lBound[i] + dim[i] - 1;
-
-			if (lBound[i] > ub)
-				ereport(ERROR,
-						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-						 errmsg("integer out of range")));
-		}
 	}
 
 	/* This checks for overflow of array dimensions */
 	nitems = ArrayGetNItems(ndim, dim);
+	ArrayCheckBounds(ndim, dim, lBound);
 
 	/*
 	 * We arrange to look up info about element type, including its receive
@@ -1997,7 +1987,7 @@ array_get_element_expanded(Datum arraydatum,
 
 /*
  * array_get_slice :
- *		   This routine takes an array and a range of indices (upperIndex and
+ *		   This routine takes an array and a range of indices (upperIndx and
  *		   lowerIndx), creates a new array structure for the referred elements
  *		   and returns a pointer to it.
  *
@@ -2242,7 +2232,7 @@ array_set_element(Datum arraydatum,
 					(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 					 errmsg("wrong number of array subscripts")));
 
-		if (indx[0] < 0 || indx[0] * elmlen >= arraytyplen)
+		if (indx[0] < 0 || indx[0] >= arraytyplen / elmlen)
 			ereport(ERROR,
 					(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 					 errmsg("array subscript out of range")));
@@ -2357,10 +2347,13 @@ array_set_element(Datum arraydatum,
 		}
 	}
 
+	/* This checks for overflow of the array dimensions */
+	newnitems = ArrayGetNItems(ndim, dim);
+	ArrayCheckBounds(ndim, dim, lb);
+
 	/*
 	 * Compute sizes of items and areas to copy
 	 */
-	newnitems = ArrayGetNItems(ndim, dim);
 	if (newhasnulls)
 		overheadlen = ARR_OVERHEAD_WITHNULLS(ndim, newnitems);
 	else
@@ -2613,6 +2606,13 @@ array_set_element_expanded(Datum arraydatum,
 						(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
 						 errmsg("array subscript out of range")));
 		}
+	}
+
+	/* Check for overflow of the array dimensions */
+	if (dimschanged)
+	{
+		(void) ArrayGetNItems(ndim, dim);
+		ArrayCheckBounds(ndim, dim, lb);
 	}
 
 	/* Now we can calculate linear offset of target item in array */
@@ -2933,6 +2933,7 @@ array_set_slice(Datum arraydatum,
 
 	/* Do this mainly to check for overflow */
 	nitems = ArrayGetNItems(ndim, dim);
+	ArrayCheckBounds(ndim, dim, lb);
 
 	/*
 	 * Make sure source array has enough entries.  Note we ignore the shape of
@@ -3347,7 +3348,9 @@ construct_md_array(Datum *elems,
 				 errmsg("number of array dimensions (%d) exceeds the maximum allowed (%d)",
 						ndims, MAXDIM)));
 
+	/* This checks for overflow of the array dimensions */
 	nelems = ArrayGetNItems(ndims, dims);
+	ArrayCheckBounds(ndims, dims, lbs);
 
 	/* if ndims <= 0 or any dims[i] == 0, return empty array */
 	if (nelems <= 0)
@@ -3667,7 +3670,7 @@ array_eq(PG_FUNCTION_ARGS)
 			}
 
 			/*
-			 * Apply the operator to the element pair
+			 * Apply the operator to the element pair; treat NULL as false
 			 */
 			locfcinfo->args[0].value = elt1;
 			locfcinfo->args[0].isnull = false;
@@ -3675,7 +3678,7 @@ array_eq(PG_FUNCTION_ARGS)
 			locfcinfo->args[1].isnull = false;
 			locfcinfo->isnull = false;
 			oprresult = DatumGetBool(FunctionCallInvoke(locfcinfo));
-			if (!oprresult)
+			if (locfcinfo->isnull || !oprresult)
 			{
 				result = false;
 				break;
@@ -3840,8 +3843,10 @@ array_cmp(FunctionCallInfo fcinfo)
 		locfcinfo->args[0].isnull = false;
 		locfcinfo->args[1].value = elt2;
 		locfcinfo->args[1].isnull = false;
-		locfcinfo->isnull = false;
 		cmpresult = DatumGetInt32(FunctionCallInvoke(locfcinfo));
+
+		/* We don't expect comparison support functions to return null */
+		Assert(!locfcinfo->isnull);
 
 		if (cmpresult == 0)
 			continue;			/* equal */
@@ -3982,8 +3987,9 @@ hash_array(PG_FUNCTION_ARGS)
 			/* Apply the hash function */
 			locfcinfo->args[0].value = elt;
 			locfcinfo->args[0].isnull = false;
-			locfcinfo->isnull = false;
 			elthash = DatumGetUInt32(FunctionCallInvoke(locfcinfo));
+			/* We don't expect hash functions to return null */
+			Assert(!locfcinfo->isnull);
 		}
 
 		/*
@@ -4046,7 +4052,7 @@ hash_array_extended(PG_FUNCTION_ARGS)
 	typalign = typentry->typalign;
 
 	InitFunctionCallInfoData(*locfcinfo, &typentry->hash_extended_proc_finfo, 2,
-							 InvalidOid, NULL, NULL);
+							 PG_GET_COLLATION(), NULL, NULL);
 
 	/* Loop over source data */
 	nitems = ArrayGetNItems(ndims, dims);
@@ -4073,6 +4079,8 @@ hash_array_extended(PG_FUNCTION_ARGS)
 			locfcinfo->args[1].value = Int64GetDatum(seed);
 			locfcinfo->args[1].isnull = false;
 			elthash = DatumGetUInt64(FunctionCallInvoke(locfcinfo));
+			/* We don't expect hash functions to return null */
+			Assert(!locfcinfo->isnull);
 		}
 
 		result = (result << 5) - result + elthash;
@@ -4159,7 +4167,7 @@ array_contain_compare(AnyArrayType *array1, AnyArrayType *array2, Oid collation,
 		nelems2 = array2->xpn.nelems;
 	}
 	else
-		deconstruct_array(&(array2->flt),
+		deconstruct_array((ArrayType *) array2,
 						  element_type, typlen, typbyval, typalign,
 						  &values2, &nulls2, &nelems2);
 
@@ -4206,7 +4214,7 @@ array_contain_compare(AnyArrayType *array1, AnyArrayType *array2, Oid collation,
 				continue;		/* can't match */
 
 			/*
-			 * Apply the operator to the element pair
+			 * Apply the operator to the element pair; treat NULL as false
 			 */
 			locfcinfo->args[0].value = elt1;
 			locfcinfo->args[0].isnull = false;
@@ -4214,7 +4222,7 @@ array_contain_compare(AnyArrayType *array1, AnyArrayType *array2, Oid collation,
 			locfcinfo->args[1].isnull = false;
 			locfcinfo->isnull = false;
 			oprresult = DatumGetBool(FunctionCallInvoke(locfcinfo));
-			if (oprresult)
+			if (!locfcinfo->isnull && oprresult)
 				break;
 		}
 
@@ -5313,9 +5321,7 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 		memcpy(&astate->lbs[1], lbs, ndims * sizeof(int));
 
 		/* Allocate at least enough data space for this item */
-		astate->abytes = 1024;
-		while (astate->abytes <= ndatabytes)
-			astate->abytes *= 2;
+		astate->abytes = pg_nextpower2_32(Max(1024, ndatabytes + 1));
 		astate->data = (char *) palloc(astate->abytes);
 	}
 	else
@@ -5362,9 +5368,7 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 			 * First input with nulls; we must retrospectively handle any
 			 * previous inputs by marking all their items non-null.
 			 */
-			astate->aitems = 256;
-			while (astate->aitems <= newnitems)
-				astate->aitems *= 2;
+			astate->aitems = pg_nextpower2_32(Max(256, newnitems + 1));
 			astate->nullbitmap = (bits8 *) palloc((astate->aitems + 7) / 8);
 			array_bitmap_copy(astate->nullbitmap, 0,
 							  NULL, 0,
@@ -5420,6 +5424,10 @@ makeArrayResultArr(ArrayBuildStateArr *astate,
 	{
 		int			dataoffset,
 					nbytes;
+
+		/* Check for overflow of the array dimensions */
+		(void) ArrayGetNItems(astate->ndims, astate->dims);
+		ArrayCheckBounds(astate->ndims, astate->dims, astate->lbs);
 
 		/* Compute required space */
 		nbytes = astate->nbytes;
@@ -5850,7 +5858,9 @@ array_fill_internal(ArrayType *dims, ArrayType *lbs,
 		lbsv = deflbs;
 	}
 
+	/* This checks for overflow of the array dimensions */
 	nitems = ArrayGetNItems(ndims, dimv);
+	ArrayCheckBounds(ndims, dimv, lbsv);
 
 	/* fast track for empty array */
 	if (nitems <= 0)
@@ -6205,7 +6215,7 @@ array_replace_internal(ArrayType *array,
 			else
 			{
 				/*
-				 * Apply the operator to the element pair
+				 * Apply the operator to the element pair; treat NULL as false
 				 */
 				locfcinfo->args[0].value = elt;
 				locfcinfo->args[0].isnull = false;
@@ -6213,7 +6223,7 @@ array_replace_internal(ArrayType *array,
 				locfcinfo->args[1].isnull = false;
 				locfcinfo->isnull = false;
 				oprresult = DatumGetBool(FunctionCallInvoke(locfcinfo));
-				if (!oprresult)
+				if (locfcinfo->isnull || !oprresult)
 				{
 					/* no match, keep element */
 					values[nresult] = elt;
@@ -6520,9 +6530,11 @@ width_bucket_array_fixed(Datum operand,
 		locfcinfo->args[0].isnull = false;
 		locfcinfo->args[1].value = fetch_att(ptr, typbyval, typlen);
 		locfcinfo->args[1].isnull = false;
-		locfcinfo->isnull = false;
 
 		cmpresult = DatumGetInt32(FunctionCallInvoke(locfcinfo));
+
+		/* We don't expect comparison support functions to return null */
+		Assert(!locfcinfo->isnull);
 
 		if (cmpresult < 0)
 			right = mid;
@@ -6579,6 +6591,9 @@ width_bucket_array_variable(Datum operand,
 		locfcinfo->args[1].isnull = false;
 
 		cmpresult = DatumGetInt32(FunctionCallInvoke(locfcinfo));
+
+		/* We don't expect comparison support functions to return null */
+		Assert(!locfcinfo->isnull);
 
 		if (cmpresult < 0)
 			right = mid;

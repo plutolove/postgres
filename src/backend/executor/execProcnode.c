@@ -7,7 +7,7 @@
  *	 ExecProcNode, or ExecEndNode on its subnodes and do the appropriate
  *	 processing.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -88,6 +88,7 @@
 #include "executor/nodeGroup.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
+#include "executor/nodeIncrementalSort.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
 #include "executor/nodeLimit.h"
@@ -113,9 +114,8 @@
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
 #include "executor/nodeWorktablescan.h"
-#include "nodes/nodeFuncs.h"
 #include "miscadmin.h"
-
+#include "nodes/nodeFuncs.h"
 
 static TupleTableSlot *ExecProcNodeFirst(PlanState *node);
 static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
@@ -312,6 +312,11 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		case T_Sort:
 			result = (PlanState *) ExecInitSort((Sort *) node,
 												estate, eflags);
+			break;
+
+		case T_IncrementalSort:
+			result = (PlanState *) ExecInitIncrementalSort((IncrementalSort *) node,
+														   estate, eflags);
 			break;
 
 		case T_Group:
@@ -694,6 +699,10 @@ ExecEndNode(PlanState *node)
 			ExecEndSort((SortState *) node);
 			break;
 
+		case T_IncrementalSortState:
+			ExecEndIncrementalSort((IncrementalSortState *) node);
+			break;
+
 		case T_GroupState:
 			ExecEndGroup((GroupState *) node);
 			break;
@@ -746,8 +755,6 @@ ExecShutdownNode(PlanState *node)
 
 	check_stack_depth();
 
-	planstate_tree_walker(node, ExecShutdownNode, NULL);
-
 	/*
 	 * Treat the node as running while we shut it down, but only if it's run
 	 * at least once already.  We don't expect much CPU consumption during
@@ -760,6 +767,8 @@ ExecShutdownNode(PlanState *node)
 	 */
 	if (node->instrument && node->instrument->running)
 		InstrStartNode(node->instrument);
+
+	planstate_tree_walker(node, ExecShutdownNode, NULL);
 
 	switch (nodeTag(node))
 	{
@@ -828,6 +837,30 @@ ExecSetTupleBound(int64 tuples_needed, PlanState *child_node)
 		 * mechanism.
 		 */
 		SortState  *sortState = (SortState *) child_node;
+
+		if (tuples_needed < 0)
+		{
+			/* make sure flag gets reset if needed upon rescan */
+			sortState->bounded = false;
+		}
+		else
+		{
+			sortState->bounded = true;
+			sortState->bound = tuples_needed;
+		}
+	}
+	else if (IsA(child_node, IncrementalSortState))
+	{
+		/*
+		 * If it is an IncrementalSort node, notify it that it can use bounded
+		 * sort.
+		 *
+		 * Note: it is the responsibility of nodeIncrementalSort.c to react
+		 * properly to changes of these parameters.  If we ever redesign this,
+		 * it'd be a good idea to integrate this signaling with the
+		 * parameter-change mechanism.
+		 */
+		IncrementalSortState *sortState = (IncrementalSortState *) child_node;
 
 		if (tuples_needed < 0)
 		{

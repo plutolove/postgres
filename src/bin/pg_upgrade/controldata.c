@@ -3,15 +3,15 @@
  *
  *	controldata functions
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/controldata.c
  */
 
 #include "postgres_fe.h"
 
-#include "pg_upgrade.h"
-
 #include <ctype.h>
+
+#include "pg_upgrade.h"
 
 /*
  * get_control_data()
@@ -180,7 +180,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 	}
 
 	/* pg_resetxlog has been renamed to pg_resetwal in version 10 */
-	if (GET_MAJOR_VERSION(cluster->bin_version) < 1000)
+	if (GET_MAJOR_VERSION(cluster->bin_version) <= 906)
 		resetwal_bin = "pg_resetxlog\" -n";
 	else
 		resetwal_bin = "pg_resetwal\" -n";

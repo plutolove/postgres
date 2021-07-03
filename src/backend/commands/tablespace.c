@@ -35,7 +35,7 @@
  * and munge the system catalogs of the new database.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -51,8 +51,8 @@
 #include <sys/stat.h>
 
 #include "access/heapam.h"
-#include "access/reloptions.h"
 #include "access/htup_details.h"
+#include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
 #include "access/xact.h"
@@ -83,7 +83,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/varlena.h"
-
 
 /* GUC variables */
 char	   *default_tablespace = NULL;
@@ -308,6 +307,15 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 				 errdetail("The prefix \"pg_\" is reserved for system tablespaces.")));
 
 	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for tablespace names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(stmt->tablespacename, "regress_", 8) != 0)
+		elog(WARNING, "tablespaces created by regression test cases should have names starting with \"regress_\"");
+#endif
+
+	/*
 	 * Check that there is no other tablespace by this name.  (The unique
 	 * index would catch this anyway, but might as well give a friendlier
 	 * message.)
@@ -412,6 +420,8 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 	Form_pg_tablespace spcform;
 	ScanKeyData entry[1];
 	Oid			tablespaceoid;
+	char	   *detail;
+	char	   *detail_log;
 
 	/*
 	 * Find the target tuple
@@ -459,6 +469,16 @@ DropTableSpace(DropTableSpaceStmt *stmt)
 		tablespaceoid == DEFAULTTABLESPACE_OID)
 		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLESPACE,
 					   tablespacename);
+
+	/* Check for pg_shdepend entries depending on this tablespace */
+	if (checkSharedDependencies(TableSpaceRelationId, tablespaceoid,
+								&detail, &detail_log))
+		ereport(ERROR,
+				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
+				 errmsg("tablespace \"%s\" cannot be dropped because some objects depend on it",
+						tablespacename),
+				 errdetail_internal("%s", detail),
+				 errdetail_log("%s", detail_log)));
 
 	/* DROP hook for the tablespace being removed */
 	InvokeObjectDropHook(TableSpaceRelationId, tablespaceoid, 0);
@@ -957,6 +977,15 @@ RenameTableSpace(const char *oldname, const char *newname)
 				 errmsg("unacceptable tablespace name \"%s\"", newname),
 				 errdetail("The prefix \"pg_\" is reserved for system tablespaces.")));
 
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for tablespace names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(newname, "regress_", 8) != 0)
+		elog(WARNING, "tablespaces created by regression test cases should have names starting with \"regress_\"");
+#endif
+
 	/* Make sure the new name doesn't exist */
 	ScanKeyInit(&entry[0],
 				Anum_pg_tablespace_spcname,
@@ -1166,6 +1195,7 @@ GetDefaultTablespace(char relpersistence, bool partitioned)
 
 typedef struct
 {
+	/* Array of OIDs to be passed to SetTempTablespaces() */
 	int			numSpcs;
 	Oid			tblSpcs[FLEXIBLE_ARRAY_MEMBER];
 } temp_tablespaces_extra;
@@ -1193,8 +1223,8 @@ check_temp_tablespaces(char **newval, void **extra, GucSource source)
 	/*
 	 * If we aren't inside a transaction, or connected to a database, we
 	 * cannot do the catalog accesses necessary to verify the name.  Must
-	 * accept the value on faith.
-	 * Fortunately, there's then also no need to pass the data to fd.c.
+	 * accept the value on faith. Fortunately, there's then also no need to
+	 * pass the data to fd.c.
 	 */
 	if (IsTransactionState() && MyDatabaseId != InvalidOid)
 	{
@@ -1215,6 +1245,7 @@ check_temp_tablespaces(char **newval, void **extra, GucSource source)
 			/* Allow an empty string (signifying database default) */
 			if (curname[0] == '\0')
 			{
+				/* InvalidOid signifies database's default tablespace */
 				tblSpcs[numSpcs++] = InvalidOid;
 				continue;
 			}
@@ -1241,6 +1272,7 @@ check_temp_tablespaces(char **newval, void **extra, GucSource source)
 			 */
 			if (curoid == MyDatabaseTableSpace)
 			{
+				/* InvalidOid signifies database's default tablespace */
 				tblSpcs[numSpcs++] = InvalidOid;
 				continue;
 			}
@@ -1351,6 +1383,7 @@ PrepareTempTablespaces(void)
 		/* Allow an empty string (signifying database default) */
 		if (curname[0] == '\0')
 		{
+			/* InvalidOid signifies database's default tablespace */
 			tblSpcs[numSpcs++] = InvalidOid;
 			continue;
 		}
@@ -1369,6 +1402,7 @@ PrepareTempTablespaces(void)
 		 */
 		if (curoid == MyDatabaseTableSpace)
 		{
+			/* InvalidOid signifies database's default tablespace */
 			tblSpcs[numSpcs++] = InvalidOid;
 			continue;
 		}

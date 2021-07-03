@@ -54,6 +54,19 @@ CREATE INDEX ON vaccluster(wrap_do_analyze(i));
 INSERT INTO vaccluster VALUES (1), (2);
 ANALYZE vaccluster;
 
+-- Test ANALYZE in transaction, where the transaction surrounding
+-- analyze performed modifications. This tests for the bug at
+-- https://postgr.es/m/c7988239-d42c-ddc4-41db-171b23b35e4f%40ssinger.info
+-- (which hopefully is unlikely to be reintroduced), but also seems
+-- independently worthwhile to cover.
+INSERT INTO vactst SELECT generate_series(1, 300);
+DELETE FROM vactst WHERE i % 7 = 0; -- delete a few rows outside
+BEGIN;
+INSERT INTO vactst SELECT generate_series(301, 400);
+DELETE FROM vactst WHERE i % 5 <> 0; -- delete a few rows inside
+ANALYZE vactst;
+COMMIT;
+
 VACUUM FULL pg_am;
 VACUUM FULL pg_class;
 VACUUM FULL pg_database;
@@ -62,14 +75,74 @@ VACUUM FULL vactst;
 
 VACUUM (DISABLE_PAGE_SKIPPING) vaccluster;
 
+-- PARALLEL option
+CREATE TABLE pvactst (i INT, a INT[], p POINT) with (autovacuum_enabled = off);
+INSERT INTO pvactst SELECT i, array[1,2,3], point(i, i+1) FROM generate_series(1,1000) i;
+CREATE INDEX btree_pvactst ON pvactst USING btree (i);
+CREATE INDEX hash_pvactst ON pvactst USING hash (i);
+CREATE INDEX brin_pvactst ON pvactst USING brin (i);
+CREATE INDEX gin_pvactst ON pvactst USING gin (a);
+CREATE INDEX gist_pvactst ON pvactst USING gist (p);
+CREATE INDEX spgist_pvactst ON pvactst USING spgist (p);
+
+-- VACUUM invokes parallel index cleanup
+SET min_parallel_index_scan_size to 0;
+VACUUM (PARALLEL 2) pvactst;
+
+-- VACUUM invokes parallel bulk-deletion
+UPDATE pvactst SET i = i WHERE i < 1000;
+VACUUM (PARALLEL 2) pvactst;
+
+UPDATE pvactst SET i = i WHERE i < 1000;
+VACUUM (PARALLEL 0) pvactst; -- disable parallel vacuum
+
+VACUUM (PARALLEL -1) pvactst; -- error
+VACUUM (PARALLEL 2, INDEX_CLEANUP FALSE) pvactst;
+VACUUM (PARALLEL 2, FULL TRUE) pvactst; -- error, cannot use both PARALLEL and FULL
+VACUUM (PARALLEL) pvactst; -- error, cannot use PARALLEL option without parallel degree
+
+-- Test different combinations of parallel and full options for temporary tables
+CREATE TEMPORARY TABLE tmp (a int PRIMARY KEY);
+CREATE INDEX tmp_idx1 ON tmp (a);
+VACUUM (PARALLEL 1, FULL FALSE) tmp; -- parallel vacuum disabled for temp tables
+VACUUM (PARALLEL 0, FULL TRUE) tmp; -- can specify parallel disabled (even though that's implied by FULL)
+RESET min_parallel_index_scan_size;
+DROP TABLE pvactst;
+
 -- INDEX_CLEANUP option
-CREATE TABLE no_index_cleanup (i INT PRIMARY KEY) WITH (vacuum_index_cleanup = false);
-VACUUM (INDEX_CLEANUP FALSE) vaccluster;
-VACUUM (INDEX_CLEANUP FALSE) vactst; -- index cleanup option is ignored if no indexes
-VACUUM (INDEX_CLEANUP FALSE, FREEZE TRUE) vaccluster;
+CREATE TABLE no_index_cleanup (i INT PRIMARY KEY, t TEXT);
+-- Use uncompressed data stored in toast.
+CREATE INDEX no_index_cleanup_idx ON no_index_cleanup(t);
+ALTER TABLE no_index_cleanup ALTER COLUMN t SET STORAGE EXTERNAL;
+INSERT INTO no_index_cleanup(i, t) VALUES (generate_series(1,30),
+    repeat('1234567890',269));
 -- index cleanup option is ignored if VACUUM FULL
 VACUUM (INDEX_CLEANUP TRUE, FULL TRUE) no_index_cleanup;
 VACUUM (FULL TRUE) no_index_cleanup;
+-- Toast inherits the value from its parent table.
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = false);
+DELETE FROM no_index_cleanup WHERE i < 15;
+-- Nothing is cleaned up.
+VACUUM no_index_cleanup;
+-- Both parent relation and toast are cleaned up.
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = true);
+VACUUM no_index_cleanup;
+-- Parameter is set for both the parent table and its toast relation.
+INSERT INTO no_index_cleanup(i, t) VALUES (generate_series(31,60),
+    repeat('1234567890',269));
+DELETE FROM no_index_cleanup WHERE i < 45;
+-- Only toast index is cleaned up.
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = false,
+    toast.vacuum_index_cleanup = true);
+VACUUM no_index_cleanup;
+-- Only parent is cleaned up.
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = true,
+    toast.vacuum_index_cleanup = false);
+VACUUM no_index_cleanup;
+-- Test some extra relations.
+VACUUM (INDEX_CLEANUP FALSE) vaccluster;
+VACUUM (INDEX_CLEANUP FALSE) vactst; -- index cleanup option is ignored if no indexes
+VACUUM (INDEX_CLEANUP FALSE, FREEZE TRUE) vaccluster;
 
 -- TRUNCATE option
 CREATE TABLE vac_truncate_test(i INT NOT NULL, j text)
@@ -108,6 +181,10 @@ ANALYZE vactst, vacparted;
 ANALYZE vacparted (b), vactst;
 ANALYZE vactst, does_not_exist, vacparted;
 ANALYZE vactst (i), vacparted (does_not_exist);
+ANALYZE vactst, vactst;
+BEGIN;  -- ANALYZE behaves differently inside a transaction block
+ANALYZE vactst, vactst;
+COMMIT;
 
 -- parenthesized syntax for ANALYZE
 ANALYZE (VERBOSE) does_not_exist;
@@ -115,7 +192,9 @@ ANALYZE (nonexistent-arg) does_not_exist;
 ANALYZE (nonexistentarg) does_not_exit;
 
 -- ensure argument order independence, and that SKIP_LOCKED on non-existing
--- relation still errors out.
+-- relation still errors out.  Suppress WARNING messages caused by concurrent
+-- autovacuums.
+SET client_min_messages TO 'ERROR';
 ANALYZE (SKIP_LOCKED, VERBOSE) does_not_exist;
 ANALYZE (VERBOSE, SKIP_LOCKED) does_not_exist;
 
@@ -123,6 +202,7 @@ ANALYZE (VERBOSE, SKIP_LOCKED) does_not_exist;
 VACUUM (SKIP_LOCKED) vactst;
 VACUUM (SKIP_LOCKED, FULL) vactst;
 ANALYZE (SKIP_LOCKED) vactst;
+RESET client_min_messages;
 
 -- ensure VACUUM and ANALYZE don't have a problem with serializable
 SET default_transaction_isolation = serializable;

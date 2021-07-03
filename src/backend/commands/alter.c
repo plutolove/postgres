@@ -3,7 +3,7 @@
  * alter.c
  *	  Drivers for generic alter commands
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -34,8 +34,8 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_subscription.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_subscription.h"
 #include "catalog/pg_ts_config.h"
 #include "catalog/pg_ts_dict.h"
 #include "catalog/pg_ts_parser.h"
@@ -57,8 +57,8 @@
 #include "commands/trigger.h"
 #include "commands/typecmds.h"
 #include "commands/user.h"
-#include "parser/parse_func.h"
 #include "miscadmin.h"
+#include "parser/parse_func.h"
 #include "rewrite/rewriteDefine.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
@@ -66,7 +66,6 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-
 
 static Oid	AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid);
 
@@ -172,7 +171,6 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 	AttrNumber	Anum_name = get_object_attnum_name(classId);
 	AttrNumber	Anum_namespace = get_object_attnum_namespace(classId);
 	AttrNumber	Anum_owner = get_object_attnum_owner(classId);
-	ObjectType	objtype = get_object_type(classId, objectId);
 	HeapTuple	oldtup;
 	HeapTuple	newtup;
 	Datum		datum;
@@ -214,8 +212,8 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 		if (Anum_owner <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 (errmsg("must be superuser to rename %s",
-							 getObjectDescriptionOids(classId, objectId)))));
+					 errmsg("must be superuser to rename %s",
+							getObjectDescriptionOids(classId, objectId))));
 
 		/* Otherwise, must be owner of the existing object */
 		datum = heap_getattr(oldtup, Anum_owner,
@@ -224,7 +222,8 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 		ownerId = DatumGetObjectId(datum);
 
 		if (!has_privs_of_role(GetUserId(), DatumGetObjectId(ownerId)))
-			aclcheck_error(ACLCHECK_NOT_OWNER, objtype, old_name);
+			aclcheck_error(ACLCHECK_NOT_OWNER, get_object_type(classId, objectId),
+						   old_name);
 
 		/* User must have CREATE privilege on the namespace */
 		if (OidIsValid(namespaceId))
@@ -274,6 +273,12 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 		if (SearchSysCacheExists2(SUBSCRIPTIONNAME, MyDatabaseId,
 								  CStringGetDatum(new_name)))
 			report_name_conflict(classId, new_name);
+
+		/* Also enforce regression testing naming rules, if enabled */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+		if (strncmp(new_name, "regress_", 8) != 0)
+			elog(WARNING, "subscriptions created by regression test cases should have names starting with \"regress_\"");
+#endif
 	}
 	else if (nameCacheId >= 0)
 	{
@@ -416,7 +421,7 @@ ExecRenameStmt(RenameStmt *stmt)
 }
 
 /*
- * Executes an ALTER OBJECT / DEPENDS ON [EXTENSION] statement.
+ * Executes an ALTER OBJECT / [NO] DEPENDS ON EXTENSION statement.
  *
  * Return value is the address of the altered object.  refAddress is an output
  * argument which, if not null, receives the address of the object that the
@@ -434,6 +439,17 @@ ExecAlterObjectDependsStmt(AlterObjectDependsStmt *stmt, ObjectAddress *refAddre
 							  &rel, AccessExclusiveLock, false);
 
 	/*
+	 * Verify that the user is entitled to run the command.
+	 *
+	 * We don't check any privileges on the extension, because that's not
+	 * needed.  The object owner is stipulating, by running this command, that
+	 * the extension owner can drop the object whenever they feel like it,
+	 * which is not considered a problem.
+	 */
+	check_object_ownership(GetUserId(),
+						   stmt->objectType, address, stmt->object, rel);
+
+	/*
 	 * If a relation was involved, it would have been opened and locked. We
 	 * don't need the relation here, but we'll retain the lock until commit.
 	 */
@@ -446,7 +462,22 @@ ExecAlterObjectDependsStmt(AlterObjectDependsStmt *stmt, ObjectAddress *refAddre
 	if (refAddress)
 		*refAddress = refAddr;
 
-	recordDependencyOn(&address, &refAddr, DEPENDENCY_AUTO_EXTENSION);
+	if (stmt->remove)
+	{
+		deleteDependencyRecordsForSpecific(address.classId, address.objectId,
+										   DEPENDENCY_AUTO_EXTENSION,
+										   refAddr.classId, refAddr.objectId);
+	}
+	else
+	{
+		List	   *currexts;
+
+		/* Avoid duplicates */
+		currexts = getAutoExtensionsOfObject(address.classId,
+											 address.objectId);
+		if (!list_member_oid(currexts, refAddr.objectId))
+			recordDependencyOn(&address, &refAddr, DEPENDENCY_AUTO_EXTENSION);
+	}
 
 	return address;
 }
@@ -664,7 +695,6 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 	AttrNumber	Anum_name = get_object_attnum_name(classId);
 	AttrNumber	Anum_namespace = get_object_attnum_namespace(classId);
 	AttrNumber	Anum_owner = get_object_attnum_owner(classId);
-	ObjectType	objtype = get_object_type(classId, objid);
 	Oid			oldNspOid;
 	Datum		name,
 				namespace;
@@ -711,8 +741,8 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 		if (Anum_owner <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 (errmsg("must be superuser to set schema of %s",
-							 getObjectDescriptionOids(classId, objid)))));
+					 errmsg("must be superuser to set schema of %s",
+							getObjectDescriptionOids(classId, objid))));
 
 		/* Otherwise, must be owner of the existing object */
 		owner = heap_getattr(tup, Anum_owner, RelationGetDescr(rel), &isnull);
@@ -720,7 +750,7 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 		ownerId = DatumGetObjectId(owner);
 
 		if (!has_privs_of_role(GetUserId(), ownerId))
-			aclcheck_error(ACLCHECK_NOT_OWNER, objtype,
+			aclcheck_error(ACLCHECK_NOT_OWNER, get_object_type(classId, objid),
 						   NameStr(*(DatumGetName(name))));
 
 		/* User must have CREATE privilege on new namespace */
@@ -944,8 +974,6 @@ AlterObjectOwner_internal(Relation rel, Oid objectId, Oid new_ownerId)
 		/* Superusers can bypass permission checks */
 		if (!superuser())
 		{
-			ObjectType	objtype = get_object_type(classId, objectId);
-
 			/* must be owner */
 			if (!has_privs_of_role(GetUserId(), old_ownerId))
 			{
@@ -964,7 +992,8 @@ AlterObjectOwner_internal(Relation rel, Oid objectId, Oid new_ownerId)
 					snprintf(namebuf, sizeof(namebuf), "%u", objectId);
 					objname = namebuf;
 				}
-				aclcheck_error(ACLCHECK_NOT_OWNER, objtype, objname);
+				aclcheck_error(ACLCHECK_NOT_OWNER, get_object_type(classId, objectId),
+							   objname);
 			}
 			/* Must be able to become new owner */
 			check_is_member_of_role(GetUserId(), new_ownerId);

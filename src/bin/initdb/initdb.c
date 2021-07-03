@@ -38,7 +38,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/initdb/initdb.c
@@ -151,8 +151,6 @@ static int	wal_segment_size_mb;
 static const char *progname;
 static int	encodingid;
 static char *bki_file;
-static char *desc_file;
-static char *shdesc_file;
 static char *hba_file;
 static char *ident_file;
 static char *conf_file;
@@ -307,21 +305,9 @@ do { \
 		output_failed = true, output_errno = errno; \
 } while (0)
 
-#define PG_CMD_PRINTF1(fmt, arg1) \
+#define PG_CMD_PRINTF(fmt, ...) \
 do { \
-	if (fprintf(cmdfd, fmt, arg1) < 0 || fflush(cmdfd) < 0) \
-		output_failed = true, output_errno = errno; \
-} while (0)
-
-#define PG_CMD_PRINTF2(fmt, arg1, arg2) \
-do { \
-	if (fprintf(cmdfd, fmt, arg1, arg2) < 0 || fflush(cmdfd) < 0) \
-		output_failed = true, output_errno = errno; \
-} while (0)
-
-#define PG_CMD_PRINTF3(fmt, arg1, arg2, arg3)		\
-do { \
-	if (fprintf(cmdfd, fmt, arg1, arg2, arg3) < 0 || fflush(cmdfd) < 0) \
+	if (fprintf(cmdfd, fmt, __VA_ARGS__) < 0 || fflush(cmdfd) < 0) \
 		output_failed = true, output_errno = errno; \
 } while (0)
 
@@ -716,6 +702,8 @@ static const struct tsearch_config_match tsearch_config_languages[] =
 	{"french", "French"},
 	{"german", "de"},
 	{"german", "German"},
+	{"greek", "el"},
+	{"greek", "Greek"},
 	{"hungarian", "hu"},
 	{"hungarian", "Hungarian"},
 	{"indonesian", "id"},
@@ -1049,7 +1037,7 @@ test_config_settings(void)
 	else
 		printf("%dkB\n", n_buffers * (BLCKSZ / 1024));
 
-	printf(_("selecting default timezone ... "));
+	printf(_("selecting default time zone ... "));
 	fflush(stdout);
 	default_timezone = select_default_timezone(share_path);
 	printf("%s\n", default_timezone ? default_timezone : "GMT");
@@ -1293,7 +1281,7 @@ setup_config(void)
 		err = WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
-		/* for best results, this code should match parse_hba() */
+		/* for best results, this code should match parse_hba_line() */
 		hints.ai_flags = AI_NUMERICHOST;
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = 0;
@@ -1409,9 +1397,6 @@ bootstrap_template1(void)
 	bki_lines = replace_token(bki_lines, "ALIGNOF_POINTER",
 							  (sizeof(Pointer) == 4) ? "i" : "d");
 
-	bki_lines = replace_token(bki_lines, "FLOAT4PASSBYVAL",
-							  FLOAT4PASSBYVAL ? "true" : "false");
-
 	bki_lines = replace_token(bki_lines, "FLOAT8PASSBYVAL",
 							  FLOAT8PASSBYVAL ? "true" : "false");
 
@@ -1426,20 +1411,6 @@ bootstrap_template1(void)
 
 	bki_lines = replace_token(bki_lines, "LC_CTYPE",
 							  escape_quotes_bki(lc_ctype));
-
-	/*
-	 * Pass correct LC_xxx environment to bootstrap.
-	 *
-	 * The shell script arranged to restore the LC settings afterwards, but
-	 * there doesn't seem to be any compelling reason to do that.
-	 */
-	snprintf(cmd, sizeof(cmd), "LC_COLLATE=%s", lc_collate);
-	putenv(pg_strdup(cmd));
-
-	snprintf(cmd, sizeof(cmd), "LC_CTYPE=%s", lc_ctype);
-	putenv(pg_strdup(cmd));
-
-	unsetenv("LC_ALL");
 
 	/* Also ensure backend isn't confused by this environment var: */
 	unsetenv("PGCLIENTENCODING");
@@ -1488,8 +1459,8 @@ setup_auth(FILE *cmdfd)
 		PG_CMD_PUTS(*line);
 
 	if (superuser_password)
-		PG_CMD_PRINTF2("ALTER USER \"%s\" WITH PASSWORD E'%s';\n\n",
-					   username, escape_quotes(superuser_password));
+		PG_CMD_PRINTF("ALTER USER \"%s\" WITH PASSWORD E'%s';\n\n",
+					  username, escape_quotes(superuser_password));
 }
 
 /*
@@ -1671,38 +1642,11 @@ setup_sysviews(FILE *cmdfd)
 }
 
 /*
- * load description data
+ * fill in extra description data
  */
 static void
 setup_description(FILE *cmdfd)
 {
-	PG_CMD_PUTS("CREATE TEMP TABLE tmp_pg_description ( "
-				"	objoid oid, "
-				"	classname name, "
-				"	objsubid int4, "
-				"	description text);\n\n");
-
-	PG_CMD_PRINTF1("COPY tmp_pg_description FROM E'%s';\n\n",
-				   escape_quotes(desc_file));
-
-	PG_CMD_PUTS("INSERT INTO pg_description "
-				" SELECT t.objoid, c.oid, t.objsubid, t.description "
-				"  FROM tmp_pg_description t, pg_class c "
-				"    WHERE c.relname = t.classname;\n\n");
-
-	PG_CMD_PUTS("CREATE TEMP TABLE tmp_pg_shdescription ( "
-				" objoid oid, "
-				" classname name, "
-				" description text);\n\n");
-
-	PG_CMD_PRINTF1("COPY tmp_pg_shdescription FROM E'%s';\n\n",
-				   escape_quotes(shdesc_file));
-
-	PG_CMD_PUTS("INSERT INTO pg_shdescription "
-				" SELECT t.objoid, c.oid, t.description "
-				"  FROM tmp_pg_shdescription t, pg_class c "
-				"   WHERE c.relname = t.classname;\n\n");
-
 	/* Create default descriptions for operator implementation functions */
 	PG_CMD_PUTS("WITH funcdescs AS ( "
 				"SELECT p.oid as p_oid, o.oid as o_oid, oprname "
@@ -1716,13 +1660,6 @@ setup_description(FILE *cmdfd)
 				"  AND NOT EXISTS (SELECT 1 FROM pg_description "
 				"   WHERE objoid = o_oid AND classoid = 'pg_operator'::regclass"
 				"         AND description LIKE 'deprecated%');\n\n");
-
-	/*
-	 * Even though the tables are temp, drop them explicitly so they don't get
-	 * copied into template0/postgres databases.
-	 */
-	PG_CMD_PUTS("DROP TABLE tmp_pg_description;\n\n");
-	PG_CMD_PUTS("DROP TABLE tmp_pg_shdescription;\n\n");
 }
 
 /*
@@ -1736,9 +1673,9 @@ setup_collation(FILE *cmdfd)
 	 * in pg_collation.h.  But add it before reading system collations, so
 	 * that it wins if libc defines a locale named ucs_basic.
 	 */
-	PG_CMD_PRINTF3("INSERT INTO pg_collation (oid, collname, collnamespace, collowner, collprovider, collisdeterministic, collencoding, collcollate, collctype)"
-				   "VALUES (pg_nextoid('pg_catalog.pg_collation', 'oid', 'pg_catalog.pg_collation_oid_index'), 'ucs_basic', 'pg_catalog'::regnamespace, %u, '%c', true, %d, 'C', 'C');\n\n",
-				   BOOTSTRAP_SUPERUSERID, COLLPROVIDER_LIBC, PG_UTF8);
+	PG_CMD_PRINTF("INSERT INTO pg_collation (oid, collname, collnamespace, collowner, collprovider, collisdeterministic, collencoding, collcollate, collctype)"
+				  "VALUES (pg_nextoid('pg_catalog.pg_collation', 'oid', 'pg_catalog.pg_collation_oid_index'), 'ucs_basic', 'pg_catalog'::regnamespace, %u, '%c', true, %d, 'C', 'C');\n\n",
+				  BOOTSTRAP_SUPERUSERID, COLLPROVIDER_LIBC, PG_UTF8);
 
 	/* Now import all collations we can find in the operating system */
 	PG_CMD_PUTS("SELECT pg_import_system_collations('pg_catalog');\n\n");
@@ -1876,7 +1813,7 @@ setup_privileges(FILE *cmdfd)
 		"    SELECT"
 		"        oid,"
 		"        (SELECT oid FROM pg_class WHERE "
-		"		  relname = 'pg_largeobject_metadata'),"
+		"         relname = 'pg_largeobject_metadata'),"
 		"        0,"
 		"        lomacl,"
 		"        'i'"
@@ -1901,7 +1838,7 @@ setup_privileges(FILE *cmdfd)
 		"    SELECT"
 		"        oid,"
 		"        (SELECT oid FROM pg_class WHERE "
-		"		  relname = 'pg_foreign_data_wrapper'),"
+		"         relname = 'pg_foreign_data_wrapper'),"
 		"        0,"
 		"        fdwacl,"
 		"        'i'"
@@ -1914,7 +1851,7 @@ setup_privileges(FILE *cmdfd)
 		"    SELECT"
 		"        oid,"
 		"        (SELECT oid FROM pg_class "
-		"		  WHERE relname = 'pg_foreign_server'),"
+		"         WHERE relname = 'pg_foreign_server'),"
 		"        0,"
 		"        srvacl,"
 		"        'i'"
@@ -1980,16 +1917,16 @@ setup_schema(FILE *cmdfd)
 
 	free(lines);
 
-	PG_CMD_PRINTF1("UPDATE information_schema.sql_implementation_info "
-				   "  SET character_value = '%s' "
-				   "  WHERE implementation_info_name = 'DBMS VERSION';\n\n",
-				   infoversion);
+	PG_CMD_PRINTF("UPDATE information_schema.sql_implementation_info "
+				  "  SET character_value = '%s' "
+				  "  WHERE implementation_info_name = 'DBMS VERSION';\n\n",
+				  infoversion);
 
-	PG_CMD_PRINTF1("COPY information_schema.sql_features "
-				   "  (feature_id, feature_name, sub_feature_id, "
-				   "  sub_feature_name, is_supported, comments) "
-				   " FROM E'%s';\n\n",
-				   escape_quotes(features_file));
+	PG_CMD_PRINTF("COPY information_schema.sql_features "
+				  "  (feature_id, feature_name, sub_feature_id, "
+				  "  sub_feature_name, is_supported, comments) "
+				  " FROM E'%s';\n\n",
+				  escape_quotes(features_file));
 }
 
 /*
@@ -2022,7 +1959,7 @@ make_template0(FILE *cmdfd)
 		"CREATE DATABASE template0 IS_TEMPLATE = true ALLOW_CONNECTIONS = false;\n\n",
 
 		/*
-		 * We use the OID of template0 to determine lastsysoid
+		 * We use the OID of template0 to determine datlastsysoid
 		 */
 		"UPDATE pg_database SET datlastsysoid = "
 		"    (SELECT oid FROM pg_database "
@@ -2070,7 +2007,7 @@ make_postgres(FILE *cmdfd)
  * signal handler in case we are interrupted.
  *
  * The Windows runtime docs at
- * http://msdn.microsoft.com/library/en-us/vclib/html/_crt_signal.asp
+ * https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/signal
  * specifically forbid a number of things being done from a signal handler,
  * including IO, memory allocation and system calls, and only allow jmpbuf
  * if you are handling SIGFPE.
@@ -2079,11 +2016,10 @@ make_postgres(FILE *cmdfd)
  * exit() directly.
  *
  * Also note the behaviour of Windows with SIGINT, which says this:
- *	 Note	SIGINT is not supported for any Win32 application, including
- *	 Windows 98/Me and Windows NT/2000/XP. When a CTRL+C interrupt occurs,
- *	 Win32 operating systems generate a new thread to specifically handle
- *	 that interrupt. This can cause a single-thread application such as UNIX,
- *	 to become multithreaded, resulting in unexpected behavior.
+ *  SIGINT is not supported for any Win32 application. When a CTRL+C interrupt
+ *  occurs, Win32 operating systems generate a new thread to specifically
+ *  handle that interrupt. This can cause a single-thread application, such as
+ *  one in UNIX, to become multithreaded and cause unexpected behavior.
  *
  * I have no idea how to handle this. (Strange they call UNIX an application!)
  * So this will need some testing on Windows.
@@ -2386,7 +2322,8 @@ usage(const char *progname)
 	printf(_("  -?, --help                show this help, then exit\n"));
 	printf(_("\nIf the data directory is not specified, the environment variable PGDATA\n"
 			 "is used.\n"));
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 static void
@@ -2494,15 +2431,15 @@ setup_bin_paths(const char *argv0)
 			strlcpy(full_path, progname, sizeof(full_path));
 
 		if (ret == -1)
-			pg_log_error("The program \"postgres\" is needed by %s but was not found in the\n"
+			pg_log_error("The program \"%s\" is needed by %s but was not found in the\n"
 						 "same directory as \"%s\".\n"
 						 "Check your installation.",
-						 full_path, progname);
+						 "postgres", progname, full_path);
 		else
-			pg_log_error("The program \"postgres\" was found by \"%s\"\n"
+			pg_log_error("The program \"%s\" was found by \"%s\"\n"
 						 "but was not the same version as %s.\n"
 						 "Check your installation.",
-						 full_path, progname);
+						 "postgres", full_path, progname);
 		exit(1);
 	}
 
@@ -2613,8 +2550,6 @@ void
 setup_data_file_paths(void)
 {
 	set_input(&bki_file, "postgres.bki");
-	set_input(&desc_file, "postgres.description");
-	set_input(&shdesc_file, "postgres.shdescription");
 	set_input(&hba_file, "pg_hba.conf.sample");
 	set_input(&ident_file, "pg_ident.conf.sample");
 	set_input(&conf_file, "postgresql.conf.sample");
@@ -2629,13 +2564,11 @@ setup_data_file_paths(void)
 				"VERSION=%s\n"
 				"PGDATA=%s\nshare_path=%s\nPGPATH=%s\n"
 				"POSTGRES_SUPERUSERNAME=%s\nPOSTGRES_BKI=%s\n"
-				"POSTGRES_DESCR=%s\nPOSTGRES_SHDESCR=%s\n"
 				"POSTGRESQL_CONF_SAMPLE=%s\n"
 				"PG_HBA_SAMPLE=%s\nPG_IDENT_SAMPLE=%s\n",
 				PG_VERSION,
 				pg_data, share_path, bin_path,
 				username, bki_file,
-				desc_file, shdesc_file,
 				conf_file,
 				hba_file, ident_file);
 		if (show_setting)
@@ -2643,8 +2576,6 @@ setup_data_file_paths(void)
 	}
 
 	check_input(bki_file);
-	check_input(desc_file);
-	check_input(shdesc_file);
 	check_input(hba_file);
 	check_input(ident_file);
 	check_input(conf_file);
@@ -2663,8 +2594,8 @@ setup_text_search(void)
 		default_text_search_config = find_matching_ts_config(lc_ctype);
 		if (!default_text_search_config)
 		{
-			printf(_("%s: could not find suitable text search configuration for locale \"%s\"\n"),
-				   progname, lc_ctype);
+			pg_log_info("could not find suitable text search configuration for locale \"%s\"",
+						lc_ctype);
 			default_text_search_config = "simple";
 		}
 	}
@@ -2674,13 +2605,13 @@ setup_text_search(void)
 
 		if (checkmatch == NULL)
 		{
-			printf(_("%s: warning: suitable text search configuration for locale \"%s\" is unknown\n"),
-				   progname, lc_ctype);
+			pg_log_warning("suitable text search configuration for locale \"%s\" is unknown",
+						   lc_ctype);
 		}
 		else if (strcmp(checkmatch, default_text_search_config) != 0)
 		{
-			printf(_("%s: warning: specified text search configuration \"%s\" might not match locale \"%s\"\n"),
-				   progname, default_text_search_config, lc_ctype);
+			pg_log_warning("specified text search configuration \"%s\" might not match locale \"%s\"",
+						   default_text_search_config, lc_ctype);
 		}
 	}
 
@@ -3094,7 +3025,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "A:dD:E:gkL:nNsST:U:WX:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3349,6 +3280,9 @@ main(int argc, char *argv[])
 	get_parent_directory(pg_ctl_path);
 	/* ... and tag on pg_ctl instead */
 	join_path_components(pg_ctl_path, pg_ctl_path, "pg_ctl");
+
+	/* Convert the path to use native separators */
+	make_native_path(pg_ctl_path);
 
 	/* path to pg_ctl, properly quoted */
 	appendShellString(start_db_cmd, pg_ctl_path);

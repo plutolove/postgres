@@ -3,7 +3,7 @@
  * user.c
  *	  Commands for manipulating roles (formerly called users).
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/commands/user.c
@@ -327,6 +327,15 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 				 errdetail("Role names starting with \"pg_\" are reserved.")));
 
 	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for role names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(stmt->role, "regress_", 8) != 0)
+		elog(WARNING, "roles created by regression test cases should have names starting with \"regress_\"");
+#endif
+
+	/*
 	 * Check the pg_authid relation to be certain the role doesn't already
 	 * exist.
 	 */
@@ -461,20 +470,31 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 	/*
 	 * Add the new role to the specified existing roles.
 	 */
-	foreach(item, addroleto)
+	if (addroleto)
 	{
-		RoleSpec   *oldrole = lfirst(item);
-		HeapTuple	oldroletup = get_rolespec_tuple(oldrole);
-		Form_pg_authid oldroleform = (Form_pg_authid) GETSTRUCT(oldroletup);
-		Oid			oldroleid = oldroleform->oid;
-		char	   *oldrolename = NameStr(oldroleform->rolname);
+		RoleSpec   *thisrole = makeNode(RoleSpec);
+		List	   *thisrole_list = list_make1(thisrole);
+		List	   *thisrole_oidlist = list_make1_oid(roleid);
 
-		AddRoleMems(oldrolename, oldroleid,
-					list_make1(makeString(stmt->role)),
-					list_make1_oid(roleid),
-					GetUserId(), false);
+		thisrole->roletype = ROLESPEC_CSTRING;
+		thisrole->rolename = stmt->role;
+		thisrole->location = -1;
 
-		ReleaseSysCache(oldroletup);
+		foreach(item, addroleto)
+		{
+			RoleSpec   *oldrole = lfirst(item);
+			HeapTuple	oldroletup = get_rolespec_tuple(oldrole);
+			Form_pg_authid oldroleform = (Form_pg_authid) GETSTRUCT(oldroletup);
+			Oid			oldroleid = oldroleform->oid;
+			char	   *oldrolename = NameStr(oldroleform->rolname);
+
+			AddRoleMems(oldrolename, oldroleid,
+						thisrole_list,
+						thisrole_oidlist,
+						GetUserId(), false);
+
+			ReleaseSysCache(oldroletup);
+		}
 	}
 
 	/*
@@ -689,8 +709,10 @@ AlterRole(AlterRoleStmt *stmt)
 	roleid = authform->oid;
 
 	/*
-	 * To mess with a superuser you gotta be superuser; else you need
-	 * createrole, or just want to change your own password
+	 * To mess with a superuser or replication role in any way you gotta be
+	 * superuser.  We also insist on superuser to change the BYPASSRLS
+	 * property.  Otherwise, if you don't have createrole, you're only allowed
+	 * to change your own password.
 	 */
 	if (authform->rolsuper || issuper >= 0)
 	{
@@ -706,7 +728,7 @@ AlterRole(AlterRoleStmt *stmt)
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("must be superuser to alter replication users")));
 	}
-	else if (authform->rolbypassrls || bypassrls >= 0)
+	else if (bypassrls >= 0)
 	{
 		if (!superuser())
 			ereport(ERROR,
@@ -715,11 +737,11 @@ AlterRole(AlterRoleStmt *stmt)
 	}
 	else if (!have_createrole_privilege())
 	{
+		/* We already checked issuper, isreplication, and bypassrls */
 		if (!(inherit < 0 &&
 			  createrole < 0 &&
 			  createdb < 0 &&
 			  canlogin < 0 &&
-			  isreplication < 0 &&
 			  !dconnlimit &&
 			  !rolemembers &&
 			  !validUntil &&
@@ -1212,6 +1234,15 @@ RenameRole(const char *oldname, const char *newname)
 						newname),
 				 errdetail("Role names starting with \"pg_\" are reserved.")));
 
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for role names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(newname, "regress_", 8) != 0)
+		elog(WARNING, "roles created by regression test cases should have names starting with \"regress_\"");
+#endif
+
 	/* make sure the new name doesn't exist */
 	if (SearchSysCacheExists1(AUTHNAME, CStringGetDatum(newname)))
 		ereport(ERROR,
@@ -1427,8 +1458,6 @@ roleSpecsToIds(List *memberNames)
  * memberIds: OIDs of roles to add
  * grantorId: who is granting the membership
  * admin_opt: granting admin option?
- *
- * Note: caller is responsible for calling auth_file_update_needed().
  */
 static void
 AddRoleMems(const char *rolename, Oid roleid,
@@ -1487,7 +1516,7 @@ AddRoleMems(const char *rolename, Oid roleid,
 
 	forboth(specitem, memberSpecs, iditem, memberIds)
 	{
-		RoleSpec   *memberRole = lfirst(specitem);
+		RoleSpec   *memberRole = lfirst_node(RoleSpec, specitem);
 		Oid			memberid = lfirst_oid(iditem);
 		HeapTuple	authmem_tuple;
 		HeapTuple	tuple;
@@ -1505,8 +1534,8 @@ AddRoleMems(const char *rolename, Oid roleid,
 		if (is_member_of_role_nosuper(roleid, memberid))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_GRANT_OPERATION),
-					 (errmsg("role \"%s\" is a member of role \"%s\"",
-							 rolename, get_rolespec_name(memberRole)))));
+					 errmsg("role \"%s\" is a member of role \"%s\"",
+							rolename, get_rolespec_name(memberRole))));
 
 		/*
 		 * Check if entry for this role/member already exists; if so, give
@@ -1571,8 +1600,6 @@ AddRoleMems(const char *rolename, Oid roleid,
  * memberSpecs: list of RoleSpec of roles to del (used only for error messages)
  * memberIds: OIDs of roles to del
  * admin_opt: remove admin option only?
- *
- * Note: caller is responsible for calling auth_file_update_needed().
  */
 static void
 DelRoleMems(const char *rolename, Oid roleid,
