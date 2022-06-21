@@ -3,7 +3,7 @@
  * nodeIndexonlyscan.c
  *	  Routines to support index-only scans
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,24 +21,14 @@
  *		ExecEndIndexOnlyScan		releases all storage.
  *		ExecIndexOnlyMarkPos		marks scan position.
  *		ExecIndexOnlyRestrPos		restores scan position.
- *		ExecIndexOnlyScanEstimate	estimates DSM space needed for
- *						parallel index-only scan
- *		ExecIndexOnlyScanInitializeDSM	initialize DSM for parallel
- *						index-only scan
- *		ExecIndexOnlyScanReInitializeDSM	reinitialize DSM for fresh scan
- *		ExecIndexOnlyScanInitializeWorker attach to DSM info in parallel worker
  */
 #include "postgres.h"
 
-#include "access/genam.h"
 #include "access/relscan.h"
-#include "access/tableam.h"
-#include "access/tupdesc.h"
 #include "access/visibilitymap.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
-#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "utils/memutils.h"
@@ -47,7 +37,7 @@
 
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
-							TupleDesc itupdesc);
+				TupleDesc itupdesc);
 
 
 /* ----------------------------------------------------------------
@@ -83,55 +73,21 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	econtext = node->ss.ps.ps_ExprContext;
 	slot = node->ss.ss_ScanTupleSlot;
 
-	if (scandesc == NULL)
-	{
-		/*
-		 * We reach here if the index only scan is not parallel, or if we're
-		 * serially executing an index only scan that was planned to be
-		 * parallel.
-		 */
-		scandesc = index_beginscan(node->ss.ss_currentRelation,
-								   node->ioss_RelationDesc,
-								   estate->es_snapshot,
-								   node->ioss_NumScanKeys,
-								   node->ioss_NumOrderByKeys);
-
-		node->ioss_ScanDesc = scandesc;
-
-
-		/* Set it up for index-only scan */
-		node->ioss_ScanDesc->xs_want_itup = true;
-		node->ioss_VMBuffer = InvalidBuffer;
-
-		/*
-		 * If no run-time keys to calculate or they are ready, go ahead and
-		 * pass the scankeys to the index AM.
-		 */
-		if (node->ioss_NumRuntimeKeys == 0 || node->ioss_RuntimeKeysReady)
-			index_rescan(scandesc,
-						 node->ioss_ScanKeys,
-						 node->ioss_NumScanKeys,
-						 node->ioss_OrderByKeys,
-						 node->ioss_NumOrderByKeys);
-	}
-
 	/*
 	 * OK, now that we have what we need, fetch the next tuple.
 	 */
 	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 	{
-		bool		tuple_from_heap = false;
-
-		CHECK_FOR_INTERRUPTS();
+		HeapTuple	tuple = NULL;
 
 		/*
 		 * We can skip the heap fetch if the TID references a heap page on
 		 * which all tuples are known visible to everybody.  In any case,
 		 * we'll use the index tuple not the heap tuple as the data source.
 		 *
-		 * Note on Memory Ordering Effects: visibilitymap_get_status does not
-		 * lock the visibility map buffer, and therefore the result we read
-		 * here could be slightly stale.  However, it can't be stale enough to
+		 * Note on Memory Ordering Effects: visibilitymap_test does not lock
+		 * the visibility map buffer, and therefore the result we read here
+		 * could be slightly stale.  However, it can't be stale enough to
 		 * matter.
 		 *
 		 * We need to detect clearing a VM bit due to an insert right away,
@@ -150,26 +106,25 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 * away, because the tuple is still visible until the deleting
 		 * transaction commits or the statement ends (if it's our
 		 * transaction). In either case, the lock on the VM buffer will have
-		 * been released (acting as a write barrier) after clearing the bit.
-		 * And for us to have a snapshot that includes the deleting
+		 * been released (acting as a write barrier) after clearing the
+		 * bit. And for us to have a snapshot that includes the deleting
 		 * transaction (making the tuple invisible), we must have acquired
 		 * ProcArrayLock after that time, acting as a read barrier.
 		 *
 		 * It's worth going through this complexity to avoid needing to lock
 		 * the VM buffer, which could cause significant contention.
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
-							ItemPointerGetBlockNumber(tid),
-							&node->ioss_VMBuffer))
+		if (!visibilitymap_test(scandesc->heapRelation,
+								ItemPointerGetBlockNumber(tid),
+								&node->ioss_VMBuffer))
 		{
 			/*
 			 * Rats, we have to visit the heap to check visibility.
 			 */
-			InstrCountTuples2(node, 1);
-			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
+			node->ioss_HeapFetches++;
+			tuple = index_fetch_heap(scandesc);
+			if (tuple == NULL)
 				continue;		/* no visible tuple, try next index entry */
-
-			ExecClearTuple(node->ioss_TableSlot);
 
 			/*
 			 * Only MVCC snapshots are supported here, so there should be no
@@ -177,7 +132,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * been found.  If we did want to allow that, we'd need to keep
 			 * more state to remember not to call index_getnext_tid next time.
 			 */
-			if (scandesc->xs_heap_continue)
+			if (scandesc->xs_continue_hot)
 				elog(ERROR, "non-MVCC snapshots are not supported in index-only scans");
 
 			/*
@@ -186,31 +141,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * but it's not clear whether it's a win to do so.  The next index
 			 * entry might require a visit to the same heap page.
 			 */
-
-			tuple_from_heap = true;
 		}
 
 		/*
-		 * Fill the scan tuple slot with data from the index.  This might be
-		 * provided in either HeapTuple or IndexTuple format.  Conceivably an
-		 * index AM might fill both fields, in which case we prefer the heap
-		 * format, since it's probably a bit cheaper to fill a slot from.
+		 * Fill the scan tuple slot with data from the index.
 		 */
-		if (scandesc->xs_hitup)
-		{
-			/*
-			 * We don't take the trouble to verify that the provided tuple has
-			 * exactly the slot's format, but it seems worth doing a quick
-			 * check on the number of fields.
-			 */
-			Assert(slot->tts_tupleDescriptor->natts ==
-				   scandesc->xs_hitupdesc->natts);
-			ExecForceStoreHeapTuple(scandesc->xs_hitup, slot, false);
-		}
-		else if (scandesc->xs_itup)
-			StoreIndexTuple(slot, scandesc->xs_itup, scandesc->xs_itupdesc);
-		else
-			elog(ERROR, "no data returned for index-only scan");
+		StoreIndexTuple(slot, scandesc->xs_itup, scandesc->xs_itupdesc);
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals.
@@ -220,7 +156,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		if (scandesc->xs_recheck)
 		{
 			econtext->ecxt_scantuple = slot;
-			if (!ExecQualAndReset(node->indexqual, econtext))
+			ResetExprContext(econtext);
+			if (!ExecQual(node->indexqual, econtext, false))
 			{
 				/* Fails recheck, so drop it and loop back for another */
 				InstrCountFiltered2(node, 1);
@@ -229,23 +166,13 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		}
 
 		/*
-		 * We don't currently support rechecking ORDER BY distances.  (In
-		 * principle, if the index can support retrieval of the originally
-		 * indexed value, it should be able to produce an exact distance
-		 * calculation too.  So it's not clear that adding code here for
-		 * recheck/re-sort would be worth the trouble.  But we should at least
-		 * throw an error if someone tries it.)
+		 * Predicate locks for index-only scans must be acquired at the page
+		 * level when the heap is not accessed, since tuple-level predicate
+		 * locks need the tuple's xmin value.  If we had to visit the tuple
+		 * anyway, then we already have the tuple-level lock and can skip the
+		 * page lock.
 		 */
-		if (scandesc->numberOfOrderBys > 0 && scandesc->xs_recheckorderby)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("lossy distance functions are not supported in index-only scans")));
-
-		/*
-		 * If we didn't access the heap, then we'll need to take a predicate
-		 * lock explicitly, as if we had.  For now we do that at page level.
-		 */
-		if (!tuple_from_heap)
+		if (tuple == NULL)
 			PredicateLockPage(scandesc->heapRelation,
 							  ItemPointerGetBlockNumber(tid),
 							  estate->es_snapshot);
@@ -270,17 +197,23 @@ IndexOnlyNext(IndexOnlyScanState *node)
 static void
 StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup, TupleDesc itupdesc)
 {
+	int			nindexatts = itupdesc->natts;
+	Datum	   *values = slot->tts_values;
+	bool	   *isnull = slot->tts_isnull;
+	int			i;
+
 	/*
-	 * Note: we must use the tupdesc supplied by the AM in index_deform_tuple,
-	 * not the slot's tupdesc, in case the latter has different datatypes
-	 * (this happens for btree name_ops in particular).  They'd better have
-	 * the same number of columns though, as well as being datatype-compatible
-	 * which is something we can't so easily check.
+	 * Note: we must use the tupdesc supplied by the AM in index_getattr, not
+	 * the slot's tupdesc, in case the latter has different datatypes (this
+	 * happens for btree name_ops in particular).  They'd better have the same
+	 * number of columns though, as well as being datatype-compatible which is
+	 * something we can't so easily check.
 	 */
-	Assert(slot->tts_tupleDescriptor->natts == itupdesc->natts);
+	Assert(slot->tts_tupleDescriptor->natts == nindexatts);
 
 	ExecClearTuple(slot);
-	index_deform_tuple(itup, itupdesc, slot->tts_values, slot->tts_isnull);
+	for (i = 0; i < nindexatts; i++)
+		values[i] = index_getattr(itup, i + 1, itupdesc, &isnull[i]);
 	ExecStoreVirtualTuple(slot);
 }
 
@@ -303,11 +236,9 @@ IndexOnlyRecheck(IndexOnlyScanState *node, TupleTableSlot *slot)
  *		ExecIndexOnlyScan(node)
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *
-ExecIndexOnlyScan(PlanState *pstate)
+TupleTableSlot *
+ExecIndexOnlyScan(IndexOnlyScanState *node)
 {
-	IndexOnlyScanState *node = castNode(IndexOnlyScanState, pstate);
-
 	/*
 	 * If we have runtime keys and they've not already been set up, do it now.
 	 */
@@ -352,10 +283,9 @@ ExecReScanIndexOnlyScan(IndexOnlyScanState *node)
 	node->ioss_RuntimeKeysReady = true;
 
 	/* reset index scan */
-	if (node->ioss_ScanDesc)
-		index_rescan(node->ioss_ScanDesc,
-					 node->ioss_ScanKeys, node->ioss_NumScanKeys,
-					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
+	index_rescan(node->ioss_ScanDesc,
+				 node->ioss_ScanKeys, node->ioss_NumScanKeys,
+				 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
 
 	ExecScanReScan(&node->ss);
 }
@@ -370,12 +300,14 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 {
 	Relation	indexRelationDesc;
 	IndexScanDesc indexScanDesc;
+	Relation	relation;
 
 	/*
 	 * extract information from the node
 	 */
 	indexRelationDesc = node->ioss_RelationDesc;
 	indexScanDesc = node->ioss_ScanDesc;
+	relation = node->ss.ss_currentRelation;
 
 	/* Release VM buffer pin, if any. */
 	if (node->ioss_VMBuffer != InvalidBuffer)
@@ -396,8 +328,7 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 	/*
 	 * clear out tuple table slots
 	 */
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
 	/*
@@ -407,45 +338,20 @@ ExecEndIndexOnlyScan(IndexOnlyScanState *node)
 		index_endscan(indexScanDesc);
 	if (indexRelationDesc)
 		index_close(indexRelationDesc, NoLock);
+
+	/*
+	 * close the heap relation.
+	 */
+	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
  *		ExecIndexOnlyMarkPos
- *
- * Note: we assume that no caller attempts to set a mark before having read
- * at least one tuple.  Otherwise, ioss_ScanDesc might still be NULL.
  * ----------------------------------------------------------------
  */
 void
 ExecIndexOnlyMarkPos(IndexOnlyScanState *node)
 {
-	EState	   *estate = node->ss.ps.state;
-	EPQState   *epqstate = estate->es_epq_active;
-
-	if (epqstate != NULL)
-	{
-		/*
-		 * We are inside an EvalPlanQual recheck.  If a test tuple exists for
-		 * this relation, then we shouldn't access the index at all.  We would
-		 * instead need to save, and later restore, the state of the
-		 * relsubs_done flag, so that re-fetching the test tuple is possible.
-		 * However, given the assumption that no caller sets a mark at the
-		 * start of the scan, we can only get here with relsubs_done[i]
-		 * already set, and so no state need be saved.
-		 */
-		Index		scanrelid = ((Scan *) node->ss.ps.plan)->scanrelid;
-
-		Assert(scanrelid > 0);
-		if (epqstate->relsubs_slot[scanrelid - 1] != NULL ||
-			epqstate->relsubs_rowmark[scanrelid - 1] != NULL)
-		{
-			/* Verify the claim above */
-			if (!epqstate->relsubs_done[scanrelid - 1])
-				elog(ERROR, "unexpected ExecIndexOnlyMarkPos call in EPQ recheck");
-			return;
-		}
-	}
-
 	index_markpos(node->ioss_ScanDesc);
 }
 
@@ -456,25 +362,6 @@ ExecIndexOnlyMarkPos(IndexOnlyScanState *node)
 void
 ExecIndexOnlyRestrPos(IndexOnlyScanState *node)
 {
-	EState	   *estate = node->ss.ps.state;
-	EPQState   *epqstate = estate->es_epq_active;
-
-	if (estate->es_epq_active != NULL)
-	{
-		/* See comments in ExecIndexMarkPos */
-		Index		scanrelid = ((Scan *) node->ss.ps.plan)->scanrelid;
-
-		Assert(scanrelid > 0);
-		if (epqstate->relsubs_slot[scanrelid - 1] != NULL ||
-			epqstate->relsubs_rowmark[scanrelid - 1] != NULL)
-		{
-			/* Verify the claim above */
-			if (!epqstate->relsubs_done[scanrelid - 1])
-				elog(ERROR, "unexpected ExecIndexOnlyRestrPos call in EPQ recheck");
-			return;
-		}
-	}
-
 	index_restrpos(node->ioss_ScanDesc);
 }
 
@@ -494,7 +381,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 {
 	IndexOnlyScanState *indexstate;
 	Relation	currentRelation;
-	LOCKMODE	lockmode;
+	bool		relistarget;
 	TupleDesc	tupDesc;
 
 	/*
@@ -503,7 +390,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	indexstate = makeNode(IndexOnlyScanState);
 	indexstate->ss.ps.plan = (Plan *) node;
 	indexstate->ss.ps.state = estate;
-	indexstate->ss.ps.ExecProcNode = ExecIndexOnlyScan;
+	indexstate->ioss_HeapFetches = 0;
 
 	/*
 	 * Miscellaneous initialization
@@ -512,8 +399,32 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 */
 	ExecAssignExprContext(estate, &indexstate->ss.ps);
 
+	indexstate->ss.ps.ps_TupFromTlist = false;
+
 	/*
-	 * open the scan relation
+	 * initialize child expressions
+	 *
+	 * Note: we don't initialize all of the indexorderby expression, only the
+	 * sub-parts corresponding to runtime keys (see below).
+	 */
+	indexstate->ss.ps.targetlist = (List *)
+		ExecInitExpr((Expr *) node->scan.plan.targetlist,
+					 (PlanState *) indexstate);
+	indexstate->ss.ps.qual = (List *)
+		ExecInitExpr((Expr *) node->scan.plan.qual,
+					 (PlanState *) indexstate);
+	indexstate->indexqual = (List *)
+		ExecInitExpr((Expr *) node->indexqual,
+					 (PlanState *) indexstate);
+
+	/*
+	 * tuple table initialization
+	 */
+	ExecInitResultTupleSlot(estate, &indexstate->ss.ps);
+	ExecInitScanTupleSlot(estate, &indexstate->ss);
+
+	/*
+	 * open the base relation and acquire appropriate lock on it.
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
@@ -527,36 +438,14 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 * types of the original datums.  (It's the AM's responsibility to return
 	 * suitable data anyway.)
 	 */
-	tupDesc = ExecTypeFromTL(node->indextlist);
-	ExecInitScanTupleSlot(estate, &indexstate->ss, tupDesc,
-						  &TTSOpsVirtual);
+	tupDesc = ExecTypeFromTL(node->indextlist, false);
+	ExecAssignScanType(&indexstate->ss, tupDesc);
 
 	/*
-	 * We need another slot, in a format that's suitable for the table AM, for
-	 * when we need to fetch a tuple from the table for rechecking visibility.
+	 * Initialize result tuple type and projection info.
 	 */
-	indexstate->ioss_TableSlot =
-		ExecAllocTableSlot(&estate->es_tupleTable,
-						   RelationGetDescr(currentRelation),
-						   table_slot_callbacks(currentRelation));
-
-	/*
-	 * Initialize result type and projection info.  The node's targetlist will
-	 * contain Vars with varno = INDEX_VAR, referencing the scan tuple.
-	 */
-	ExecInitResultTypeTL(&indexstate->ss.ps);
-	ExecAssignScanProjectionInfoWithVarno(&indexstate->ss, INDEX_VAR);
-
-	/*
-	 * initialize child expressions
-	 *
-	 * Note: we don't initialize all of the indexorderby expression, only the
-	 * sub-parts corresponding to runtime keys (see below).
-	 */
-	indexstate->ss.ps.qual =
-		ExecInitQual(node->scan.plan.qual, (PlanState *) indexstate);
-	indexstate->indexqual =
-		ExecInitQual(node->indexqual, (PlanState *) indexstate);
+	ExecAssignResultTypeFromTL(&indexstate->ss.ps);
+	ExecAssignScanProjectionInfo(&indexstate->ss);
 
 	/*
 	 * If we are just doing EXPLAIN (ie, aren't going to run the plan), stop
@@ -566,9 +455,16 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 		return indexstate;
 
-	/* Open the index relation. */
-	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
-	indexstate->ioss_RelationDesc = index_open(node->indexid, lockmode);
+	/*
+	 * Open the index relation.
+	 *
+	 * If the parent table is one of the target relations of the query, then
+	 * InitPlan already opened and write-locked the index, so we can avoid
+	 * taking another lock here.  Otherwise we need a normal reader's lock.
+	 */
+	relistarget = ExecRelationIsTargetRelation(estate, node->scan.scanrelid);
+	indexstate->ioss_RelationDesc = index_open(node->indexid,
+									 relistarget ? NoLock : AccessShareLock);
 
 	/*
 	 * Initialize index-specific scan state
@@ -625,113 +521,31 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	}
 
 	/*
+	 * Initialize scan descriptor.
+	 */
+	indexstate->ioss_ScanDesc = index_beginscan(currentRelation,
+												indexstate->ioss_RelationDesc,
+												estate->es_snapshot,
+												indexstate->ioss_NumScanKeys,
+											indexstate->ioss_NumOrderByKeys);
+
+	/* Set it up for index-only scan */
+	indexstate->ioss_ScanDesc->xs_want_itup = true;
+	indexstate->ioss_VMBuffer = InvalidBuffer;
+
+	/*
+	 * If no run-time keys to calculate, go ahead and pass the scankeys to the
+	 * index AM.
+	 */
+	if (indexstate->ioss_NumRuntimeKeys == 0)
+		index_rescan(indexstate->ioss_ScanDesc,
+					 indexstate->ioss_ScanKeys,
+					 indexstate->ioss_NumScanKeys,
+					 indexstate->ioss_OrderByKeys,
+					 indexstate->ioss_NumOrderByKeys);
+
+	/*
 	 * all done.
 	 */
 	return indexstate;
-}
-
-/* ----------------------------------------------------------------
- *		Parallel Index-only Scan Support
- * ----------------------------------------------------------------
- */
-
-/* ----------------------------------------------------------------
- *		ExecIndexOnlyScanEstimate
- *
- *		Compute the amount of space we'll need in the parallel
- *		query DSM, and inform pcxt->estimator about our needs.
- * ----------------------------------------------------------------
- */
-void
-ExecIndexOnlyScanEstimate(IndexOnlyScanState *node,
-						  ParallelContext *pcxt)
-{
-	EState	   *estate = node->ss.ps.state;
-
-	node->ioss_PscanLen = index_parallelscan_estimate(node->ioss_RelationDesc,
-													  estate->es_snapshot);
-	shm_toc_estimate_chunk(&pcxt->estimator, node->ioss_PscanLen);
-	shm_toc_estimate_keys(&pcxt->estimator, 1);
-}
-
-/* ----------------------------------------------------------------
- *		ExecIndexOnlyScanInitializeDSM
- *
- *		Set up a parallel index-only scan descriptor.
- * ----------------------------------------------------------------
- */
-void
-ExecIndexOnlyScanInitializeDSM(IndexOnlyScanState *node,
-							   ParallelContext *pcxt)
-{
-	EState	   *estate = node->ss.ps.state;
-	ParallelIndexScanDesc piscan;
-
-	piscan = shm_toc_allocate(pcxt->toc, node->ioss_PscanLen);
-	index_parallelscan_initialize(node->ss.ss_currentRelation,
-								  node->ioss_RelationDesc,
-								  estate->es_snapshot,
-								  piscan);
-	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, piscan);
-	node->ioss_ScanDesc =
-		index_beginscan_parallel(node->ss.ss_currentRelation,
-								 node->ioss_RelationDesc,
-								 node->ioss_NumScanKeys,
-								 node->ioss_NumOrderByKeys,
-								 piscan);
-	node->ioss_ScanDesc->xs_want_itup = true;
-	node->ioss_VMBuffer = InvalidBuffer;
-
-	/*
-	 * If no run-time keys to calculate or they are ready, go ahead and pass
-	 * the scankeys to the index AM.
-	 */
-	if (node->ioss_NumRuntimeKeys == 0 || node->ioss_RuntimeKeysReady)
-		index_rescan(node->ioss_ScanDesc,
-					 node->ioss_ScanKeys, node->ioss_NumScanKeys,
-					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
-}
-
-/* ----------------------------------------------------------------
- *		ExecIndexOnlyScanReInitializeDSM
- *
- *		Reset shared state before beginning a fresh scan.
- * ----------------------------------------------------------------
- */
-void
-ExecIndexOnlyScanReInitializeDSM(IndexOnlyScanState *node,
-								 ParallelContext *pcxt)
-{
-	index_parallelrescan(node->ioss_ScanDesc);
-}
-
-/* ----------------------------------------------------------------
- *		ExecIndexOnlyScanInitializeWorker
- *
- *		Copy relevant information from TOC into planstate.
- * ----------------------------------------------------------------
- */
-void
-ExecIndexOnlyScanInitializeWorker(IndexOnlyScanState *node,
-								  ParallelWorkerContext *pwcxt)
-{
-	ParallelIndexScanDesc piscan;
-
-	piscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
-	node->ioss_ScanDesc =
-		index_beginscan_parallel(node->ss.ss_currentRelation,
-								 node->ioss_RelationDesc,
-								 node->ioss_NumScanKeys,
-								 node->ioss_NumOrderByKeys,
-								 piscan);
-	node->ioss_ScanDesc->xs_want_itup = true;
-
-	/*
-	 * If no run-time keys to calculate or they are ready, go ahead and pass
-	 * the scankeys to the index AM.
-	 */
-	if (node->ioss_NumRuntimeKeys == 0 || node->ioss_RuntimeKeysReady)
-		index_rescan(node->ioss_ScanDesc,
-					 node->ioss_ScanKeys, node->ioss_NumScanKeys,
-					 node->ioss_OrderByKeys, node->ioss_NumOrderByKeys);
 }

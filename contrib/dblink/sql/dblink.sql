@@ -1,8 +1,5 @@
 CREATE EXTENSION dblink;
 
--- want context for notices
-\set SHOW_CONTEXT always
-
 CREATE TABLE foo(f1 int, f2 text, f3 text[], primary key (f1,f2));
 INSERT INTO foo VALUES (0,'a','{"a0","b0","c0"}');
 INSERT INTO foo VALUES (1,'b','{"a1","b1","c1"}');
@@ -38,44 +35,6 @@ SELECT dblink_build_sql_delete('foo','1 2',2,'{"0", "a"}');
 -- too many pk fields, should fail
 SELECT dblink_build_sql_delete('foo','1 2 3 4',4,'{"0", "a", "{a0,b0,c0}"}');
 
--- repeat the test for table with primary key index with included columns
-CREATE TABLE foo_1(f1 int, f2 text, f3 text[], primary key (f1,f2) include (f3));
-INSERT INTO foo_1 VALUES (0,'a','{"a0","b0","c0"}');
-INSERT INTO foo_1 VALUES (1,'b','{"a1","b1","c1"}');
-INSERT INTO foo_1 VALUES (2,'c','{"a2","b2","c2"}');
-INSERT INTO foo_1 VALUES (3,'d','{"a3","b3","c3"}');
-INSERT INTO foo_1 VALUES (4,'e','{"a4","b4","c4"}');
-INSERT INTO foo_1 VALUES (5,'f','{"a5","b5","c5"}');
-INSERT INTO foo_1 VALUES (6,'g','{"a6","b6","c6"}');
-INSERT INTO foo_1 VALUES (7,'h','{"a7","b7","c7"}');
-INSERT INTO foo_1 VALUES (8,'i','{"a8","b8","c8"}');
-INSERT INTO foo_1 VALUES (9,'j','{"a9","b9","c9"}');
-
--- misc utilities
-
--- list the primary key fields
-SELECT *
-FROM dblink_get_pkey('foo_1');
-
--- build an insert statement based on a local tuple,
--- replacing the primary key values with new ones
-SELECT dblink_build_sql_insert('foo_1','1 2',2,'{"0", "a"}','{"99", "xyz"}');
--- too many pk fields, should fail
-SELECT dblink_build_sql_insert('foo_1','1 2 3 4',4,'{"0", "a", "{a0,b0,c0}"}','{"99", "xyz", "{za0,zb0,zc0}"}');
-
--- build an update statement based on a local tuple,
--- replacing the primary key values with new ones
-SELECT dblink_build_sql_update('foo_1','1 2',2,'{"0", "a"}','{"99", "xyz"}');
--- too many pk fields, should fail
-SELECT dblink_build_sql_update('foo_1','1 2 3 4',4,'{"0", "a", "{a0,b0,c0}"}','{"99", "xyz", "{za0,zb0,zc0}"}');
-
--- build a delete statement based on a local tuple,
-SELECT dblink_build_sql_delete('foo_1','1 2',2,'{"0", "a"}');
--- too many pk fields, should fail
-SELECT dblink_build_sql_delete('foo_1','1 2 3 4',4,'{"0", "a", "{a0,b0,c0}"}');
-
-DROP TABLE foo_1;
-
 -- retest using a quoted and schema qualified table
 CREATE SCHEMA "MySchema";
 CREATE TABLE "MySchema"."Foo"(f1 int, f2 text, f3 text[], primary key (f1,f2));
@@ -96,13 +55,9 @@ SELECT dblink_build_sql_update('"MySchema"."Foo"','1 2',2,'{"0", "a"}','{"99", "
 -- build a delete statement based on a local tuple,
 SELECT dblink_build_sql_delete('"MySchema"."Foo"','1 2',2,'{"0", "a"}');
 
-CREATE FUNCTION connection_parameters() RETURNS text LANGUAGE SQL AS $f$
-       SELECT $$dbname='$$||current_database()||$$' port=$$||current_setting('port');
-$f$;
-
 -- regular old dblink
 SELECT *
-FROM dblink(connection_parameters(),'SELECT * FROM foo') AS t(a int, b text, c text[])
+FROM dblink('dbname=contrib_regression','SELECT * FROM foo') AS t(a int, b text, c text[])
 WHERE t.a > 7;
 
 -- should generate "connection not available" error
@@ -123,9 +78,9 @@ DECLARE
 	detail text;
 BEGIN
 	PERFORM wait_pid(crash_pid)
-	FROM dblink(connection_parameters(), $$
+	FROM dblink('dbname=contrib_regression', $$
 		SELECT pg_backend_pid() FROM dblink(
-			'service=test_ldap '||connection_parameters(),
+			'service=test_ldap dbname=contrib_regression',
 			-- This string concatenation is a hack to shoehorn a
 			-- set_pgservicefile call into the SQL statement.
 			'SELECT 1' || set_pgservicefile('pg_service.conf')
@@ -139,7 +94,7 @@ END
 $pl$;
 
 -- create a persistent connection
-SELECT dblink_connect(connection_parameters());
+SELECT dblink_connect('dbname=contrib_regression');
 
 -- use the persistent connection
 SELECT *
@@ -198,14 +153,14 @@ SELECT *
 FROM dblink('SELECT * FROM foo') AS t(a int, b text, c text[])
 WHERE t.a > 7;
 
--- put more data into our table, first using arbitrary connection syntax
+-- put more data into our slave table, first using arbitrary connection syntax
 -- but truncate the actual return value so we can use diff to check for success
-SELECT substr(dblink_exec(connection_parameters(),'INSERT INTO foo VALUES(10,''k'',''{"a10","b10","c10"}'')'),1,6);
+SELECT substr(dblink_exec('dbname=contrib_regression','INSERT INTO foo VALUES(10,''k'',''{"a10","b10","c10"}'')'),1,6);
 
 -- create a persistent connection
-SELECT dblink_connect(connection_parameters());
+SELECT dblink_connect('dbname=contrib_regression');
 
--- put more data into our table, using persistent connection syntax
+-- put more data into our slave table, using persistent connection syntax
 -- but truncate the actual return value so we can use diff to check for success
 SELECT substr(dblink_exec('INSERT INTO foo VALUES(11,''l'',''{"a11","b11","c11"}'')'),1,6);
 
@@ -249,7 +204,7 @@ FROM dblink('myconn','SELECT * FROM foo') AS t(a int, b text, c text[])
 WHERE t.a > 7;
 
 -- create a named persistent connection
-SELECT dblink_connect('myconn',connection_parameters());
+SELECT dblink_connect('myconn','dbname=contrib_regression');
 
 -- use the named persistent connection
 SELECT *
@@ -263,10 +218,10 @@ WHERE t.a > 7;
 
 -- create a second named persistent connection
 -- should error with "duplicate connection name"
-SELECT dblink_connect('myconn',connection_parameters());
+SELECT dblink_connect('myconn','dbname=contrib_regression');
 
 -- create a second named persistent connection with a new name
-SELECT dblink_connect('myconn2',connection_parameters());
+SELECT dblink_connect('myconn2','dbname=contrib_regression');
 
 -- use the second named persistent connection
 SELECT *
@@ -352,9 +307,9 @@ FROM dblink('myconn','SELECT * FROM foo') AS t(a int, b text, c text[])
 WHERE t.a > 7;
 
 -- create a named persistent connection
-SELECT dblink_connect('myconn',connection_parameters());
+SELECT dblink_connect('myconn','dbname=contrib_regression');
 
--- put more data into our table, using named persistent connection syntax
+-- put more data into our slave table, using named persistent connection syntax
 -- but truncate the actual return value so we can use diff to check for success
 SELECT substr(dblink_exec('myconn','INSERT INTO foo VALUES(11,''l'',''{"a11","b11","c11"}'')'),1,6);
 
@@ -386,15 +341,15 @@ SELECT dblink_disconnect('myconn');
 SELECT dblink_disconnect('myconn');
 
 -- test asynchronous queries
-SELECT dblink_connect('dtest1', connection_parameters());
+SELECT dblink_connect('dtest1', 'dbname=contrib_regression');
 SELECT * from
  dblink_send_query('dtest1', 'select * from foo where f1 < 3') as t1;
 
-SELECT dblink_connect('dtest2', connection_parameters());
+SELECT dblink_connect('dtest2', 'dbname=contrib_regression');
 SELECT * from
  dblink_send_query('dtest2', 'select * from foo where f1 > 2 and f1 < 7') as t1;
 
-SELECT dblink_connect('dtest3', connection_parameters());
+SELECT dblink_connect('dtest3', 'dbname=contrib_regression');
 SELECT * from
  dblink_send_query('dtest3', 'select * from foo where f1 > 6') as t1;
 
@@ -423,7 +378,7 @@ SELECT dblink_disconnect('dtest3');
 
 SELECT * from result;
 
-SELECT dblink_connect('dtest1', connection_parameters());
+SELECT dblink_connect('dtest1', 'dbname=contrib_regression');
 SELECT * from
  dblink_send_query('dtest1', 'select * from foo where f1 < 3') as t1;
 
@@ -432,39 +387,31 @@ SELECT dblink_error_message('dtest1');
 SELECT dblink_disconnect('dtest1');
 
 -- test foreign data wrapper functionality
-CREATE ROLE regress_dblink_user;
-DO $d$
-    BEGIN
-        EXECUTE $$CREATE SERVER fdtest FOREIGN DATA WRAPPER dblink_fdw
-            OPTIONS (dbname '$$||current_database()||$$',
-                     port '$$||current_setting('port')||$$'
-            )$$;
-    END;
-$d$;
-
+CREATE SERVER fdtest FOREIGN DATA WRAPPER dblink_fdw
+  OPTIONS (dbname 'contrib_regression');
 CREATE USER MAPPING FOR public SERVER fdtest
   OPTIONS (server 'localhost');  -- fail, can't specify server here
-CREATE USER MAPPING FOR public SERVER fdtest OPTIONS (user :'USER');
+CREATE USER MAPPING FOR public SERVER fdtest;
 
-GRANT USAGE ON FOREIGN SERVER fdtest TO regress_dblink_user;
-GRANT EXECUTE ON FUNCTION dblink_connect_u(text, text) TO regress_dblink_user;
+GRANT USAGE ON FOREIGN SERVER fdtest TO dblink_regression_test;
+GRANT EXECUTE ON FUNCTION dblink_connect_u(text, text) TO dblink_regression_test;
 
-SET SESSION AUTHORIZATION regress_dblink_user;
+\set ORIGINAL_USER :USER
+\c - dblink_regression_test
 -- should fail
 SELECT dblink_connect('myconn', 'fdtest');
 -- should succeed
 SELECT dblink_connect_u('myconn', 'fdtest');
 SELECT * FROM dblink('myconn','SELECT * FROM foo') AS t(a int, b text, c text[]);
 
-\c - -
-REVOKE USAGE ON FOREIGN SERVER fdtest FROM regress_dblink_user;
-REVOKE EXECUTE ON FUNCTION dblink_connect_u(text, text) FROM regress_dblink_user;
-DROP USER regress_dblink_user;
+\c - :ORIGINAL_USER
+REVOKE USAGE ON FOREIGN SERVER fdtest FROM dblink_regression_test;
+REVOKE EXECUTE ON FUNCTION dblink_connect_u(text, text) FROM dblink_regression_test;
 DROP USER MAPPING FOR public SERVER fdtest;
 DROP SERVER fdtest;
 
 -- test asynchronous notifications
-SELECT dblink_connect(connection_parameters());
+SELECT dblink_connect('dbname=contrib_regression');
 
 --should return listen
 SELECT dblink_exec('LISTEN regression');
@@ -510,7 +457,7 @@ SELECT dblink_build_sql_delete('test_dropped', '1', 1,
 SET datestyle = ISO, MDY;
 SET intervalstyle = postgres;
 SET timezone = UTC;
-SELECT dblink_connect('myconn',connection_parameters());
+SELECT dblink_connect('myconn','dbname=contrib_regression');
 SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
 
 -- single row synchronous case

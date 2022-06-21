@@ -1,17 +1,17 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  *
  * src/bin/psql/settings.h
  */
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
-#include "fe_utils/print.h"
-#include "variables.h"
 
-#define DEFAULT_CSV_FIELD_SEP ','
+#include "variables.h"
+#include "print.h"
+
 #define DEFAULT_FIELD_SEP "|"
 #define DEFAULT_RECORD_SEP "\n"
 
@@ -23,8 +23,8 @@
 #define DEFAULT_EDITOR_LINENUMBER_ARG "+"
 #endif
 
-#define DEFAULT_PROMPT1 "%/%R%x%# "
-#define DEFAULT_PROMPT2 "%/%R%x%# "
+#define DEFAULT_PROMPT1 "%/%R%# "
+#define DEFAULT_PROMPT2 "%/%R%# "
 #define DEFAULT_PROMPT3 ">> "
 
 /*
@@ -36,7 +36,6 @@ typedef enum
 {
 	PSQL_ECHO_NONE,
 	PSQL_ECHO_QUERIES,
-	PSQL_ECHO_ERRORS,
 	PSQL_ECHO_ALL
 } PSQL_ECHO;
 
@@ -86,18 +85,10 @@ typedef struct _psqlSettings
 
 	FILE	   *copyStream;		/* Stream to read/write for \copy command */
 
-	PGresult   *last_error_result;	/* most recent error result, if any */
-
-	printQueryOpt popt;			/* The active print format settings */
+	printQueryOpt popt;
 
 	char	   *gfname;			/* one-shot file output argument for \g */
-	printQueryOpt *gsavepopt;	/* if not null, saved print format settings */
-
 	char	   *gset_prefix;	/* one-shot prefix argument for \gset */
-	bool		gdesc_flag;		/* one-shot request to describe query results */
-	bool		gexec_flag;		/* one-shot request to execute query results */
-	bool		crosstab_flag;	/* one-shot request to crosstab results */
-	char	   *ctv_args[4];	/* \crosstabview arguments */
 
 	bool		notty;			/* stdin or stdout is not a tty (as determined
 								 * on startup) */
@@ -109,7 +100,6 @@ typedef struct _psqlSettings
 	const char *progname;		/* in case you renamed psql */
 	char	   *inputfile;		/* file being currently processed, if any */
 	uint64		lineno;			/* also for error reporting */
-	uint64		stmt_lineno;	/* line number inside the current statement */
 
 	bool		timing;			/* enable timing of all queries */
 
@@ -127,10 +117,7 @@ typedef struct _psqlSettings
 	bool		quiet;
 	bool		singleline;
 	bool		singlestep;
-	bool		hide_tableam;
 	int			fetch_count;
-	int			histsize;
-	int			ignoreeof;
 	PSQL_ECHO	echo;
 	PSQL_ECHO_HIDDEN echo_hidden;
 	PSQL_ERROR_ROLLBACK on_error_rollback;
@@ -140,7 +127,6 @@ typedef struct _psqlSettings
 	const char *prompt2;
 	const char *prompt3;
 	PGVerbosity verbosity;		/* current error verbosity level */
-	PGContextVisibility show_context;	/* current context display level */
 } PsqlSettings;
 
 extern PsqlSettings pset;

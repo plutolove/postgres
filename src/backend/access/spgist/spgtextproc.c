@@ -29,7 +29,7 @@
  * No new entries ever get pushed into a -2-labeled child, either.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -45,7 +45,6 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/pg_locale.h"
-#include "utils/varlena.h"
 
 
 /*
@@ -66,20 +65,6 @@
  * than default.
  */
 #define SPGIST_MAX_PREFIX_LENGTH	Max((int) (BLCKSZ - 258 * 16 - 100), 32)
-
-/*
- * Strategy for collation aware operator on text is equal to btree strategy
- * plus value of 10.
- *
- * Current collation aware strategies and their corresponding btree strategies:
- * 11 BTLessStrategyNumber
- * 12 BTLessEqualStrategyNumber
- * 14 BTGreaterEqualStrategyNumber
- * 15 BTGreaterStrategyNumber
- */
-#define SPG_STRATEGY_ADDITION	(10)
-#define SPG_IS_COLLATION_AWARE_STRATEGY(s) ((s) > SPG_STRATEGY_ADDITION \
-										 && (s) != RTPrefixStrategyNumber)
 
 /* Struct for sorting values in picksplit */
 typedef struct spgNodePtr
@@ -227,13 +212,8 @@ spg_text_choose(PG_FUNCTION_ARGS)
 				out->result.splitTuple.prefixPrefixDatum =
 					formTextDatum(prefixStr, commonLen);
 			}
-			out->result.splitTuple.prefixNNodes = 1;
-			out->result.splitTuple.prefixNodeLabels =
-				(Datum *) palloc(sizeof(Datum));
-			out->result.splitTuple.prefixNodeLabels[0] =
+			out->result.splitTuple.nodeLabel =
 				Int16GetDatum(*(unsigned char *) (prefixStr + commonLen));
-
-			out->result.splitTuple.childNodeN = 0;
 
 			if (prefixSize - commonLen == 1)
 			{
@@ -300,10 +280,7 @@ spg_text_choose(PG_FUNCTION_ARGS)
 		out->resultType = spgSplitTuple;
 		out->result.splitTuple.prefixHasPrefix = in->hasPrefix;
 		out->result.splitTuple.prefixPrefixDatum = in->prefixDatum;
-		out->result.splitTuple.prefixNNodes = 1;
-		out->result.splitTuple.prefixNodeLabels = (Datum *) palloc(sizeof(Datum));
-		out->result.splitTuple.prefixNodeLabels[0] = Int16GetDatum(-2);
-		out->result.splitTuple.childNodeN = 0;
+		out->result.splitTuple.nodeLabel = Int16GetDatum(-2);
 		out->result.splitTuple.postfixHasPrefix = false;
 	}
 	else
@@ -510,10 +487,10 @@ spg_text_inner_consistent(PG_FUNCTION_ARGS)
 			 * well end with a partial multibyte character, so that applying
 			 * any encoding-sensitive test to it would be risky anyhow.)
 			 */
-			if (SPG_IS_COLLATION_AWARE_STRATEGY(strategy))
+			if (strategy > 10)
 			{
 				if (collate_is_c)
-					strategy -= SPG_STRATEGY_ADDITION;
+					strategy -= 10;
 				else
 					continue;
 			}
@@ -538,10 +515,6 @@ spg_text_inner_consistent(PG_FUNCTION_ARGS)
 				case BTGreaterEqualStrategyNumber:
 				case BTGreaterStrategyNumber:
 					if (r < 0)
-						res = false;
-					break;
-				case RTPrefixStrategyNumber:
-					if (r != 0)
 						res = false;
 					break;
 				default:
@@ -586,9 +559,8 @@ spg_text_leaf_consistent(PG_FUNCTION_ARGS)
 
 	leafValue = DatumGetTextPP(in->leafDatum);
 
-	/* As above, in->reconstructedValue isn't toasted or short. */
 	if (DatumGetPointer(in->reconstructedValue))
-		reconstrValue = (text *) DatumGetPointer(in->reconstructedValue);
+		reconstrValue = DatumGetTextP(in->reconstructedValue);
 
 	Assert(reconstrValue == NULL ? level == 0 :
 		   VARSIZE_ANY_EXHDR(reconstrValue) == level);
@@ -623,48 +595,30 @@ spg_text_leaf_consistent(PG_FUNCTION_ARGS)
 		int			queryLen = VARSIZE_ANY_EXHDR(query);
 		int			r;
 
-		if (strategy == RTPrefixStrategyNumber)
-		{
-			/*
-			 * if level >= length of query then reconstrValue must begin with
-			 * query (prefix) string, so we don't need to check it again.
-			 */
-			res = (level >= queryLen) ||
-				DatumGetBool(DirectFunctionCall2Coll(text_starts_with,
-													 PG_GET_COLLATION(),
-													 out->leafValue,
-													 PointerGetDatum(query)));
-
-			if (!res)			/* no need to consider remaining conditions */
-				break;
-
-			continue;
-		}
-
-		if (SPG_IS_COLLATION_AWARE_STRATEGY(strategy))
+		if (strategy > 10)
 		{
 			/* Collation-aware comparison */
-			strategy -= SPG_STRATEGY_ADDITION;
+			strategy -= 10;
 
 			/* If asserts enabled, verify encoding of reconstructed string */
 			Assert(pg_verifymbstr(fullValue, fullLen, false));
 
-			r = varstr_cmp(fullValue, fullLen,
-						   VARDATA_ANY(query), queryLen,
+			r = varstr_cmp(fullValue, Min(queryLen, fullLen),
+						   VARDATA_ANY(query), Min(queryLen, fullLen),
 						   PG_GET_COLLATION());
 		}
 		else
 		{
 			/* Non-collation-aware comparison */
 			r = memcmp(fullValue, VARDATA_ANY(query), Min(queryLen, fullLen));
+		}
 
-			if (r == 0)
-			{
-				if (queryLen > fullLen)
-					r = -1;
-				else if (queryLen < fullLen)
-					r = 1;
-			}
+		if (r == 0)
+		{
+			if (queryLen > fullLen)
+				r = -1;
+			else if (queryLen < fullLen)
+				r = 1;
 		}
 
 		switch (strategy)

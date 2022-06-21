@@ -11,7 +11,7 @@
  * (It's debatable whether the savings justifies carrying two plan node
  * types, though.)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,7 +35,6 @@
 
 #include "executor/executor.h"
 #include "executor/nodeUnique.h"
-#include "miscadmin.h"
 #include "utils/memutils.h"
 
 
@@ -43,16 +42,13 @@
  *		ExecUnique
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *			/* return: a tuple or NULL */
-ExecUnique(PlanState *pstate)
+TupleTableSlot *				/* return: a tuple or NULL */
+ExecUnique(UniqueState *node)
 {
-	UniqueState *node = castNode(UniqueState, pstate);
-	ExprContext *econtext = node->ps.ps_ExprContext;
+	Unique	   *plannode = (Unique *) node->ps.plan;
 	TupleTableSlot *resultTupleSlot;
 	TupleTableSlot *slot;
 	PlanState  *outerPlan;
-
-	CHECK_FOR_INTERRUPTS();
 
 	/*
 	 * get information from the node
@@ -89,9 +85,10 @@ ExecUnique(PlanState *pstate)
 		 * If so then we loop back and fetch another new tuple from the
 		 * subplan.
 		 */
-		econtext->ecxt_innertuple = slot;
-		econtext->ecxt_outertuple = resultTupleSlot;
-		if (!ExecQualAndReset(node->eqfunction, econtext))
+		if (!execTuplesMatch(slot, resultTupleSlot,
+							 plannode->numCols, plannode->uniqColIdx,
+							 node->eqfunctions,
+							 node->tempContext))
 			break;
 	}
 
@@ -125,12 +122,25 @@ ExecInitUnique(Unique *node, EState *estate, int eflags)
 	uniquestate = makeNode(UniqueState);
 	uniquestate->ps.plan = (Plan *) node;
 	uniquestate->ps.state = estate;
-	uniquestate->ps.ExecProcNode = ExecUnique;
 
 	/*
-	 * create expression context
+	 * Miscellaneous initialization
+	 *
+	 * Unique nodes have no ExprContext initialization because they never call
+	 * ExecQual or ExecProject.  But they do need a per-tuple memory context
+	 * anyway for calling execTuplesMatch.
 	 */
-	ExecAssignExprContext(estate, &uniquestate->ps);
+	uniquestate->tempContext =
+		AllocSetContextCreate(CurrentMemoryContext,
+							  "Unique",
+							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,
+							  ALLOCSET_DEFAULT_MAXSIZE);
+
+	/*
+	 * Tuple table initialization
+	 */
+	ExecInitResultTupleSlot(estate, &uniquestate->ps);
 
 	/*
 	 * then initialize outer plan
@@ -138,22 +148,18 @@ ExecInitUnique(Unique *node, EState *estate, int eflags)
 	outerPlanState(uniquestate) = ExecInitNode(outerPlan(node), estate, eflags);
 
 	/*
-	 * Initialize result slot and type. Unique nodes do no projections, so
-	 * initialize projection info for this node appropriately.
+	 * unique nodes do no projections, so initialize projection info for this
+	 * node appropriately
 	 */
-	ExecInitResultTupleSlotTL(&uniquestate->ps, &TTSOpsMinimalTuple);
+	ExecAssignResultTypeFromTL(&uniquestate->ps);
 	uniquestate->ps.ps_ProjInfo = NULL;
 
 	/*
 	 * Precompute fmgr lookup data for inner loop
 	 */
-	uniquestate->eqfunction =
-		execTuplesMatchPrepare(ExecGetResultType(outerPlanState(uniquestate)),
-							   node->numCols,
-							   node->uniqColIdx,
-							   node->uniqOperators,
-							   node->uniqCollations,
-							   &uniquestate->ps);
+	uniquestate->eqfunctions =
+		execTuplesMatchPrepare(node->numCols,
+							   node->uniqOperators);
 
 	return uniquestate;
 }
@@ -171,7 +177,7 @@ ExecEndUnique(UniqueState *node)
 	/* clean up tuple table */
 	ExecClearTuple(node->ps.ps_ResultTupleSlot);
 
-	ExecFreeExprContext(&node->ps);
+	MemoryContextDelete(node->tempContext);
 
 	ExecEndNode(outerPlanState(node));
 }

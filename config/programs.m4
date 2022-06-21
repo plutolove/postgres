@@ -1,24 +1,6 @@
 # config/programs.m4
 
 
-# PGAC_PATH_PROGS
-# ---------------
-# This wrapper for AC_PATH_PROGS behaves like that macro except when
-# VARIABLE is already set; in that case we just accept the value verbatim.
-# (AC_PATH_PROGS would accept it only if it looks like an absolute path.)
-# A desirable future improvement would be to convert a non-absolute-path
-# input into absolute form.
-AC_DEFUN([PGAC_PATH_PROGS],
-[if test -z "$$1"; then
-  AC_PATH_PROGS($@)
-else
-  # Report the value of $1 in configure's output in all cases.
-  AC_MSG_CHECKING([for $1])
-  AC_MSG_RESULT([$$1])
-fi
-])
-
-
 # PGAC_PATH_BISON
 # ---------------
 # Look for Bison, set the output variable BISON to its path if found.
@@ -26,7 +8,10 @@ fi
 # Note we do not accept other implementations of yacc.
 
 AC_DEFUN([PGAC_PATH_BISON],
-[PGAC_PATH_PROGS(BISON, bison)
+[# Let the user override the search
+if test -z "$BISON"; then
+  AC_PATH_PROGS(BISON, bison)
+fi
 
 if test "$BISON"; then
   pgac_bison_version=`$BISON --version 2>/dev/null | sed q`
@@ -56,7 +41,7 @@ if test -z "$BISON"; then
 *** PostgreSQL then you do not need to worry about this, because the Bison
 *** output is pre-generated.)])
 fi
-dnl We don't need AC_SUBST(BISON) because PGAC_PATH_PROGS did it
+# We don't need AC_SUBST(BISON) because AC_PATH_PROG did it
 AC_SUBST(BISONFLAGS)
 ])# PGAC_PATH_BISON
 
@@ -131,34 +116,6 @@ AC_SUBST(FLEXFLAGS)
 
 
 
-# PGAC_LDAP_SAFE
-# --------------
-# PostgreSQL sometimes loads libldap_r and plain libldap into the same
-# process.  Check for OpenLDAP versions known not to tolerate doing so; assume
-# non-OpenLDAP implementations are safe.  The dblink test suite exercises the
-# hazardous interaction directly.
-
-AC_DEFUN([PGAC_LDAP_SAFE],
-[AC_CACHE_CHECK([for compatible LDAP implementation], [pgac_cv_ldap_safe],
-[AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
-[#include <ldap.h>
-#if !defined(LDAP_VENDOR_VERSION) || \
-     (defined(LDAP_API_FEATURE_X_OPENLDAP) && \
-      LDAP_VENDOR_VERSION >= 20424 && LDAP_VENDOR_VERSION <= 20431)
-choke me
-#endif], [])],
-[pgac_cv_ldap_safe=yes],
-[pgac_cv_ldap_safe=no])])
-
-if test "$pgac_cv_ldap_safe" != yes; then
-  AC_MSG_WARN([
-*** With OpenLDAP versions 2.4.24 through 2.4.31, inclusive, each backend
-*** process that loads libpq (via WAL receiver, dblink, or postgres_fdw) and
-*** also uses LDAP will crash on exit.])
-fi])
-
-
-
 # PGAC_CHECK_READLINE
 # -------------------
 # Check for the readline library and dependent libraries, either
@@ -179,11 +136,11 @@ for pgac_rllib in $READLINE_ORDER ; do
   for pgac_lib in "" " -ltermcap" " -lncurses" " -lcurses" ; do
     LIBS="${pgac_rllib}${pgac_lib} $pgac_save_LIBS"
     AC_TRY_LINK_FUNC([readline], [[
-      # Older NetBSD and OpenBSD have a broken linker that does not
+      # Older NetBSD, OpenBSD, and Irix have a broken linker that does not
       # recognize dependent libraries; assume curses is needed if we didn't
       # find any dependency.
       case $host_os in
-        netbsd* | openbsd*)
+        netbsd* | openbsd* | irix*)
           if test x"$pgac_lib" = x"" ; then
             pgac_lib=" -lcurses"
           fi ;;
@@ -209,82 +166,26 @@ fi
 
 
 
-# PGAC_READLINE_VARIABLES
-# -----------------------
-# Readline versions < 2.1 don't have rl_completion_append_character,
-# and some versions lack rl_completion_suppress_quote.
-# Libedit lacks rl_filename_quote_characters and rl_filename_quoting_function
+# PGAC_VAR_RL_COMPLETION_APPEND_CHARACTER
+# ---------------------------------------
+# Readline versions < 2.1 don't have rl_completion_append_character
 
-AC_DEFUN([PGAC_READLINE_VARIABLES],
+AC_DEFUN([PGAC_VAR_RL_COMPLETION_APPEND_CHARACTER],
 [AC_CACHE_CHECK([for rl_completion_append_character], pgac_cv_var_rl_completion_append_character,
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdio.h>
-#if defined(HAVE_READLINE_READLINE_H)
-#include <readline/readline.h>
-#elif defined(HAVE_EDITLINE_READLINE_H)
-#include <editline/readline.h>
+[AC_TRY_LINK([#include <stdio.h>
+#ifdef HAVE_READLINE_READLINE_H
+# include <readline/readline.h>
 #elif defined(HAVE_READLINE_H)
-#include <readline.h>
+# include <readline.h>
 #endif
 ],
-[rl_completion_append_character = 'x';])],
+[rl_completion_append_character = 'x';],
 [pgac_cv_var_rl_completion_append_character=yes],
 [pgac_cv_var_rl_completion_append_character=no])])
 if test x"$pgac_cv_var_rl_completion_append_character" = x"yes"; then
 AC_DEFINE(HAVE_RL_COMPLETION_APPEND_CHARACTER, 1,
           [Define to 1 if you have the global variable 'rl_completion_append_character'.])
-fi
-AC_CACHE_CHECK([for rl_completion_suppress_quote], pgac_cv_var_rl_completion_suppress_quote,
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdio.h>
-#if defined(HAVE_READLINE_READLINE_H)
-#include <readline/readline.h>
-#elif defined(HAVE_EDITLINE_READLINE_H)
-#include <editline/readline.h>
-#elif defined(HAVE_READLINE_H)
-#include <readline.h>
-#endif
-],
-[rl_completion_suppress_quote = 1;])],
-[pgac_cv_var_rl_completion_suppress_quote=yes],
-[pgac_cv_var_rl_completion_suppress_quote=no])])
-if test x"$pgac_cv_var_rl_completion_suppress_quote" = x"yes"; then
-AC_DEFINE(HAVE_RL_COMPLETION_SUPPRESS_QUOTE, 1,
-          [Define to 1 if you have the global variable 'rl_completion_suppress_quote'.])
-fi
-AC_CACHE_CHECK([for rl_filename_quote_characters], pgac_cv_var_rl_filename_quote_characters,
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdio.h>
-#if defined(HAVE_READLINE_READLINE_H)
-#include <readline/readline.h>
-#elif defined(HAVE_EDITLINE_READLINE_H)
-#include <editline/readline.h>
-#elif defined(HAVE_READLINE_H)
-#include <readline.h>
-#endif
-],
-[rl_filename_quote_characters = "x";])],
-[pgac_cv_var_rl_filename_quote_characters=yes],
-[pgac_cv_var_rl_filename_quote_characters=no])])
-if test x"$pgac_cv_var_rl_filename_quote_characters" = x"yes"; then
-AC_DEFINE(HAVE_RL_FILENAME_QUOTE_CHARACTERS, 1,
-          [Define to 1 if you have the global variable 'rl_filename_quote_characters'.])
-fi
-AC_CACHE_CHECK([for rl_filename_quoting_function], pgac_cv_var_rl_filename_quoting_function,
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdio.h>
-#if defined(HAVE_READLINE_READLINE_H)
-#include <readline/readline.h>
-#elif defined(HAVE_EDITLINE_READLINE_H)
-#include <editline/readline.h>
-#elif defined(HAVE_READLINE_H)
-#include <readline.h>
-#endif
-],
-[rl_filename_quoting_function = 0;])],
-[pgac_cv_var_rl_filename_quoting_function=yes],
-[pgac_cv_var_rl_filename_quoting_function=no])])
-if test x"$pgac_cv_var_rl_filename_quoting_function" = x"yes"; then
-AC_DEFINE(HAVE_RL_FILENAME_QUOTING_FUNCTION, 1,
-          [Define to 1 if you have the global variable 'rl_filename_quoting_function'.])
-fi
-])# PGAC_READLINE_VARIABLES
+fi])# PGAC_VAR_RL_COMPLETION_APPEND_CHARACTER
 
 
 
@@ -300,8 +201,7 @@ AC_DEFUN([PGAC_CHECK_GETTEXT],
                  [AC_MSG_ERROR([a gettext implementation is required for NLS])])
   AC_CHECK_HEADER([libintl.h], [],
                   [AC_MSG_ERROR([header file <libintl.h> is required for NLS])])
-  PGAC_PATH_PROGS(MSGFMT, msgfmt)
-  AC_ARG_VAR(MSGFMT, [msgfmt program for NLS])dnl
+  AC_CHECK_PROGS(MSGFMT, msgfmt)
   if test -z "$MSGFMT"; then
     AC_MSG_ERROR([msgfmt is required for NLS])
   fi
@@ -310,8 +210,8 @@ AC_DEFUN([PGAC_CHECK_GETTEXT],
     pgac_cv_msgfmt_flags=-c
 fi])
   AC_SUBST(MSGFMT_FLAGS, $pgac_cv_msgfmt_flags)
-  PGAC_PATH_PROGS(MSGMERGE, msgmerge)
-  PGAC_PATH_PROGS(XGETTEXT, xgettext)
+  AC_CHECK_PROGS(MSGMERGE, msgmerge)
+  AC_CHECK_PROGS(XGETTEXT, xgettext)
 ])# PGAC_CHECK_GETTEXT
 
 

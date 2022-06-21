@@ -4,18 +4,7 @@
  * because other encodings don't support all the characters used.
  */
 
-SELECT getdatabaseencoding() <> 'UTF8' OR
-       (SELECT count(*) FROM pg_collation WHERE collname IN ('de_DE', 'en_US', 'sv_SE', 'tr_TR') AND collencoding = pg_char_to_encoding('UTF8')) <> 4 OR
-       version() !~ 'linux-gnu'
-       AS skip_test \gset
-\if :skip_test
-\quit
-\endif
-
 SET client_encoding TO UTF8;
-
-CREATE SCHEMA collate_tests;
-SET search_path = collate_tests;
 
 
 CREATE TABLE collate_test1 (
@@ -145,25 +134,6 @@ SELECT * FROM collate_test1 WHERE b ~* '^abc$';
 SELECT * FROM collate_test1 WHERE b ~* '^abc';
 SELECT * FROM collate_test1 WHERE b ~* 'bc';
 
-CREATE TABLE collate_test6 (
-    a int,
-    b text COLLATE "en_US"
-);
-INSERT INTO collate_test6 VALUES (1, 'abc'), (2, 'ABC'), (3, '123'), (4, 'ab1'),
-                                 (5, 'a1!'), (6, 'a c'), (7, '!.;'), (8, '   '),
-                                 (9, 'äbç'), (10, 'ÄBÇ');
-SELECT b,
-       b ~ '^[[:alpha:]]+$' AS is_alpha,
-       b ~ '^[[:upper:]]+$' AS is_upper,
-       b ~ '^[[:lower:]]+$' AS is_lower,
-       b ~ '^[[:digit:]]+$' AS is_digit,
-       b ~ '^[[:alnum:]]+$' AS is_alnum,
-       b ~ '^[[:graph:]]+$' AS is_graph,
-       b ~ '^[[:print:]]+$' AS is_print,
-       b ~ '^[[:punct:]]+$' AS is_punct,
-       b ~ '^[[:space:]]+$' AS is_space
-FROM collate_test6;
-
 SELECT 'Türkiye' COLLATE "en_US" ~* 'KI' AS "true";
 SELECT 'Türkiye' COLLATE "tr_TR" ~* 'KI' AS "false";
 
@@ -177,16 +147,8 @@ SELECT relname FROM pg_class WHERE relname ~* '^abc';
 -- to_char
 
 SET lc_time TO 'tr_TR';
-SELECT to_char(date '2010-02-01', 'DD TMMON YYYY');
-SELECT to_char(date '2010-02-01', 'DD TMMON YYYY' COLLATE "tr_TR");
 SELECT to_char(date '2010-04-01', 'DD TMMON YYYY');
 SELECT to_char(date '2010-04-01', 'DD TMMON YYYY' COLLATE "tr_TR");
-
--- to_date
-
-SELECT to_date('01 ŞUB 2010', 'DD TMMON YYYY');
-SELECT to_date('01 Şub 2010', 'DD TMMON YYYY');
-SELECT to_date('1234567890ab 2010', 'TMMONTH YYYY'); -- fail
 
 
 -- backwards parsing
@@ -363,8 +325,6 @@ BEGIN
 END
 $$;
 CREATE COLLATION test0 FROM "C"; -- fail, duplicate name
-CREATE COLLATION IF NOT EXISTS test0 FROM "C"; -- ok, skipped
-CREATE COLLATION IF NOT EXISTS test0 (locale = 'foo'); -- ok, skipped
 do $$
 BEGIN
   EXECUTE 'CREATE COLLATION test1 (lc_collate = ' ||
@@ -406,11 +366,6 @@ DROP SCHEMA test_schema;
 DROP ROLE regress_test_role;
 
 
--- ALTER
-
-ALTER COLLATION "en_US" REFRESH VERSION;
-
-
 -- dependencies
 
 CREATE COLLATION test0 FROM "C";
@@ -441,15 +396,3 @@ select textrange_en_us('A','Z') @> 'b'::text;
 
 drop type textrange_c;
 drop type textrange_en_us;
-
-
--- nondeterministic collations
--- (not supported with libc provider)
-
-CREATE COLLATION ctest_det (locale = 'en_US.utf8', deterministic = true);
-CREATE COLLATION ctest_nondet (locale = 'en_US.utf8', deterministic = false);
-
-
--- cleanup
-SET client_min_messages TO warning;
-DROP SCHEMA collate_tests CASCADE;

@@ -8,7 +8,7 @@
  * exit-time cleanup for either a postmaster or a backend.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/ipc.h
@@ -63,9 +63,8 @@ typedef void (*shmem_startup_hook_type) (void);
 
 /* ipc.c */
 extern PGDLLIMPORT bool proc_exit_inprogress;
-extern PGDLLIMPORT bool shmem_exit_inprogress;
 
-extern void proc_exit(int code) pg_attribute_noreturn();
+extern void proc_exit(int code) __attribute__((noreturn));
 extern void shmem_exit(int code);
 extern void on_proc_exit(pg_on_exit_callback function, Datum arg);
 extern void on_shmem_exit(pg_on_exit_callback function, Datum arg);
@@ -76,6 +75,6 @@ extern void on_exit_reset(void);
 /* ipci.c */
 extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
 
-extern void CreateSharedMemoryAndSemaphores(void);
+extern void CreateSharedMemoryAndSemaphores(bool makePrivate, int port);
 
-#endif							/* IPC_H */
+#endif   /* IPC_H */

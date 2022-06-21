@@ -1,16 +1,10 @@
 # contrib/fuzzystrmatch/Makefile
 
 MODULE_big = fuzzystrmatch
-OBJS = \
-	$(WIN32RES) \
-	dmetaphone.o \
-	fuzzystrmatch.o
+OBJS = fuzzystrmatch.o dmetaphone.o
 
 EXTENSION = fuzzystrmatch
-DATA = fuzzystrmatch--1.1.sql fuzzystrmatch--1.0--1.1.sql
-PGFILEDESC = "fuzzystrmatch - similarities and distance between strings"
-
-REGRESS = fuzzystrmatch
+DATA = fuzzystrmatch--1.0.sql fuzzystrmatch--unpackaged--1.0.sql
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
@@ -22,3 +16,6 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+# levenshtein.c is #included by fuzzystrmatch.c
+fuzzystrmatch.o: fuzzystrmatch.c levenshtein.c

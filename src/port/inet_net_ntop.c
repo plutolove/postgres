@@ -14,7 +14,7 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
  * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
- *	  src/port/inet_net_ntop.c
+ *	  src/backend/utils/adt/inet_net_ntop.c
  */
 
 #if defined(LIBC_SCCS) && !defined(lint)
@@ -27,6 +27,7 @@ static const char rcsid[] = "Id: inet_net_ntop.c,v 1.1.2.2 2004/03/09 09:17:27 m
 #include "postgres_fe.h"
 #endif
 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -36,7 +37,7 @@ static const char rcsid[] = "Id: inet_net_ntop.c,v 1.1.2.2 2004/03/09 09:17:27 m
 #else
 /*
  * In a frontend build, we can't include inet.h, but we still need to have
- * sensible definitions of these two constants.  Note that pg_inet_net_ntop()
+ * sensible definitions of these two constants.  Note that inet_net_ntop()
  * assumes that PGSQL_AF_INET is equal to AF_INET.
  */
 #define PGSQL_AF_INET	(AF_INET + 0)
@@ -54,27 +55,27 @@ static const char rcsid[] = "Id: inet_net_ntop.c,v 1.1.2.2 2004/03/09 09:17:27 m
 #endif
 
 static char *inet_net_ntop_ipv4(const u_char *src, int bits,
-								char *dst, size_t size);
+				   char *dst, size_t size);
 static char *inet_net_ntop_ipv6(const u_char *src, int bits,
-								char *dst, size_t size);
+				   char *dst, size_t size);
 
 
 /*
  * char *
- * pg_inet_net_ntop(af, src, bits, dst, size)
+ * inet_net_ntop(af, src, bits, dst, size)
  *	convert host/network address from network to presentation format.
  *	"src"'s size is determined from its "af".
  * return:
  *	pointer to dst, or NULL if an error occurred (check errno).
  * note:
  *	192.5.5.1/28 has a nonzero host part, which means it isn't a network
- *	as called for by pg_inet_net_pton() but it can be a host address with
+ *	as called for by inet_net_pton() but it can be a host address with
  *	an included netmask.
  * author:
  *	Paul Vixie (ISC), October 1998
  */
 char *
-pg_inet_net_ntop(int af, const void *src, int bits, char *dst, size_t size)
+inet_net_ntop(int af, const void *src, int bits, char *dst, size_t size)
 {
 	/*
 	 * We need to cover both the address family constants used by the PG inet
@@ -258,8 +259,8 @@ inet_net_ntop_ipv6(const u_char *src, int bits, char *dst, size_t size)
 			*tp++ = ':';
 		/* Is this address an encapsulated IPv4? */
 		if (i == 6 && best.base == 0 && (best.len == 6 ||
-										 (best.len == 7 && words[7] != 0x0001) ||
-										 (best.len == 5 && words[5] == 0xffff)))
+									 (best.len == 7 && words[7] != 0x0001) ||
+									  (best.len == 5 && words[5] == 0xffff)))
 		{
 			int			n;
 

@@ -3,7 +3,7 @@
  * unaccent.c
  *	  Text search unaccent dictionary
  *
- * Copyright (c) 2009-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2009-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/unaccent/unaccent.c
@@ -14,30 +14,19 @@
 #include "postgres.h"
 
 #include "catalog/namespace.h"
-#include "catalog/pg_ts_dict.h"
 #include "commands/defrem.h"
 #include "lib/stringinfo.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_public.h"
 #include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/regproc.h"
-#include "utils/syscache.h"
 
 PG_MODULE_MAGIC;
 
 /*
- * An unaccent dictionary uses a trie to find a string to replace.  Each node
- * of the trie is an array of 256 TrieChar structs; the N-th element of the
- * array corresponds to next byte value N.  That element can contain both a
- * replacement string (to be used if the source string ends with this byte)
- * and a link to another trie node (to be followed if there are more bytes).
- *
- * Note that the trie search logic pays no attention to multibyte character
- * boundaries.  This is OK as long as both the data entered into the trie and
- * the data we're trying to look up are validly encoded; no partial-character
- * matches will occur.
+ * Unaccent dictionary uses a trie to find a character to replace. Each node of
+ * the trie is an array of 256 TrieChar structs (n-th element of array
+ * corresponds to byte)
  */
 typedef struct TrieChar
 {
@@ -48,40 +37,34 @@ typedef struct TrieChar
 
 /*
  * placeChar - put str into trie's structure, byte by byte.
- *
- * If node is NULL, we need to make a new node, which will be returned;
- * otherwise the return value is the same as node.
  */
 static TrieChar *
-placeChar(TrieChar *node, const unsigned char *str, int lenstr,
-		  const char *replaceTo, int replacelen)
+placeChar(TrieChar *node, unsigned char *str, int lenstr, char *replaceTo, int replacelen)
 {
 	TrieChar   *curnode;
 
 	if (!node)
-		node = (TrieChar *) palloc0(sizeof(TrieChar) * 256);
-
-	Assert(lenstr > 0);			/* else str[0] doesn't exist */
+	{
+		node = palloc(sizeof(TrieChar) * 256);
+		memset(node, 0, sizeof(TrieChar) * 256);
+	}
 
 	curnode = node + *str;
 
-	if (lenstr <= 1)
+	if (lenstr == 1)
 	{
 		if (curnode->replaceTo)
-			ereport(WARNING,
-					(errcode(ERRCODE_CONFIG_FILE_ERROR),
-					 errmsg("duplicate source strings, first one will be used")));
+			elog(WARNING, "duplicate TO argument, use first one");
 		else
 		{
 			curnode->replacelen = replacelen;
-			curnode->replaceTo = (char *) palloc(replacelen);
+			curnode->replaceTo = palloc(replacelen);
 			memcpy(curnode->replaceTo, replaceTo, replacelen);
 		}
 	}
 	else
 	{
-		curnode->nextChar = placeChar(curnode->nextChar, str + 1, lenstr - 1,
-									  replaceTo, replacelen);
+		curnode->nextChar = placeChar(curnode->nextChar, str + 1, lenstr - 1, replaceTo, replacelen);
 	}
 
 	return node;
@@ -93,7 +76,7 @@ placeChar(TrieChar *node, const unsigned char *str, int lenstr,
  * Function converts UTF8-encoded file into current encoding.
  */
 static TrieChar *
-initTrie(const char *filename)
+initTrie(char *filename)
 {
 	TrieChar   *volatile rootTrie = NULL;
 	MemoryContext ccxt = CurrentMemoryContext;
@@ -122,21 +105,11 @@ initTrie(const char *filename)
 
 			while ((line = tsearch_readline(&trst)) != NULL)
 			{
-				/*----------
-				 * The format of each line must be "src" or "src trg", where
-				 * src and trg are sequences of one or more non-whitespace
-				 * characters, separated by whitespace.  Whitespace at start
-				 * or end of line is ignored.  If trg is omitted, an empty
-				 * string is used as the replacement.
-				 *
-				 * We use a simple state machine, with states
-				 *	0	initial (before src)
-				 *	1	in src
-				 *	2	in whitespace after src
-				 *	3	in trg
-				 *	4	in whitespace after trg
-				 *	-1	syntax error detected
-				 *----------
+				/*
+				 * The format of each line must be "src trg" where src and trg
+				 * are sequences of one or more non-whitespace characters,
+				 * separated by whitespace.  Whitespace at start or end of
+				 * line is ignored.
 				 */
 				int			state;
 				char	   *ptr;
@@ -188,21 +161,10 @@ initTrie(const char *filename)
 					}
 				}
 
-				if (state == 1 || state == 2)
-				{
-					/* trg was omitted, so use "" */
-					trg = "";
-					trglen = 0;
-				}
-
-				if (state > 0)
+				if (state >= 3)
 					rootTrie = placeChar(rootTrie,
 										 (unsigned char *) src, srclen,
 										 trg, trglen);
-				else if (state < 0)
-					ereport(WARNING,
-							(errcode(ERRCODE_CONFIG_FILE_ERROR),
-							 errmsg("invalid syntax: more than two strings in unaccent rule")));
 
 				pfree(line);
 			}
@@ -235,35 +197,23 @@ initTrie(const char *filename)
 }
 
 /*
- * findReplaceTo - find longest possible match in trie
- *
- * On success, returns pointer to ending subnode, plus length of matched
- * source string in *p_matchlen.  On failure, returns NULL.
+ * findReplaceTo - find multibyte character in trie
  */
 static TrieChar *
-findReplaceTo(TrieChar *node, const unsigned char *src, int srclen,
-			  int *p_matchlen)
+findReplaceTo(TrieChar *node, unsigned char *src, int srclen)
 {
-	TrieChar   *result = NULL;
-	int			matchlen = 0;
-
-	*p_matchlen = 0;			/* prevent uninitialized-variable warnings */
-
-	while (node && matchlen < srclen)
+	while (node)
 	{
-		node = node + src[matchlen];
-		matchlen++;
+		node = node + *src;
+		if (srclen == 1)
+			return node;
 
-		if (node->replaceTo)
-		{
-			result = node;
-			*p_matchlen = matchlen;
-		}
-
+		src++;
+		srclen--;
 		node = node->nextChar;
 	}
 
-	return result;
+	return NULL;
 }
 
 PG_FUNCTION_INFO_V1(unaccent_init);
@@ -279,7 +229,7 @@ unaccent_init(PG_FUNCTION_ARGS)
 	{
 		DefElem    *defel = (DefElem *) lfirst(l);
 
-		if (strcmp(defel->defname, "rules") == 0)
+		if (pg_strcasecmp("Rules", defel->defname) == 0)
 		{
 			if (fileloaded)
 				ereport(ERROR,
@@ -321,13 +271,14 @@ unaccent_lexize(PG_FUNCTION_ARGS)
 	/* we allocate storage for the buffer only if needed */
 	buf.data = NULL;
 
-	while (len > 0)
+	while (srcchar - srcstart < len)
 	{
 		TrieChar   *node;
-		int			matchlen;
+		int			charlen;
 
-		node = findReplaceTo(rootTrie, (unsigned char *) srcchar, len,
-							 &matchlen);
+		charlen = pg_mblen(srcchar);
+
+		node = findReplaceTo(rootTrie, (unsigned char *) srcchar, charlen);
 		if (node && node->replaceTo)
 		{
 			if (buf.data == NULL)
@@ -340,15 +291,10 @@ unaccent_lexize(PG_FUNCTION_ARGS)
 			}
 			appendBinaryStringInfo(&buf, node->replaceTo, node->replacelen);
 		}
-		else
-		{
-			matchlen = pg_mblen(srcchar);
-			if (buf.data != NULL)
-				appendBinaryStringInfo(&buf, srcchar, matchlen);
-		}
+		else if (buf.data != NULL)
+			appendBinaryStringInfo(&buf, srcchar, charlen);
 
-		srcchar += matchlen;
-		len -= matchlen;
+		srcchar += charlen;
 	}
 
 	/* return a result only if we made at least one substitution */
@@ -379,21 +325,7 @@ unaccent_dict(PG_FUNCTION_ARGS)
 
 	if (PG_NARGS() == 1)
 	{
-		/*
-		 * Use the "unaccent" dictionary that is in the same schema that this
-		 * function is in.
-		 */
-		Oid			procnspid = get_func_namespace(fcinfo->flinfo->fn_oid);
-		const char *dictname = "unaccent";
-
-		dictOid = GetSysCacheOid2(TSDICTNAMENSP, Anum_pg_ts_dict_oid,
-								  PointerGetDatum(dictname),
-								  ObjectIdGetDatum(procnspid));
-		if (!OidIsValid(dictOid))
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("text search dictionary \"%s.%s\" does not exist",
-							get_namespace_name(procnspid), dictname)));
+		dictOid = get_ts_dict_oid(stringToQualifiedNameList("unaccent"), false);
 		strArg = 0;
 	}
 	else
@@ -401,14 +333,14 @@ unaccent_dict(PG_FUNCTION_ARGS)
 		dictOid = PG_GETARG_OID(0);
 		strArg = 1;
 	}
-	str = PG_GETARG_TEXT_PP(strArg);
+	str = PG_GETARG_TEXT_P(strArg);
 
 	dict = lookup_ts_dictionary_cache(dictOid);
 
 	res = (TSLexeme *) DatumGetPointer(FunctionCall4(&(dict->lexize),
-													 PointerGetDatum(dict->dictData),
-													 PointerGetDatum(VARDATA_ANY(str)),
-													 Int32GetDatum(VARSIZE_ANY_EXHDR(str)),
+											 PointerGetDatum(dict->dictData),
+											   PointerGetDatum(VARDATA(str)),
+									  Int32GetDatum(VARSIZE(str) - VARHDRSZ),
 													 PointerGetDatum(NULL)));
 
 	PG_FREE_IF_COPY(str, strArg);

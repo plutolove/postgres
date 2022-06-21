@@ -27,16 +27,17 @@ select "Argument test #1"(users, fname, lname) from users where lname = 'doe' or
 
 
 -- check module contents
-CREATE FUNCTION module_contents() RETURNS SETOF text AS
+CREATE FUNCTION module_contents() RETURNS text AS
 $$
 contents = list(filter(lambda x: not x.startswith("__"), dir(plpy)))
 contents.sort()
-return contents
+return ", ".join(contents)
 $$ LANGUAGE plpythonu;
 
 select module_contents();
 
-CREATE FUNCTION elog_test_basic() RETURNS void
+
+CREATE FUNCTION elog_test() RETURNS void
 AS $$
 plpy.debug('debug')
 plpy.log('log')
@@ -49,4 +50,4 @@ plpy.warning('warning')
 plpy.error('error')
 $$ LANGUAGE plpythonu;
 
-SELECT elog_test_basic();
+SELECT elog_test();

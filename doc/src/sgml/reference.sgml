@@ -53,17 +53,11 @@
    &alterOperator;
    &alterOperatorClass;
    &alterOperatorFamily;
-   &alterPolicy;
-   &alterProcedure;
-   &alterPublication;
    &alterRole;
-   &alterRoutine;
    &alterRule;
    &alterSchema;
    &alterSequence;
    &alterServer;
-   &alterStatistics;
-   &alterSubscription;
    &alterSystem;
    &alterTable;
    &alterTableSpace;
@@ -78,7 +72,6 @@
    &alterView;
    &analyze;
    &begin;
-   &call;
    &checkpoint;
    &close;
    &cluster;
@@ -86,7 +79,6 @@
    &commit;
    &commitPrepared;
    &copyTable;
-   &createAccessMethod;
    &createAggregate;
    &createCast;
    &createCollation;
@@ -105,16 +97,11 @@
    &createOperator;
    &createOperatorClass;
    &createOperatorFamily;
-   &createPolicy;
-   &createProcedure;
-   &createPublication;
    &createRole;
    &createRule;
    &createSchema;
    &createSequence;
    &createServer;
-   &createStatistics;
-   &createSubscription;
    &createTable;
    &createTableAs;
    &createTableSpace;
@@ -122,7 +109,6 @@
    &createTSDictionary;
    &createTSParser;
    &createTSTemplate;
-   &createTransform;
    &createTrigger;
    &createType;
    &createUser;
@@ -133,7 +119,6 @@
    &delete;
    &discard;
    &do;
-   &dropAccessMethod;
    &dropAggregate;
    &dropCast;
    &dropCollation;
@@ -153,24 +138,17 @@
    &dropOperatorClass;
    &dropOperatorFamily;
    &dropOwned;
-   &dropPolicy;
-   &dropProcedure;
-   &dropPublication;
    &dropRole;
-   &dropRoutine;
    &dropRule;
    &dropSchema;
    &dropSequence;
    &dropServer;
-   &dropStatistics;
-   &dropSubscription;
    &dropTable;
    &dropTableSpace;
    &dropTSConfig;
    &dropTSDictionary;
    &dropTSParser;
    &dropTSTemplate;
-   &dropTransform;
    &dropTrigger;
    &dropType;
    &dropUser;
@@ -181,7 +159,6 @@
    &explain;
    &fetch;
    &grant;
-   &importForeignSchema;
    &insert;
    &listen;
    &load;
@@ -242,20 +219,20 @@
 
    &clusterdb;
    &createdb;
+   &createlang;
    &createuser;
    &dropdb;
+   &droplang;
    &dropuser;
    &ecpgRef;
    &pgBasebackup;
-   &pgbench;
    &pgConfig;
    &pgDump;
    &pgDumpall;
    &pgIsready;
-   &pgReceivewal;
+   &pgReceivexlog;
    &pgRecvlogical;
    &pgRestore;
-   &pgVerifyBackup;
    &psqlRef;
    &reindexdb;
    &vacuumdb;
@@ -271,21 +248,14 @@
     <productname>PostgreSQL</productname> server applications and
     support utilities.  These commands can only be run usefully on the
     host where the database server resides.  Other utility programs
-    are listed in <xref linkend="reference-client"/>.
+    are listed in <xref linkend="reference-client">.
    </para>
   </partintro>
 
    &initdb;
-   &pgarchivecleanup;
-   &pgChecksums;
    &pgControldata;
    &pgCtl;
-   &pgResetwal;
-   &pgRewind;
-   &pgtestfsync;
-   &pgtesttiming;
-   &pgupgrade;
-   &pgwaldump;
+   &pgResetxlog;
    &postgres;
    &postmaster;
 

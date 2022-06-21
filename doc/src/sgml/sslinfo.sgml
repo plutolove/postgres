@@ -8,21 +8,15 @@
  </indexterm>
 
  <para>
-  The <filename>sslinfo</filename> module provides information about the SSL
+  The <filename>sslinfo</> module provides information about the SSL
   certificate that the current client provided when connecting to
-  <productname>PostgreSQL</productname>.  The module is useless (most functions
+  <productname>PostgreSQL</>.  The module is useless (most functions
   will return NULL) if the current connection does not use SSL.
  </para>
 
  <para>
-  Some of the information available through this module can also be obtained
-  using the built-in system view <link linkend="monitoring-pg-stat-ssl-view">
-  <structname>pg_stat_ssl</structname></link>.
- </para>
-
- <para>
   This extension won't build at all unless the installation was
-  configured with <literal>--with-openssl</literal>.
+  configured with <literal>--with-openssl</>.
  </para>
 
  <sect2>
@@ -38,7 +32,7 @@
     </term>
     <listitem>
     <para>
-     Returns true if current connection to server uses SSL, and false
+     Returns TRUE if current connection to server uses SSL, and FALSE
      otherwise.
     </para>
     </listitem>
@@ -53,8 +47,8 @@
     </term>
     <listitem>
     <para>
-     Returns the name of the protocol used for the SSL connection (e.g., TLSv1.0,
-     TLSv1.1, or TLSv1.2).
+     Returns the name of the protocol used for the SSL connection (e.g. SSLv2,
+     SSLv3, or TLSv1).
     </para>
     </listitem>
    </varlistentry>
@@ -69,7 +63,7 @@
     <listitem>
     <para>
      Returns the name of the cipher used for the SSL connection
-     (e.g., DHE-RSA-AES256-SHA).
+     (e.g. DHE-RSA-AES256-SHA).
     </para>
     </listitem>
    </varlistentry>
@@ -83,8 +77,8 @@
     </term>
     <listitem>
     <para>
-     Returns true if current client has presented a valid SSL client
-     certificate to the server, and false otherwise.  (The server
+     Returns TRUE if current client has presented a valid SSL client
+     certificate to the server, and FALSE otherwise.  (The server
      might or might not be configured to require a client certificate.)
     </para>
     </listitem>
@@ -102,7 +96,7 @@
      Returns serial number of current client certificate.  The combination of
      certificate serial number and certificate issuer is guaranteed to
      uniquely identify a certificate (but not its owner &mdash; the owner
-     ought to regularly change their keys, and get new certificates from the
+     ought to regularly change his keys, and get new certificates from the
      issuer).
     </para>
 
@@ -132,7 +126,7 @@
     </para>
 
     <para>
-     The result looks like <literal>/CN=Somebody /C=Some country/O=Some organization</literal>.
+     The result looks like <literal>/CN=Somebody /C=Some country/O=Some organization</>.
     </para>
     </listitem>
    </varlistentry>
@@ -148,7 +142,7 @@
     <para>
      Returns the full issuer name of the current client certificate, converting
      character data into the current database encoding.  Encoding conversions
-     are handled the same as for <function>ssl_client_dn</function>.
+     are handled the same as for <function>ssl_client_dn</>.
     </para>
     <para>
      The combination of the return value of this function with the
@@ -156,7 +150,7 @@
     </para>
     <para>
      This function is really useful only if you have more than one trusted CA
-     certificate in your server's certificate authority file, or if this CA
+     certificate in your server's <filename>root.crt</> file, or if this CA
      has issued some intermediate certificate authority certificates.
     </para>
     </listitem>
@@ -186,7 +180,7 @@ countryName (alias C)
 localityName (alias L)
 stateOrProvinceName (alias ST)
 organizationName (alias O)
-organizationalUnitName (alias OU)
+organizationUnitName (alias OU)
 title
 description
 initials
@@ -201,7 +195,7 @@ role
 emailAddress
 </literallayout>
     <para>
-     All of these fields are optional, except <structfield>commonName</structfield>.
+     All of these fields are optional, except <structfield>commonName</>.
      It depends
      entirely on your CA's policy which of them would be included and which
      wouldn't.  The meaning of these fields, however, is strictly defined by
@@ -220,23 +214,8 @@ emailAddress
     </term>
     <listitem>
     <para>
-     Same as <function>ssl_client_dn_field</function>, but for the certificate issuer
+     Same as <function>ssl_client_dn_field</>, but for the certificate issuer
      rather than the certificate subject.
-    </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <function>ssl_extension_info() returns setof record</function>
-     <indexterm>
-      <primary>ssl_extension_info</primary>
-     </indexterm>
-    </term>
-    <listitem>
-    <para>
-     Provide information about extensions of client certificate: extension name,
-     extension value, and if it is a critical extension.
     </para>
     </listitem>
    </varlistentry>
@@ -248,10 +227,6 @@ emailAddress
 
   <para>
    Victor Wagner <email>vitus@cryptocom.ru</email>, Cryptocom LTD
-  </para>
-
-  <para>
-   Dmitry Voronin <email>carriingfate92@yandex.ru</email>
   </para>
 
   <para>

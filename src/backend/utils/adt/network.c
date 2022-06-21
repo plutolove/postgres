@@ -12,59 +12,17 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#include "access/stratnum.h"
-#include "catalog/pg_opfamily.h"
+#include "access/hash.h"
 #include "catalog/pg_type.h"
-#include "common/hashfn.h"
-#include "common/ip.h"
-#include "lib/hyperloglog.h"
+#include "libpq/ip.h"
 #include "libpq/libpq-be.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
-#include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
-#include "nodes/supportnodes.h"
 #include "utils/builtins.h"
-#include "utils/fmgroids.h"
-#include "utils/guc.h"
 #include "utils/inet.h"
-#include "utils/lsyscache.h"
-#include "utils/sortsupport.h"
 
-
-/*
- * An IPv4 netmask size is a value in the range of 0 - 32, which is
- * represented with 6 bits in inet/cidr abbreviated keys where possible.
- *
- * An IPv4 inet/cidr abbreviated key can use up to 25 bits for subnet
- * component.
- */
-#define ABBREV_BITS_INET4_NETMASK_SIZE	6
-#define ABBREV_BITS_INET4_SUBNET		25
-
-/* sortsupport for inet/cidr */
-typedef struct
-{
-	int64		input_count;	/* number of non-null values seen */
-	bool		estimating;		/* true if estimating cardinality */
-
-	hyperLogLogState abbr_card; /* cardinality estimator */
-} network_sortsupport_state;
 
 static int32 network_cmp_internal(inet *a1, inet *a2);
-static int	network_fast_cmp(Datum x, Datum y, SortSupport ssup);
-static int	network_cmp_abbrev(Datum x, Datum y, SortSupport ssup);
-static bool network_abbrev_abort(int memtupcount, SortSupport ssup);
-static Datum network_abbrev_convert(Datum original, SortSupport ssup);
-static List *match_network_function(Node *leftop,
-									Node *rightop,
-									int indexarg,
-									Oid funcid,
-									Oid opfamily);
-static List *match_network_subset(Node *leftop,
-								  Node *rightop,
-								  bool is_eq,
-								  Oid opfamily);
 static bool addressOK(unsigned char *a, int bits, int family);
 static inet *internal_inetpl(inet *ip, int64 addend);
 
@@ -91,8 +49,8 @@ network_in(char *src, bool is_cidr)
 	else
 		ip_family(dst) = PGSQL_AF_INET;
 
-	bits = pg_inet_net_pton(ip_family(dst), src, ip_addr(dst),
-							is_cidr ? ip_addrsize(dst) : -1);
+	bits = inet_net_pton(ip_family(dst), src, ip_addr(dst),
+						 is_cidr ? ip_addrsize(dst) : -1);
 	if ((bits < 0) || (bits > ip_maxbits(dst)))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
@@ -145,8 +103,8 @@ network_out(inet *src, bool is_cidr)
 	char	   *dst;
 	int			len;
 
-	dst = pg_inet_net_ntop(ip_family(src), ip_addr(src), ip_bits(src),
-						   tmp, sizeof(tmp));
+	dst = inet_net_ntop(ip_family(src), ip_addr(src), ip_bits(src),
+						tmp, sizeof(tmp));
 	if (dst == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
@@ -310,7 +268,11 @@ Datum
 inet_to_cidr(PG_FUNCTION_ARGS)
 {
 	inet	   *src = PG_GETARG_INET_PP(0);
+	inet	   *dst;
 	int			bits;
+	int			byte;
+	int			nbits;
+	int			maxbytes;
 
 	bits = ip_bits(src);
 
@@ -318,7 +280,29 @@ inet_to_cidr(PG_FUNCTION_ARGS)
 	if ((bits < 0) || (bits > ip_maxbits(src)))
 		elog(ERROR, "invalid inet bit length: %d", bits);
 
-	PG_RETURN_INET_P(cidr_set_masklen_internal(src, bits));
+	/* clone the original data */
+	dst = (inet *) palloc(VARSIZE_ANY(src));
+	memcpy(dst, src, VARSIZE_ANY(src));
+
+	/* zero out any bits to the right of the netmask */
+	byte = bits / 8;
+
+	nbits = bits % 8;
+	/* clear the first byte, this might be a partial byte */
+	if (nbits != 0)
+	{
+		ip_addr(dst)[byte] &= ~(0xFF >> nbits);
+		byte++;
+	}
+	/* clear remaining bytes */
+	maxbytes = ip_addrsize(dst);
+	while (byte < maxbytes)
+	{
+		ip_addr(dst)[byte] = 0;
+		byte++;
+	}
+
+	PG_RETURN_INET_P(dst);
 }
 
 Datum
@@ -350,6 +334,10 @@ cidr_set_masklen(PG_FUNCTION_ARGS)
 {
 	inet	   *src = PG_GETARG_INET_PP(0);
 	int			bits = PG_GETARG_INT32(1);
+	inet	   *dst;
+	int			byte;
+	int			nbits;
+	int			maxbytes;
 
 	if (bits == -1)
 		bits = ip_maxbits(src);
@@ -359,36 +347,31 @@ cidr_set_masklen(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("invalid mask length: %d", bits)));
 
-	PG_RETURN_INET_P(cidr_set_masklen_internal(src, bits));
-}
+	/* clone the original data */
+	dst = (inet *) palloc(VARSIZE_ANY(src));
+	memcpy(dst, src, VARSIZE_ANY(src));
 
-/*
- * Copy src and set mask length to 'bits' (which must be valid for the family)
- */
-inet *
-cidr_set_masklen_internal(const inet *src, int bits)
-{
-	inet	   *dst = (inet *) palloc0(sizeof(inet));
-
-	ip_family(dst) = ip_family(src);
 	ip_bits(dst) = bits;
 
-	if (bits > 0)
+	/* zero out any bits to the right of the new netmask */
+	byte = bits / 8;
+
+	nbits = bits % 8;
+	/* clear the first byte, this might be a partial byte */
+	if (nbits != 0)
 	{
-		Assert(bits <= ip_maxbits(dst));
-
-		/* Clone appropriate bytes of the address, leaving the rest 0 */
-		memcpy(ip_addr(dst), ip_addr(src), (bits + 7) / 8);
-
-		/* Clear any unwanted bits in the last partial byte */
-		if (bits % 8)
-			ip_addr(dst)[bits / 8] &= ~(0xFF >> (bits % 8));
+		ip_addr(dst)[byte] &= ~(0xFF >> nbits);
+		byte++;
+	}
+	/* clear remaining bytes */
+	maxbytes = ip_addrsize(dst);
+	while (byte < maxbytes)
+	{
+		ip_addr(dst)[byte] = 0;
+		byte++;
 	}
 
-	/* Set varlena header correctly */
-	SET_INET_VARSIZE(dst);
-
-	return dst;
+	PG_RETURN_INET_P(dst);
 }
 
 /*
@@ -429,379 +412,6 @@ network_cmp(PG_FUNCTION_ARGS)
 	inet	   *a2 = PG_GETARG_INET_PP(1);
 
 	PG_RETURN_INT32(network_cmp_internal(a1, a2));
-}
-
-/*
- * SortSupport strategy routine
- */
-Datum
-network_sortsupport(PG_FUNCTION_ARGS)
-{
-	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
-
-	ssup->comparator = network_fast_cmp;
-	ssup->ssup_extra = NULL;
-
-	if (ssup->abbreviate)
-	{
-		network_sortsupport_state *uss;
-		MemoryContext oldcontext;
-
-		oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
-
-		uss = palloc(sizeof(network_sortsupport_state));
-		uss->input_count = 0;
-		uss->estimating = true;
-		initHyperLogLog(&uss->abbr_card, 10);
-
-		ssup->ssup_extra = uss;
-
-		ssup->comparator = network_cmp_abbrev;
-		ssup->abbrev_converter = network_abbrev_convert;
-		ssup->abbrev_abort = network_abbrev_abort;
-		ssup->abbrev_full_comparator = network_fast_cmp;
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	PG_RETURN_VOID();
-}
-
-/*
- * SortSupport comparison func
- */
-static int
-network_fast_cmp(Datum x, Datum y, SortSupport ssup)
-{
-	inet	   *arg1 = DatumGetInetPP(x);
-	inet	   *arg2 = DatumGetInetPP(y);
-
-	return network_cmp_internal(arg1, arg2);
-}
-
-/*
- * Abbreviated key comparison func
- */
-static int
-network_cmp_abbrev(Datum x, Datum y, SortSupport ssup)
-{
-	if (x > y)
-		return 1;
-	else if (x == y)
-		return 0;
-	else
-		return -1;
-}
-
-/*
- * Callback for estimating effectiveness of abbreviated key optimization.
- *
- * We pay no attention to the cardinality of the non-abbreviated data, because
- * there is no equality fast-path within authoritative inet comparator.
- */
-static bool
-network_abbrev_abort(int memtupcount, SortSupport ssup)
-{
-	network_sortsupport_state *uss = ssup->ssup_extra;
-	double		abbr_card;
-
-	if (memtupcount < 10000 || uss->input_count < 10000 || !uss->estimating)
-		return false;
-
-	abbr_card = estimateHyperLogLog(&uss->abbr_card);
-
-	/*
-	 * If we have >100k distinct values, then even if we were sorting many
-	 * billion rows we'd likely still break even, and the penalty of undoing
-	 * that many rows of abbrevs would probably not be worth it. At this point
-	 * we stop counting because we know that we're now fully committed.
-	 */
-	if (abbr_card > 100000.0)
-	{
-#ifdef TRACE_SORT
-		if (trace_sort)
-			elog(LOG,
-				 "network_abbrev: estimation ends at cardinality %f"
-				 " after " INT64_FORMAT " values (%d rows)",
-				 abbr_card, uss->input_count, memtupcount);
-#endif
-		uss->estimating = false;
-		return false;
-	}
-
-	/*
-	 * Target minimum cardinality is 1 per ~2k of non-null inputs. 0.5 row
-	 * fudge factor allows us to abort earlier on genuinely pathological data
-	 * where we've had exactly one abbreviated value in the first 2k
-	 * (non-null) rows.
-	 */
-	if (abbr_card < uss->input_count / 2000.0 + 0.5)
-	{
-#ifdef TRACE_SORT
-		if (trace_sort)
-			elog(LOG,
-				 "network_abbrev: aborting abbreviation at cardinality %f"
-				 " below threshold %f after " INT64_FORMAT " values (%d rows)",
-				 abbr_card, uss->input_count / 2000.0 + 0.5, uss->input_count,
-				 memtupcount);
-#endif
-		return true;
-	}
-
-#ifdef TRACE_SORT
-	if (trace_sort)
-		elog(LOG,
-			 "network_abbrev: cardinality %f after " INT64_FORMAT
-			 " values (%d rows)", abbr_card, uss->input_count, memtupcount);
-#endif
-
-	return false;
-}
-
-/*
- * SortSupport conversion routine. Converts original inet/cidr representation
- * to abbreviated key representation that works with simple 3-way unsigned int
- * comparisons. The network_cmp_internal() rules for sorting inet/cidr datums
- * are followed by abbreviated comparisons by an encoding scheme that
- * conditions keys through careful use of padding.
- *
- * Some background: inet values have three major components (take for example
- * the address 1.2.3.4/24):
- *
- *     * A network, or netmasked bits (1.2.3.0).
- *     * A netmask size (/24).
- *     * A subnet, or bits outside of the netmask (0.0.0.4).
- *
- * cidr values are the same except that with only the first two components --
- * all their subnet bits *must* be zero (1.2.3.0/24).
- *
- * IPv4 and IPv6 are identical in this makeup, with the difference being that
- * IPv4 addresses have a maximum of 32 bits compared to IPv6's 64 bits, so in
- * IPv6 each part may be larger.
- *
- * inet/cidr types compare using these sorting rules. If inequality is detected
- * at any step, comparison is finished. If any rule is a tie, the algorithm
- * drops through to the next to break it:
- *
- *     1. IPv4 always appears before IPv6.
- *     2. Network bits are compared.
- *     3. Netmask size is compared.
- *     4. All bits are compared (having made it here, we know that both
- *        netmasked bits and netmask size are equal, so we're in effect only
- *        comparing subnet bits).
- *
- * When generating abbreviated keys for SortSupport, we pack as much as we can
- * into a datum while ensuring that when comparing those keys as integers,
- * these rules will be respected. Exact contents depend on IP family and datum
- * size.
- *
- * IPv4
- * ----
- *
- * 4 byte datums:
- *
- * Start with 1 bit for the IP family (IPv4 or IPv6; this bit is present in
- * every case below) followed by all but 1 of the netmasked bits.
- *
- * +----------+---------------------+
- * | 1 bit IP |   31 bits network   |     (1 bit network
- * |  family  |     (truncated)     |      omitted)
- * +----------+---------------------+
- *
- * 8 byte datums:
- *
- * We have space to store all netmasked bits, followed by the netmask size,
- * followed by 25 bits of the subnet (25 bits is usually more than enough in
- * practice). cidr datums always have all-zero subnet bits.
- *
- * +----------+-----------------------+--------------+--------------------+
- * | 1 bit IP |    32 bits network    |    6 bits    |   25 bits subnet   |
- * |  family  |        (full)         | network size |    (truncated)     |
- * +----------+-----------------------+--------------+--------------------+
- *
- * IPv6
- * ----
- *
- * 4 byte datums:
- *
- * +----------+---------------------+
- * | 1 bit IP |   31 bits network   |    (up to 97 bits
- * |  family  |     (truncated)     |   network omitted)
- * +----------+---------------------+
- *
- * 8 byte datums:
- *
- * +----------+---------------------------------+
- * | 1 bit IP |         63 bits network         |    (up to 65 bits
- * |  family  |           (truncated)           |   network omitted)
- * +----------+---------------------------------+
- */
-static Datum
-network_abbrev_convert(Datum original, SortSupport ssup)
-{
-	network_sortsupport_state *uss = ssup->ssup_extra;
-	inet	   *authoritative = DatumGetInetPP(original);
-	Datum		res,
-				ipaddr_datum,
-				subnet_bitmask,
-				network;
-	int			subnet_size;
-
-	Assert(ip_family(authoritative) == PGSQL_AF_INET ||
-		   ip_family(authoritative) == PGSQL_AF_INET6);
-
-	/*
-	 * Get an unsigned integer representation of the IP address by taking its
-	 * first 4 or 8 bytes. Always take all 4 bytes of an IPv4 address. Take
-	 * the first 8 bytes of an IPv6 address with an 8 byte datum and 4 bytes
-	 * otherwise.
-	 *
-	 * We're consuming an array of unsigned char, so byteswap on little endian
-	 * systems (an inet's ipaddr field stores the most significant byte
-	 * first).
-	 */
-	if (ip_family(authoritative) == PGSQL_AF_INET)
-	{
-		uint32		ipaddr_datum32;
-
-		memcpy(&ipaddr_datum32, ip_addr(authoritative), sizeof(uint32));
-
-		/* Must byteswap on little-endian machines */
-#ifndef WORDS_BIGENDIAN
-		ipaddr_datum = pg_bswap32(ipaddr_datum32);
-#else
-		ipaddr_datum = ipaddr_datum32;
-#endif
-
-		/* Initialize result without setting ipfamily bit */
-		res = (Datum) 0;
-	}
-	else
-	{
-		memcpy(&ipaddr_datum, ip_addr(authoritative), sizeof(Datum));
-
-		/* Must byteswap on little-endian machines */
-		ipaddr_datum = DatumBigEndianToNative(ipaddr_datum);
-
-		/* Initialize result with ipfamily (most significant) bit set */
-		res = ((Datum) 1) << (SIZEOF_DATUM * BITS_PER_BYTE - 1);
-	}
-
-	/*
-	 * ipaddr_datum must be "split": high order bits go in "network" component
-	 * of abbreviated key (often with zeroed bits at the end due to masking),
-	 * while low order bits go in "subnet" component when there is space for
-	 * one. This is often accomplished by generating a temp datum subnet
-	 * bitmask, which we may reuse later when generating the subnet bits
-	 * themselves.  (Note that subnet bits are only used with IPv4 datums on
-	 * platforms where datum is 8 bytes.)
-	 *
-	 * The number of bits in subnet is used to generate a datum subnet
-	 * bitmask. For example, with a /24 IPv4 datum there are 8 subnet bits
-	 * (since 32 - 24 is 8), so the final subnet bitmask is B'1111 1111'. We
-	 * need explicit handling for cases where the ipaddr bits cannot all fit
-	 * in a datum, though (otherwise we'd incorrectly mask the network
-	 * component with IPv6 values).
-	 */
-	subnet_size = ip_maxbits(authoritative) - ip_bits(authoritative);
-	Assert(subnet_size >= 0);
-	/* subnet size must work with prefix ipaddr cases */
-	subnet_size %= SIZEOF_DATUM * BITS_PER_BYTE;
-	if (ip_bits(authoritative) == 0)
-	{
-		/* Fit as many ipaddr bits as possible into subnet */
-		subnet_bitmask = ((Datum) 0) - 1;
-		network = 0;
-	}
-	else if (ip_bits(authoritative) < SIZEOF_DATUM * BITS_PER_BYTE)
-	{
-		/* Split ipaddr bits between network and subnet */
-		subnet_bitmask = (((Datum) 1) << subnet_size) - 1;
-		network = ipaddr_datum & ~subnet_bitmask;
-	}
-	else
-	{
-		/* Fit as many ipaddr bits as possible into network */
-		subnet_bitmask = 0;
-		network = ipaddr_datum;
-	}
-
-#if SIZEOF_DATUM == 8
-	if (ip_family(authoritative) == PGSQL_AF_INET)
-	{
-		/*
-		 * IPv4 with 8 byte datums: keep all 32 netmasked bits, netmask size,
-		 * and most significant 25 subnet bits
-		 */
-		Datum		netmask_size = (Datum) ip_bits(authoritative);
-		Datum		subnet;
-
-		/*
-		 * Shift left 31 bits: 6 bits netmask size + 25 subnet bits.
-		 *
-		 * We don't make any distinction between network bits that are zero
-		 * due to masking and "true"/non-masked zero bits.  An abbreviated
-		 * comparison that is resolved by comparing a non-masked and non-zero
-		 * bit to a masked/zeroed bit is effectively resolved based on
-		 * ip_bits(), even though the comparison won't reach the netmask_size
-		 * bits.
-		 */
-		network <<= (ABBREV_BITS_INET4_NETMASK_SIZE +
-					 ABBREV_BITS_INET4_SUBNET);
-
-		/* Shift size to make room for subnet bits at the end */
-		netmask_size <<= ABBREV_BITS_INET4_SUBNET;
-
-		/* Extract subnet bits without shifting them */
-		subnet = ipaddr_datum & subnet_bitmask;
-
-		/*
-		 * If we have more than 25 subnet bits, we can't fit everything. Shift
-		 * subnet down to avoid clobbering bits that are only supposed to be
-		 * used for netmask_size.
-		 *
-		 * Discarding the least significant subnet bits like this is correct
-		 * because abbreviated comparisons that are resolved at the subnet
-		 * level must have had equal netmask_size/ip_bits() values in order to
-		 * get that far.
-		 */
-		if (subnet_size > ABBREV_BITS_INET4_SUBNET)
-			subnet >>= subnet_size - ABBREV_BITS_INET4_SUBNET;
-
-		/*
-		 * Assemble the final abbreviated key without clobbering the ipfamily
-		 * bit that must remain a zero.
-		 */
-		res |= network | netmask_size | subnet;
-	}
-	else
-#endif
-	{
-		/*
-		 * 4 byte datums, or IPv6 with 8 byte datums: Use as many of the
-		 * netmasked bits as will fit in final abbreviated key. Avoid
-		 * clobbering the ipfamily bit that was set earlier.
-		 */
-		res |= network >> 1;
-	}
-
-	uss->input_count += 1;
-
-	/* Hash abbreviated key */
-	if (uss->estimating)
-	{
-		uint32		tmp;
-
-#if SIZEOF_DATUM == 8
-		tmp = (uint32) res ^ (uint32) ((uint64) res >> 32);
-#else							/* SIZEOF_DATUM != 8 */
-		tmp = (uint32) res;
-#endif
-
-		addHyperLogLog(&uss->abbr_card, DatumGetUInt32(hash_uint32(tmp)));
-	}
-
-	return res;
 }
 
 /*
@@ -862,33 +472,6 @@ network_ne(PG_FUNCTION_ARGS)
 }
 
 /*
- * MIN/MAX support functions.
- */
-Datum
-network_smaller(PG_FUNCTION_ARGS)
-{
-	inet	   *a1 = PG_GETARG_INET_PP(0);
-	inet	   *a2 = PG_GETARG_INET_PP(1);
-
-	if (network_cmp_internal(a1, a2) < 0)
-		PG_RETURN_INET_P(a1);
-	else
-		PG_RETURN_INET_P(a2);
-}
-
-Datum
-network_larger(PG_FUNCTION_ARGS)
-{
-	inet	   *a1 = PG_GETARG_INET_PP(0);
-	inet	   *a2 = PG_GETARG_INET_PP(1);
-
-	if (network_cmp_internal(a1, a2) > 0)
-		PG_RETURN_INET_P(a1);
-	else
-		PG_RETURN_INET_P(a2);
-}
-
-/*
  * Support function for hash indexes on inet/cidr.
  */
 Datum
@@ -899,16 +482,6 @@ hashinet(PG_FUNCTION_ARGS)
 
 	/* XXX this assumes there are no pad bytes in the data structure */
 	return hash_any((unsigned char *) VARDATA_ANY(addr), addrsize + 2);
-}
-
-Datum
-hashinetextended(PG_FUNCTION_ARGS)
-{
-	inet	   *addr = PG_GETARG_INET_PP(0);
-	int			addrsize = ip_addrsize(addr);
-
-	return hash_any_extended((unsigned char *) VARDATA_ANY(addr), addrsize + 2,
-							 PG_GETARG_INT64(1));
 }
 
 /*
@@ -990,198 +563,6 @@ network_overlap(PG_FUNCTION_ARGS)
 }
 
 /*
- * Planner support function for network subset/superset operators
- */
-Datum
-network_subset_support(PG_FUNCTION_ARGS)
-{
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
-	Node	   *ret = NULL;
-
-	if (IsA(rawreq, SupportRequestIndexCondition))
-	{
-		/* Try to convert operator/function call to index conditions */
-		SupportRequestIndexCondition *req = (SupportRequestIndexCondition *) rawreq;
-
-		if (is_opclause(req->node))
-		{
-			OpExpr	   *clause = (OpExpr *) req->node;
-
-			Assert(list_length(clause->args) == 2);
-			ret = (Node *)
-				match_network_function((Node *) linitial(clause->args),
-									   (Node *) lsecond(clause->args),
-									   req->indexarg,
-									   req->funcid,
-									   req->opfamily);
-		}
-		else if (is_funcclause(req->node))	/* be paranoid */
-		{
-			FuncExpr   *clause = (FuncExpr *) req->node;
-
-			Assert(list_length(clause->args) == 2);
-			ret = (Node *)
-				match_network_function((Node *) linitial(clause->args),
-									   (Node *) lsecond(clause->args),
-									   req->indexarg,
-									   req->funcid,
-									   req->opfamily);
-		}
-	}
-
-	PG_RETURN_POINTER(ret);
-}
-
-/*
- * match_network_function
- *	  Try to generate an indexqual for a network subset/superset function.
- *
- * This layer is just concerned with identifying the function and swapping
- * the arguments if necessary.
- */
-static List *
-match_network_function(Node *leftop,
-					   Node *rightop,
-					   int indexarg,
-					   Oid funcid,
-					   Oid opfamily)
-{
-	switch (funcid)
-	{
-		case F_NETWORK_SUB:
-			/* indexkey must be on the left */
-			if (indexarg != 0)
-				return NIL;
-			return match_network_subset(leftop, rightop, false, opfamily);
-
-		case F_NETWORK_SUBEQ:
-			/* indexkey must be on the left */
-			if (indexarg != 0)
-				return NIL;
-			return match_network_subset(leftop, rightop, true, opfamily);
-
-		case F_NETWORK_SUP:
-			/* indexkey must be on the right */
-			if (indexarg != 1)
-				return NIL;
-			return match_network_subset(rightop, leftop, false, opfamily);
-
-		case F_NETWORK_SUPEQ:
-			/* indexkey must be on the right */
-			if (indexarg != 1)
-				return NIL;
-			return match_network_subset(rightop, leftop, true, opfamily);
-
-		default:
-
-			/*
-			 * We'd only get here if somebody attached this support function
-			 * to an unexpected function.  Maybe we should complain, but for
-			 * now, do nothing.
-			 */
-			return NIL;
-	}
-}
-
-/*
- * match_network_subset
- *	  Try to generate an indexqual for a network subset function.
- */
-static List *
-match_network_subset(Node *leftop,
-					 Node *rightop,
-					 bool is_eq,
-					 Oid opfamily)
-{
-	List	   *result;
-	Datum		rightopval;
-	Oid			datatype = INETOID;
-	Oid			opr1oid;
-	Oid			opr2oid;
-	Datum		opr1right;
-	Datum		opr2right;
-	Expr	   *expr;
-
-	/*
-	 * Can't do anything with a non-constant or NULL comparison value.
-	 *
-	 * Note that since we restrict ourselves to cases with a hard constant on
-	 * the RHS, it's a-fortiori a pseudoconstant, and we don't need to worry
-	 * about verifying that.
-	 */
-	if (!IsA(rightop, Const) ||
-		((Const *) rightop)->constisnull)
-		return NIL;
-	rightopval = ((Const *) rightop)->constvalue;
-
-	/*
-	 * Must check that index's opfamily supports the operators we will want to
-	 * apply.
-	 *
-	 * We insist on the opfamily being the specific one we expect, else we'd
-	 * do the wrong thing if someone were to make a reverse-sort opfamily with
-	 * the same operators.
-	 */
-	if (opfamily != NETWORK_BTREE_FAM_OID)
-		return NIL;
-
-	/*
-	 * create clause "key >= network_scan_first( rightopval )", or ">" if the
-	 * operator disallows equality.
-	 *
-	 * Note: seeing that this function supports only fixed values for opfamily
-	 * and datatype, we could just hard-wire the operator OIDs instead of
-	 * looking them up.  But for now it seems better to be general.
-	 */
-	if (is_eq)
-	{
-		opr1oid = get_opfamily_member(opfamily, datatype, datatype,
-									  BTGreaterEqualStrategyNumber);
-		if (opr1oid == InvalidOid)
-			elog(ERROR, "no >= operator for opfamily %u", opfamily);
-	}
-	else
-	{
-		opr1oid = get_opfamily_member(opfamily, datatype, datatype,
-									  BTGreaterStrategyNumber);
-		if (opr1oid == InvalidOid)
-			elog(ERROR, "no > operator for opfamily %u", opfamily);
-	}
-
-	opr1right = network_scan_first(rightopval);
-
-	expr = make_opclause(opr1oid, BOOLOID, false,
-						 (Expr *) leftop,
-						 (Expr *) makeConst(datatype, -1,
-											InvalidOid, /* not collatable */
-											-1, opr1right,
-											false, false),
-						 InvalidOid, InvalidOid);
-	result = list_make1(expr);
-
-	/* create clause "key <= network_scan_last( rightopval )" */
-
-	opr2oid = get_opfamily_member(opfamily, datatype, datatype,
-								  BTLessEqualStrategyNumber);
-	if (opr2oid == InvalidOid)
-		elog(ERROR, "no <= operator for opfamily %u", opfamily);
-
-	opr2right = network_scan_last(rightopval);
-
-	expr = make_opclause(opr2oid, BOOLOID, false,
-						 (Expr *) leftop,
-						 (Expr *) makeConst(datatype, -1,
-											InvalidOid, /* not collatable */
-											-1, opr2right,
-											false, false),
-						 InvalidOid, InvalidOid);
-	result = lappend(result, expr);
-
-	return result;
-}
-
-
-/*
  * Extract data from a network datatype.
  */
 Datum
@@ -1192,8 +573,8 @@ network_host(PG_FUNCTION_ARGS)
 	char		tmp[sizeof("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255.255.255.255/128")];
 
 	/* force display of max bits, regardless of masklen... */
-	if (pg_inet_net_ntop(ip_family(ip), ip_addr(ip), ip_maxbits(ip),
-						 tmp, sizeof(tmp)) == NULL)
+	if (inet_net_ntop(ip_family(ip), ip_addr(ip), ip_maxbits(ip),
+					  tmp, sizeof(tmp)) == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("could not format inet value: %m")));
@@ -1217,8 +598,8 @@ network_show(PG_FUNCTION_ARGS)
 	int			len;
 	char		tmp[sizeof("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255.255.255.255/128")];
 
-	if (pg_inet_net_ntop(ip_family(ip), ip_addr(ip), ip_maxbits(ip),
-						 tmp, sizeof(tmp)) == NULL)
+	if (inet_net_ntop(ip_family(ip), ip_addr(ip), ip_maxbits(ip),
+					  tmp, sizeof(tmp)) == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 				 errmsg("could not format inet value: %m")));
@@ -1240,8 +621,8 @@ inet_abbrev(PG_FUNCTION_ARGS)
 	char	   *dst;
 	char		tmp[sizeof("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255.255.255.255/128")];
 
-	dst = pg_inet_net_ntop(ip_family(ip), ip_addr(ip),
-						   ip_bits(ip), tmp, sizeof(tmp));
+	dst = inet_net_ntop(ip_family(ip), ip_addr(ip),
+						ip_bits(ip), tmp, sizeof(tmp));
 
 	if (dst == NULL)
 		ereport(ERROR,
@@ -1258,8 +639,8 @@ cidr_abbrev(PG_FUNCTION_ARGS)
 	char	   *dst;
 	char		tmp[sizeof("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255.255.255.255/128")];
 
-	dst = pg_inet_cidr_ntop(ip_family(ip), ip_addr(ip),
-							ip_bits(ip), tmp, sizeof(tmp));
+	dst = inet_cidr_ntop(ip_family(ip), ip_addr(ip),
+						 ip_bits(ip), tmp, sizeof(tmp));
 
 	if (dst == NULL)
 		ereport(ERROR,
@@ -1311,7 +692,11 @@ network_broadcast(PG_FUNCTION_ARGS)
 	/* make sure any unused bits are zeroed */
 	dst = (inet *) palloc0(sizeof(inet));
 
-	maxbytes = ip_addrsize(ip);
+	if (ip_family(ip) == PGSQL_AF_INET)
+		maxbytes = 4;
+	else
+		maxbytes = 16;
+
 	bits = ip_bits(ip);
 	a = ip_addr(ip);
 	b = ip_addr(dst);
@@ -1441,7 +826,11 @@ network_hostmask(PG_FUNCTION_ARGS)
 	/* make sure any unused bits are zeroed */
 	dst = (inet *) palloc0(sizeof(inet));
 
-	maxbytes = ip_addrsize(ip);
+	if (ip_family(ip) == PGSQL_AF_INET)
+		maxbytes = 4;
+	else
+		maxbytes = 16;
+
 	bits = ip_maxbits(ip) - ip_bits(ip);
 	b = ip_addr(dst);
 
@@ -1472,49 +861,12 @@ network_hostmask(PG_FUNCTION_ARGS)
 }
 
 /*
- * Returns true if the addresses are from the same family, or false.  Used to
- * check that we can create a network which contains both of the networks.
- */
-Datum
-inet_same_family(PG_FUNCTION_ARGS)
-{
-	inet	   *a1 = PG_GETARG_INET_PP(0);
-	inet	   *a2 = PG_GETARG_INET_PP(1);
-
-	PG_RETURN_BOOL(ip_family(a1) == ip_family(a2));
-}
-
-/*
- * Returns the smallest CIDR which contains both of the inputs.
- */
-Datum
-inet_merge(PG_FUNCTION_ARGS)
-{
-	inet	   *a1 = PG_GETARG_INET_PP(0),
-			   *a2 = PG_GETARG_INET_PP(1);
-	int			commonbits;
-
-	if (ip_family(a1) != ip_family(a2))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("cannot merge addresses from different families")));
-
-	commonbits = bitncommon(ip_addr(a1), ip_addr(a2),
-							Min(ip_bits(a1), ip_bits(a2)));
-
-	PG_RETURN_INET_P(cidr_set_masklen_internal(a1, commonbits));
-}
-
-/*
  * Convert a value of a network datatype to an approximate scalar value.
  * This is used for estimating selectivities of inequality operators
  * involving network types.
- *
- * On failure (e.g., unsupported typid), set *failure to true;
- * otherwise, that variable is not changed.
  */
 double
-convert_network_to_scalar(Datum value, Oid typid, bool *failure)
+convert_network_to_scalar(Datum value, Oid typid)
 {
 	switch (typid)
 	{
@@ -1541,6 +893,8 @@ convert_network_to_scalar(Datum value, Oid typid, bool *failure)
 					res += ip_addr(ip)[i];
 				}
 				return res;
+
+				break;
 			}
 		case MACADDROID:
 			{
@@ -1552,19 +906,13 @@ convert_network_to_scalar(Datum value, Oid typid, bool *failure)
 				res += (mac->d << 16) | (mac->e << 8) | (mac->f);
 				return res;
 			}
-		case MACADDR8OID:
-			{
-				macaddr8   *mac = DatumGetMacaddr8P(value);
-				double		res;
-
-				res = (mac->a << 24) | (mac->b << 16) | (mac->c << 8) | (mac->d);
-				res *= ((double) 256) * 256 * 256 * 256;
-				res += (mac->e << 24) | (mac->f << 16) | (mac->g << 8) | (mac->h);
-				return res;
-			}
 	}
 
-	*failure = true;
+	/*
+	 * Can't get here unless someone tries to use scalarltsel/scalargtsel on
+	 * an operator with one network and one non-network operand.
+	 */
+	elog(ERROR, "unsupported type: %u", typid);
 	return 0;
 }
 
@@ -1709,7 +1057,7 @@ network_scan_first(Datum in)
 
 /*
  * return "last" IP on a given network. It's the broadcast address,
- * however, masklen has to be set to its max bits, since
+ * however, masklen has to be set to its max btis, since
  * 192.168.0.255/24 is considered less than 192.168.0.255/32
  *
  * inet_set_masklen() hacked to max out the masklength to 128 for IPv6
@@ -2093,7 +1441,7 @@ inetmi(PG_FUNCTION_ARGS)
 		 * have to do proper sign extension.
 		 */
 		if (carry == 0 && byte < sizeof(int64))
-			res |= ((uint64) (int64) -1) << (byte * 8);
+			res |= ((int64) -1) << (byte * 8);
 	}
 
 	PG_RETURN_INT64(res);

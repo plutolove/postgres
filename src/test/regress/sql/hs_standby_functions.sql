@@ -5,12 +5,12 @@
 --
 
 -- should fail
-select pg_current_xact_id();
+select txid_current();
 
-select length(pg_current_snapshot()::text) >= 4;
+select length(txid_current_snapshot()::text) >= 4;
 
 select pg_start_backup('should fail');
-select pg_switch_wal();
+select pg_switch_xlog();
 select pg_stop_backup();
 
 -- should return no rows

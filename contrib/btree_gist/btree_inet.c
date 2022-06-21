@@ -5,9 +5,9 @@
 
 #include "btree_gist.h"
 #include "btree_utils_num.h"
-#include "catalog/pg_type.h"
 #include "utils/builtins.h"
 #include "utils/inet.h"
+#include "catalog/pg_type.h"
 
 typedef struct inetkey
 {
@@ -27,33 +27,33 @@ PG_FUNCTION_INFO_V1(gbt_inet_same);
 
 
 static bool
-gbt_inetgt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_inetgt(const void *a, const void *b)
 {
 	return (*((const double *) a) > *((const double *) b));
 }
 static bool
-gbt_inetge(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_inetge(const void *a, const void *b)
 {
 	return (*((const double *) a) >= *((const double *) b));
 }
 static bool
-gbt_ineteq(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_ineteq(const void *a, const void *b)
 {
 	return (*((const double *) a) == *((const double *) b));
 }
 static bool
-gbt_inetle(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_inetle(const void *a, const void *b)
 {
 	return (*((const double *) a) <= *((const double *) b));
 }
 static bool
-gbt_inetlt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_inetlt(const void *a, const void *b)
 {
 	return (*((const double *) a) < *((const double *) b));
 }
 
 static int
-gbt_inetkey_cmp(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_inetkey_cmp(const void *a, const void *b)
 {
 	inetKEY    *ia = (inetKEY *) (((const Nsrt *) a)->t);
 	inetKEY    *ib = (inetKEY *) (((const Nsrt *) b)->t);
@@ -99,15 +99,13 @@ gbt_inet_compress(PG_FUNCTION_ARGS)
 	if (entry->leafkey)
 	{
 		inetKEY    *r = (inetKEY *) palloc(sizeof(inetKEY));
-		bool		failure = false;
 
 		retval = palloc(sizeof(GISTENTRY));
-		r->lower = convert_network_to_scalar(entry->key, INETOID, &failure);
-		Assert(!failure);
+		r->lower = convert_network_to_scalar(entry->key, INETOID);
 		r->upper = r->lower;
 		gistentryinit(*retval, PointerGetDatum(r),
 					  entry->rel, entry->page,
-					  entry->offset, false);
+					  entry->offset, FALSE);
 	}
 	else
 		retval = entry;
@@ -120,18 +118,13 @@ Datum
 gbt_inet_consistent(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	Datum		dquery = PG_GETARG_DATUM(1);
+	double		query = convert_network_to_scalar(PG_GETARG_DATUM(1), INETOID);
 	StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
 
 	/* Oid		subtype = PG_GETARG_OID(3); */
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
 	inetKEY    *kkk = (inetKEY *) DatumGetPointer(entry->key);
 	GBT_NUMKEY_R key;
-	double		query;
-	bool		failure = false;
-
-	query = convert_network_to_scalar(dquery, INETOID, &failure);
-	Assert(!failure);
 
 	/* All cases served by this function are inexact */
 	*recheck = true;
@@ -140,7 +133,7 @@ gbt_inet_consistent(PG_FUNCTION_ARGS)
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
 	PG_RETURN_BOOL(gbt_num_consistent(&key, (void *) &query,
-									  &strategy, GIST_LEAF(entry), &tinfo, fcinfo->flinfo));
+									  &strategy, GIST_LEAF(entry), &tinfo));
 }
 
 
@@ -151,7 +144,7 @@ gbt_inet_union(PG_FUNCTION_ARGS)
 	void	   *out = palloc(sizeof(inetKEY));
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(inetKEY);
-	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo));
 }
 
 
@@ -171,9 +164,11 @@ gbt_inet_penalty(PG_FUNCTION_ARGS)
 Datum
 gbt_inet_picksplit(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_POINTER(gbt_num_picksplit((GistEntryVector *) PG_GETARG_POINTER(0),
-										(GIST_SPLITVEC *) PG_GETARG_POINTER(1),
-										&tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_picksplit(
+									(GistEntryVector *) PG_GETARG_POINTER(0),
+									  (GIST_SPLITVEC *) PG_GETARG_POINTER(1),
+										&tinfo
+										));
 }
 
 Datum
@@ -183,6 +178,6 @@ gbt_inet_same(PG_FUNCTION_ARGS)
 	inetKEY    *b2 = (inetKEY *) PG_GETARG_POINTER(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo, fcinfo->flinfo);
+	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo);
 	PG_RETURN_POINTER(result);
 }

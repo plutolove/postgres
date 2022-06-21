@@ -15,11 +15,15 @@
 /features-supported.sgml
 /features-unsupported.sgml
 /errcodes-table.sgml
-/keywords-table.sgml
 /version.sgml
+/bookindex.sgml
+/HTML.index
 # Assorted byproducts from building the above
 /postgres.xml
 /INSTALL.html
-/INSTALL.xml
-/postgres-US.fo
-/postgres-A4.fo
+/postgres-US.aux
+/postgres-US.log
+/postgres-US.out
+/postgres-A4.aux
+/postgres-A4.log
+/postgres-A4.out

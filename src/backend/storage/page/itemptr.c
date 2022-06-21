@@ -3,7 +3,7 @@
  * itemptr.c
  *	  POSTGRES disk item pointer code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,13 +28,6 @@
 bool
 ItemPointerEquals(ItemPointer pointer1, ItemPointer pointer2)
 {
-	/*
-	 * We really want ItemPointerData to be exactly 6 bytes.  This is rather a
-	 * random place to check, but there is no better place.
-	 */
-	StaticAssertStmt(sizeof(ItemPointerData) == 3 * sizeof(uint16),
-					 "ItemPointerData struct is improperly padded");
-
 	if (ItemPointerGetBlockNumber(pointer1) ==
 		ItemPointerGetBlockNumber(pointer2) &&
 		ItemPointerGetOffsetNumber(pointer1) ==
@@ -52,21 +45,20 @@ int32
 ItemPointerCompare(ItemPointer arg1, ItemPointer arg2)
 {
 	/*
-	 * Use ItemPointerGet{Offset,Block}NumberNoCheck to avoid asserting
-	 * ip_posid != 0, which may not be true for a user-supplied TID.
+	 * Don't use ItemPointerGetBlockNumber or ItemPointerGetOffsetNumber here,
+	 * because they assert ip_posid != 0 which might not be true for a
+	 * user-supplied TID.
 	 */
-	BlockNumber b1 = ItemPointerGetBlockNumberNoCheck(arg1);
-	BlockNumber b2 = ItemPointerGetBlockNumberNoCheck(arg2);
+	BlockNumber b1 = BlockIdGetBlockNumber(&(arg1->ip_blkid));
+	BlockNumber b2 = BlockIdGetBlockNumber(&(arg2->ip_blkid));
 
 	if (b1 < b2)
 		return -1;
 	else if (b1 > b2)
 		return 1;
-	else if (ItemPointerGetOffsetNumberNoCheck(arg1) <
-			 ItemPointerGetOffsetNumberNoCheck(arg2))
+	else if (arg1->ip_posid < arg2->ip_posid)
 		return -1;
-	else if (ItemPointerGetOffsetNumberNoCheck(arg1) >
-			 ItemPointerGetOffsetNumberNoCheck(arg2))
+	else if (arg1->ip_posid > arg2->ip_posid)
 		return 1;
 	else
 		return 0;

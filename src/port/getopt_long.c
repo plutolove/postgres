@@ -56,7 +56,7 @@
 int
 getopt_long(int argc, char *const argv[],
 			const char *optstring,
-			const struct option *longopts, int *longindex)
+			const struct option * longopts, int *longindex)
 {
 	static char *place = EMSG;	/* option letter processing */
 	char	   *oli;			/* option letter list index */
@@ -79,22 +79,14 @@ getopt_long(int argc, char *const argv[],
 
 		place++;
 
-		if (!*place)
-		{
-			/* treat "-" as not being an option */
-			place = EMSG;
-			return -1;
-		}
-
-		if (place[0] == '-' && place[1] == '\0')
-		{
-			/* found "--", treat it as end of options */
+		if (place[0] && place[0] == '-' && place[1] == '\0')
+		{						/* found "--" */
 			++optind;
 			place = EMSG;
 			return -1;
 		}
 
-		if (place[0] == '-' && place[1])
+		if (place[0] && place[0] == '-' && place[1])
 		{
 			/* long option */
 			size_t		namelen;
@@ -108,14 +100,11 @@ getopt_long(int argc, char *const argv[],
 				if (strlen(longopts[i].name) == namelen
 					&& strncmp(place, longopts[i].name, namelen) == 0)
 				{
-					int			has_arg = longopts[i].has_arg;
-
-					if (has_arg != no_argument)
+					if (longopts[i].has_arg)
 					{
 						if (place[namelen] == '=')
 							optarg = place + namelen + 1;
-						else if (optind < argc - 1 &&
-								 has_arg == required_argument)
+						else if (optind < argc - 1)
 						{
 							optind++;
 							optarg = argv[optind];
@@ -124,18 +113,13 @@ getopt_long(int argc, char *const argv[],
 						{
 							if (optstring[0] == ':')
 								return BADARG;
-
-							if (opterr && has_arg == required_argument)
+							if (opterr)
 								fprintf(stderr,
-										"%s: option requires an argument -- %s\n",
+								   "%s: option requires an argument -- %s\n",
 										argv[0], place);
-
 							place = EMSG;
 							optind++;
-
-							if (has_arg == required_argument)
-								return BADCH;
-							optarg = NULL;
+							return BADCH;
 						}
 					}
 					else

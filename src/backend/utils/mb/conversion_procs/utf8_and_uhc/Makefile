@@ -8,6 +8,5 @@ top_builddir = ../../../../../..
 include $(top_builddir)/src/Makefile.global
 
 NAME		= utf8_and_uhc
-PGFILEDESC	= "utf8 <-> uhc text conversions"
 
 include $(srcdir)/../proc.mk

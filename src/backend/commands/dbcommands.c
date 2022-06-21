@@ -8,7 +8,7 @@
  * stepping on each others' toes.  Formerly we used table-level locks
  * on pg_database, but that's too coarse-grained.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,16 +20,14 @@
 #include "postgres.h"
 
 #include <fcntl.h>
+#include <locale.h>
 #include <unistd.h>
 #include <sys/stat.h>
 
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/multixact.h"
-#include "access/tableam.h"
 #include "access/xact.h"
-#include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -38,12 +36,9 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_db_role_setting.h"
-#include "catalog/pg_subscription.h"
 #include "catalog/pg_tablespace.h"
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
-#include "commands/dbcommands_xlog.h"
-#include "commands/defrem.h"
 #include "commands/seclabel.h"
 #include "commands/tablespace.h"
 #include "mb/pg_wchar.h"
@@ -53,9 +48,8 @@
 #include "replication/slot.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
-#include "storage/ipc.h"
 #include "storage/lmgr.h"
-#include "storage/md.h"
+#include "storage/ipc.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
@@ -64,6 +58,8 @@
 #include "utils/pg_locale.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
+
 
 typedef struct
 {
@@ -82,11 +78,11 @@ static void createdb_failure_callback(int code, Datum arg);
 static void movedb(const char *dbname, const char *tblspcname);
 static void movedb_failure_callback(int code, Datum arg);
 static bool get_db_info(const char *name, LOCKMODE lockmode,
-						Oid *dbIdP, Oid *ownerIdP,
-						int *encodingP, bool *dbIsTemplateP, bool *dbAllowConnP,
-						Oid *dbLastSysOidP, TransactionId *dbFrozenXidP,
-						MultiXactId *dbMinMultiP,
-						Oid *dbTablespace, char **dbCollate, char **dbCtype);
+			Oid *dbIdP, Oid *ownerIdP,
+			int *encodingP, bool *dbIsTemplateP, bool *dbAllowConnP,
+			Oid *dbLastSysOidP, TransactionId *dbFrozenXidP,
+			MultiXactId *dbMinMultiP,
+			Oid *dbTablespace, char **dbCollate, char **dbCtype);
 static bool have_createdb_privilege(void);
 static void remove_dbtablespaces(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
@@ -97,20 +93,20 @@ static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
  * CREATE DATABASE
  */
 Oid
-createdb(ParseState *pstate, const CreatedbStmt *stmt)
+createdb(const CreatedbStmt *stmt)
 {
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	Relation	rel;
 	Oid			src_dboid;
 	Oid			src_owner;
-	int			src_encoding = -1;
-	char	   *src_collate = NULL;
-	char	   *src_ctype = NULL;
+	int			src_encoding;
+	char	   *src_collate;
+	char	   *src_ctype;
 	bool		src_istemplate;
 	bool		src_allowconn;
-	Oid			src_lastsysoid = InvalidOid;
-	TransactionId src_frozenxid = InvalidTransactionId;
-	MultiXactId src_minmxid = InvalidMultiXactId;
+	Oid			src_lastsysoid;
+	TransactionId src_frozenxid;
+	MultiXactId src_minmxid;
 	Oid			src_deftablespace;
 	volatile Oid dst_deftablespace;
 	Relation	pg_database_rel;
@@ -124,11 +120,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	DefElem    *downer = NULL;
 	DefElem    *dtemplate = NULL;
 	DefElem    *dencoding = NULL;
-	DefElem    *dlocale = NULL;
 	DefElem    *dcollate = NULL;
 	DefElem    *dctype = NULL;
-	DefElem    *distemplate = NULL;
-	DefElem    *dallowconnections = NULL;
 	DefElem    *dconnlimit = NULL;
 	char	   *dbname = stmt->dbname;
 	char	   *dbowner = NULL;
@@ -137,8 +130,6 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	char	   *dbctype = NULL;
 	char	   *canonname;
 	int			encoding = -1;
-	bool		dbistemplate = false;
-	bool		dballowconnections = true;
 	int			dbconnlimit = -1;
 	int			notherbackends;
 	int			npreparedxacts;
@@ -154,8 +145,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (dtablespacename)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dtablespacename = defel;
 		}
 		else if (strcmp(defel->defname, "owner") == 0)
@@ -163,8 +153,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (downer)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			downer = defel;
 		}
 		else if (strcmp(defel->defname, "template") == 0)
@@ -172,8 +161,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (dtemplate)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dtemplate = defel;
 		}
 		else if (strcmp(defel->defname, "encoding") == 0)
@@ -181,26 +169,15 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (dencoding)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dencoding = defel;
-		}
-		else if (strcmp(defel->defname, "locale") == 0)
-		{
-			if (dlocale)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
-			dlocale = defel;
 		}
 		else if (strcmp(defel->defname, "lc_collate") == 0)
 		{
 			if (dcollate)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dcollate = defel;
 		}
 		else if (strcmp(defel->defname, "lc_ctype") == 0)
@@ -208,35 +185,15 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			if (dctype)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dctype = defel;
 		}
-		else if (strcmp(defel->defname, "is_template") == 0)
-		{
-			if (distemplate)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
-			distemplate = defel;
-		}
-		else if (strcmp(defel->defname, "allow_connections") == 0)
-		{
-			if (dallowconnections)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
-			dallowconnections = defel;
-		}
-		else if (strcmp(defel->defname, "connection_limit") == 0)
+		else if (strcmp(defel->defname, "connectionlimit") == 0)
 		{
 			if (dconnlimit)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dconnlimit = defel;
 		}
 		else if (strcmp(defel->defname, "location") == 0)
@@ -244,70 +201,54 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			ereport(WARNING,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("LOCATION is not supported anymore"),
-					 errhint("Consider using tablespaces instead."),
-					 parser_errposition(pstate, defel->location)));
+					 errhint("Consider using tablespaces instead.")));
 		}
 		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("option \"%s\" not recognized", defel->defname),
-					 parser_errposition(pstate, defel->location)));
+			elog(ERROR, "option \"%s\" not recognized",
+				 defel->defname);
 	}
 
-	if (dlocale && (dcollate || dctype))
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("conflicting or redundant options"),
-				 errdetail("LOCALE cannot be specified together with LC_COLLATE or LC_CTYPE.")));
-
 	if (downer && downer->arg)
-		dbowner = defGetString(downer);
+		dbowner = strVal(downer->arg);
 	if (dtemplate && dtemplate->arg)
-		dbtemplate = defGetString(dtemplate);
+		dbtemplate = strVal(dtemplate->arg);
 	if (dencoding && dencoding->arg)
 	{
 		const char *encoding_name;
 
 		if (IsA(dencoding->arg, Integer))
 		{
-			encoding = defGetInt32(dencoding);
+			encoding = intVal(dencoding->arg);
 			encoding_name = pg_encoding_to_char(encoding);
 			if (strcmp(encoding_name, "") == 0 ||
 				pg_valid_server_encoding(encoding_name) < 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("%d is not a valid encoding code",
-								encoding),
-						 parser_errposition(pstate, dencoding->location)));
+								encoding)));
 		}
-		else
+		else if (IsA(dencoding->arg, String))
 		{
-			encoding_name = defGetString(dencoding);
+			encoding_name = strVal(dencoding->arg);
 			encoding = pg_valid_server_encoding(encoding_name);
 			if (encoding < 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("%s is not a valid encoding name",
-								encoding_name),
-						 parser_errposition(pstate, dencoding->location)));
+								encoding_name)));
 		}
-	}
-	if (dlocale && dlocale->arg)
-	{
-		dbcollate = defGetString(dlocale);
-		dbctype = defGetString(dlocale);
+		else
+			elog(ERROR, "unrecognized node type: %d",
+				 nodeTag(dencoding->arg));
 	}
 	if (dcollate && dcollate->arg)
-		dbcollate = defGetString(dcollate);
+		dbcollate = strVal(dcollate->arg);
 	if (dctype && dctype->arg)
-		dbctype = defGetString(dctype);
-	if (distemplate && distemplate->arg)
-		dbistemplate = defGetBoolean(distemplate);
-	if (dallowconnections && dallowconnections->arg)
-		dballowconnections = defGetBoolean(dallowconnections);
+		dbctype = strVal(dctype->arg);
+
 	if (dconnlimit && dconnlimit->arg)
 	{
-		dbconnlimit = defGetInt32(dconnlimit);
+		dbconnlimit = intVal(dconnlimit->arg);
 		if (dbconnlimit < -1)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -344,7 +285,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	 * won't change underneath us.
 	 */
 	if (!dbtemplate)
-		dbtemplate = "template1";	/* Default template database name */
+		dbtemplate = "template1";		/* Default template database name */
 
 	if (!get_db_info(dbtemplate, ShareLock,
 					 &src_dboid, &src_owner, &src_encoding,
@@ -438,20 +379,20 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		char	   *tablespacename;
 		AclResult	aclresult;
 
-		tablespacename = defGetString(dtablespacename);
+		tablespacename = strVal(dtablespacename->arg);
 		dst_deftablespace = get_tablespace_oid(tablespacename, false);
 		/* check permissions */
 		aclresult = pg_tablespace_aclcheck(dst_deftablespace, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
-			aclcheck_error(aclresult, OBJECT_TABLESPACE,
+			aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
 						   tablespacename);
 
 		/* pg_global must never be the default tablespace */
 		if (dst_deftablespace == GLOBALTABLESPACE_OID)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("pg_global cannot be used as default tablespace")));
+				  errmsg("pg_global cannot be used as default tablespace")));
 
 		/*
 		 * If we are trying to change the default tablespace of the template,
@@ -492,16 +433,6 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	}
 
 	/*
-	 * If built with appropriate switch, whine when regression-testing
-	 * conventions for database names are violated.  But don't complain during
-	 * initdb.
-	 */
-#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
-	if (IsUnderPostmaster && strstr(dbname, "regression") == NULL)
-		elog(WARNING, "databases created by regression test cases should have names including \"regression\"");
-#endif
-
-	/*
 	 * Check for db name conflict.  This is just to give a more friendly error
 	 * message than "unique index violation".  There's a race condition but
 	 * we're willing to accept the less friendly message in that case.
@@ -523,8 +454,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	if (CountOtherDBBackends(src_dboid, &notherbackends, &npreparedxacts))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("source database \"%s\" is being accessed by other users",
-						dbtemplate),
+			errmsg("source database \"%s\" is being accessed by other users",
+				   dbtemplate),
 				 errdetail_busy_db(notherbackends, npreparedxacts)));
 
 	/*
@@ -532,12 +463,11 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	 * filename conflict with anything already existing in the tablespace
 	 * directories.
 	 */
-	pg_database_rel = table_open(DatabaseRelationId, RowExclusiveLock);
+	pg_database_rel = heap_open(DatabaseRelationId, RowExclusiveLock);
 
 	do
 	{
-		dboid = GetNewOidWithIndex(pg_database_rel, DatabaseOidIndexId,
-								   Anum_pg_database_oid);
+		dboid = GetNewOid(pg_database_rel);
 	} while (check_db_file_conflict(dboid));
 
 	/*
@@ -550,7 +480,6 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	MemSet(new_record, 0, sizeof(new_record));
 	MemSet(new_record_nulls, false, sizeof(new_record_nulls));
 
-	new_record[Anum_pg_database_oid - 1] = ObjectIdGetDatum(dboid);
 	new_record[Anum_pg_database_datname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(dbname));
 	new_record[Anum_pg_database_datdba - 1] = ObjectIdGetDatum(datdba);
@@ -559,8 +488,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		DirectFunctionCall1(namein, CStringGetDatum(dbcollate));
 	new_record[Anum_pg_database_datctype - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(dbctype));
-	new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(dbistemplate);
-	new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(dballowconnections);
+	new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(false);
+	new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(true);
 	new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(dbconnlimit);
 	new_record[Anum_pg_database_datlastsysoid - 1] = ObjectIdGetDatum(src_lastsysoid);
 	new_record[Anum_pg_database_datfrozenxid - 1] = TransactionIdGetDatum(src_frozenxid);
@@ -577,7 +506,12 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	tuple = heap_form_tuple(RelationGetDescr(pg_database_rel),
 							new_record, new_record_nulls);
 
-	CatalogTupleInsert(pg_database_rel, tuple);
+	HeapTupleSetOid(tuple, dboid);
+
+	simple_heap_insert(pg_database_rel, tuple);
+
+	/* Update indexes */
+	CatalogUpdateIndexes(pg_database_rel, tuple);
 
 	/*
 	 * Now generate additional catalog entries associated with the new DB
@@ -596,8 +530,8 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	 * Force a checkpoint before starting the copy. This will force all dirty
 	 * buffers, including those of unlogged tables, out to disk, to ensure
 	 * source database is up-to-date on disk for the copy.
-	 * FlushDatabaseBuffers() would suffice for that, but we also want to
-	 * process any pending unlink requests. Otherwise, if a checkpoint
+	 * FlushDatabaseBuffers() would suffice for that, but we also want
+	 * to process any pending unlink requests. Otherwise, if a checkpoint
 	 * happened while we're copying files, a file might be deleted just when
 	 * we're about to copy it, causing the lstat() call in copydir() to fail
 	 * with ENOENT.
@@ -621,12 +555,11 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		 * Iterate through all tablespaces of the template database, and copy
 		 * each one to the new database.
 		 */
-		rel = table_open(TableSpaceRelationId, AccessShareLock);
-		scan = table_beginscan_catalog(rel, 0, NULL);
+		rel = heap_open(TableSpaceRelationId, AccessShareLock);
+		scan = heap_beginscan_catalog(rel, 0, NULL);
 		while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			Form_pg_tablespace spaceform = (Form_pg_tablespace) GETSTRUCT(tuple);
-			Oid			srctablespace = spaceform->oid;
+			Oid			srctablespace = HeapTupleGetOid(tuple);
 			Oid			dsttablespace;
 			char	   *srcpath;
 			char	   *dstpath;
@@ -663,21 +596,23 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			/* Record the filesystem change in XLOG */
 			{
 				xl_dbase_create_rec xlrec;
+				XLogRecData rdata[1];
 
 				xlrec.db_id = dboid;
 				xlrec.tablespace_id = dsttablespace;
 				xlrec.src_db_id = src_dboid;
 				xlrec.src_tablespace_id = srctablespace;
 
-				XLogBeginInsert();
-				XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_create_rec));
+				rdata[0].data = (char *) &xlrec;
+				rdata[0].len = sizeof(xl_dbase_create_rec);
+				rdata[0].buffer = InvalidBuffer;
+				rdata[0].next = NULL;
 
-				(void) XLogInsert(RM_DBASE_ID,
-								  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
+				(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_CREATE, rdata);
 			}
 		}
-		table_endscan(scan);
-		table_close(rel, AccessShareLock);
+		heap_endscan(scan);
+		heap_close(rel, AccessShareLock);
 
 		/*
 		 * We force a checkpoint before committing.  This effectively means
@@ -713,11 +648,11 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		/*
 		 * Close pg_database, but keep lock till commit.
 		 */
-		table_close(pg_database_rel, NoLock);
+		heap_close(pg_database_rel, NoLock);
 
 		/*
 		 * Force synchronous commit, thus minimizing the window between
-		 * creation of the database files and committal of the transaction. If
+		 * creation of the database files and commital of the transaction. If
 		 * we crash before committing, we'll have a DB that's taking up disk
 		 * space but is not in pg_database, which is not good.
 		 */
@@ -769,8 +704,8 @@ check_encoding_locale_matches(int encoding, const char *collate, const char *cty
 				 errmsg("encoding \"%s\" does not match locale \"%s\"",
 						pg_encoding_to_char(encoding),
 						ctype),
-				 errdetail("The chosen LC_CTYPE setting requires encoding \"%s\".",
-						   pg_encoding_to_char(ctype_encoding))));
+		   errdetail("The chosen LC_CTYPE setting requires encoding \"%s\".",
+					 pg_encoding_to_char(ctype_encoding))));
 
 	if (!(collate_encoding == encoding ||
 		  collate_encoding == PG_SQL_ASCII ||
@@ -784,8 +719,8 @@ check_encoding_locale_matches(int encoding, const char *collate, const char *cty
 				 errmsg("encoding \"%s\" does not match locale \"%s\"",
 						pg_encoding_to_char(encoding),
 						collate),
-				 errdetail("The chosen LC_COLLATE setting requires encoding \"%s\".",
-						   pg_encoding_to_char(collate_encoding))));
+		 errdetail("The chosen LC_COLLATE setting requires encoding \"%s\".",
+				   pg_encoding_to_char(collate_encoding))));
 }
 
 /* Error cleanup callback for createdb */
@@ -810,7 +745,7 @@ createdb_failure_callback(int code, Datum arg)
  * DROP DATABASE
  */
 void
-dropdb(const char *dbname, bool missing_ok, bool force)
+dropdb(const char *dbname, bool missing_ok)
 {
 	Oid			db_id;
 	bool		db_istemplate;
@@ -820,7 +755,6 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	int			npreparedxacts;
 	int			nslots,
 				nslots_active;
-	int			nsubscriptions;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
@@ -829,10 +763,10 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	 * using it as a CREATE DATABASE template or trying to delete it for
 	 * themselves.
 	 */
-	pgdbrel = table_open(DatabaseRelationId, RowExclusiveLock);
+	pgdbrel = heap_open(DatabaseRelationId, RowExclusiveLock);
 
 	if (!get_db_info(dbname, AccessExclusiveLock, &db_id, NULL, NULL,
-					 &db_istemplate, NULL, NULL, NULL, NULL, NULL, NULL, NULL))
+				   &db_istemplate, NULL, NULL, NULL, NULL, NULL, NULL, NULL))
 	{
 		if (!missing_ok)
 		{
@@ -843,7 +777,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 		else
 		{
 			/* Close pg_database, release the lock, since we changed nothing */
-			table_close(pgdbrel, RowExclusiveLock);
+			heap_close(pgdbrel, RowExclusiveLock);
 			ereport(NOTICE,
 					(errmsg("database \"%s\" does not exist, skipping",
 							dbname)));
@@ -855,7 +789,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	 * Permission checks
 	 */
 	if (!pg_database_ownercheck(db_id, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 					   dbname);
 
 	/* DROP hook for the database being removed */
@@ -878,45 +812,19 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 				 errmsg("cannot drop the currently open database")));
 
 	/*
-	 * Check whether there are active logical slots that refer to the
-	 * to-be-dropped database. The database lock we are holding prevents the
-	 * creation of new slots using the database or existing slots becoming
-	 * active.
+	 * Check whether there are, possibly unconnected, logical slots that refer
+	 * to the to-be-dropped database. The database lock we are holding
+	 * prevents the creation of new slots using the database.
 	 */
-	(void) ReplicationSlotsCountDBSlots(db_id, &nslots, &nslots_active);
-	if (nslots_active)
-	{
+	if (ReplicationSlotsCountDBSlots(db_id, &nslots, &nslots_active))
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("database \"%s\" is used by an active logical replication slot",
+				 errmsg("database \"%s\" is used by a logical replication slot",
 						dbname),
-				 errdetail_plural("There is %d active slot.",
-								  "There are %d active slots.",
-								  nslots_active, nslots_active)));
-	}
-
-	/*
-	 * Check if there are subscriptions defined in the target database.
-	 *
-	 * We can't drop them automatically because they might be holding
-	 * resources in other databases/instances.
-	 */
-	if ((nsubscriptions = CountDBSubscriptions(db_id)) > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("database \"%s\" is being used by logical replication subscription",
-						dbname),
-				 errdetail_plural("There is %d subscription.",
-								  "There are %d subscriptions.",
-								  nsubscriptions, nsubscriptions)));
-
-
-	/*
-	 * Attempt to terminate all existing connections to the target database if
-	 * the user has requested to do so.
-	 */
-	if (force)
-		TerminateOtherDBBackends(db_id);
+				 errdetail_plural("There is %d slot, %d of them active.",
+								  "There are %d slots, %d of them active.",
+								  nslots,
+								  nslots, nslots_active)));
 
 	/*
 	 * Check for other backends in the target database.  (Because we hold the
@@ -938,7 +846,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR, "cache lookup failed for database %u", db_id);
 
-	CatalogTupleDelete(pgdbrel, &tup->t_self);
+	simple_heap_delete(pgdbrel, &tup->t_self);
 
 	ReleaseSysCache(tup);
 
@@ -959,11 +867,6 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	dropDatabaseDependencies(db_id);
 
 	/*
-	 * Drop db-specific replication slots.
-	 */
-	ReplicationSlotsDropDBSlots(db_id);
-
-	/*
 	 * Drop pages for this database that are in the shared buffer cache. This
 	 * is important to ensure that no remaining backend tries to write out a
 	 * dirty buffer to the dead database later...
@@ -981,11 +884,11 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	 * worse, it will delete files that belong to a newly created database
 	 * with the same OID.
 	 */
-	ForgetDatabaseSyncRequests(db_id);
+	ForgetDatabaseFsyncRequests(db_id);
 
 	/*
 	 * Force a checkpoint to make sure the checkpointer has received the
-	 * message sent by ForgetDatabaseSyncRequests. On Windows, this also
+	 * message sent by ForgetDatabaseFsyncRequests. On Windows, this also
 	 * ensures that background procs don't hold any open files, which would
 	 * cause rmdir() to fail.
 	 */
@@ -999,11 +902,11 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	/*
 	 * Close pg_database, but keep lock till commit.
 	 */
-	table_close(pgdbrel, NoLock);
+	heap_close(pgdbrel, NoLock);
 
 	/*
 	 * Force synchronous commit, thus minimizing the window between removal of
-	 * the database files and committal of the transaction. If we crash before
+	 * the database files and commital of the transaction. If we crash before
 	 * committing, we'll have a DB that's gone on disk but still there
 	 * according to pg_database, which is not good.
 	 */
@@ -1014,7 +917,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 /*
  * Rename database
  */
-ObjectAddress
+Oid
 RenameDatabase(const char *oldname, const char *newname)
 {
 	Oid			db_id;
@@ -1022,13 +925,12 @@ RenameDatabase(const char *oldname, const char *newname)
 	Relation	rel;
 	int			notherbackends;
 	int			npreparedxacts;
-	ObjectAddress address;
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We
 	 * need this for the same reasons as DROP DATABASE.
 	 */
-	rel = table_open(DatabaseRelationId, RowExclusiveLock);
+	rel = heap_open(DatabaseRelationId, RowExclusiveLock);
 
 	if (!get_db_info(oldname, AccessExclusiveLock, &db_id, NULL, NULL,
 					 NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL))
@@ -1038,7 +940,7 @@ RenameDatabase(const char *oldname, const char *newname)
 
 	/* must be owner */
 	if (!pg_database_ownercheck(db_id, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 					   oldname);
 
 	/* must have createdb rights */
@@ -1046,15 +948,6 @@ RenameDatabase(const char *oldname, const char *newname)
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to rename database")));
-
-	/*
-	 * If built with appropriate switch, whine when regression-testing
-	 * conventions for database names are violated.
-	 */
-#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
-	if (strstr(newname, "regression") == NULL)
-		elog(WARNING, "databases created by regression test cases should have names including \"regression\"");
-#endif
 
 	/*
 	 * Make sure the new name doesn't exist.  See notes for same error in
@@ -1094,18 +987,17 @@ RenameDatabase(const char *oldname, const char *newname)
 	if (!HeapTupleIsValid(newtup))
 		elog(ERROR, "cache lookup failed for database %u", db_id);
 	namestrcpy(&(((Form_pg_database) GETSTRUCT(newtup))->datname), newname);
-	CatalogTupleUpdate(rel, &newtup->t_self, newtup);
+	simple_heap_update(rel, &newtup->t_self, newtup);
+	CatalogUpdateIndexes(rel, newtup);
 
 	InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
-
-	ObjectAddressSet(address, DatabaseRelationId, db_id);
 
 	/*
 	 * Close pg_database, but keep lock till commit.
 	 */
-	table_close(rel, NoLock);
+	heap_close(rel, NoLock);
 
-	return address;
+	return db_id;
 }
 
 
@@ -1141,10 +1033,10 @@ movedb(const char *dbname, const char *tblspcname)
 	 * we are moving it, and that no one is using it as a CREATE DATABASE
 	 * template or trying to delete it.
 	 */
-	pgdbrel = table_open(DatabaseRelationId, RowExclusiveLock);
+	pgdbrel = heap_open(DatabaseRelationId, RowExclusiveLock);
 
 	if (!get_db_info(dbname, AccessExclusiveLock, &db_id, NULL, NULL,
-					 NULL, NULL, NULL, NULL, NULL, &src_tblspcoid, NULL, NULL))
+				   NULL, NULL, NULL, NULL, NULL, &src_tblspcoid, NULL, NULL))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_DATABASE),
 				 errmsg("database \"%s\" does not exist", dbname)));
@@ -1162,7 +1054,7 @@ movedb(const char *dbname, const char *tblspcname)
 	 * Permission checks
 	 */
 	if (!pg_database_ownercheck(db_id, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 					   dbname);
 
 	/*
@@ -1184,7 +1076,7 @@ movedb(const char *dbname, const char *tblspcname)
 	aclresult = pg_tablespace_aclcheck(dst_tblspcoid, GetUserId(),
 									   ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
-		aclcheck_error(aclresult, OBJECT_TABLESPACE,
+		aclcheck_error(aclresult, ACL_KIND_TABLESPACE,
 					   tblspcname);
 
 	/*
@@ -1200,7 +1092,7 @@ movedb(const char *dbname, const char *tblspcname)
 	 */
 	if (src_tblspcoid == dst_tblspcoid)
 	{
-		table_close(pgdbrel, NoLock);
+		heap_close(pgdbrel, NoLock);
 		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
 									 AccessExclusiveLock);
 		return;
@@ -1311,17 +1203,19 @@ movedb(const char *dbname, const char *tblspcname)
 		 */
 		{
 			xl_dbase_create_rec xlrec;
+			XLogRecData rdata[1];
 
 			xlrec.db_id = db_id;
 			xlrec.tablespace_id = dst_tblspcoid;
 			xlrec.src_db_id = db_id;
 			xlrec.src_tablespace_id = src_tblspcoid;
 
-			XLogBeginInsert();
-			XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_create_rec));
+			rdata[0].data = (char *) &xlrec;
+			rdata[0].len = sizeof(xl_dbase_create_rec);
+			rdata[0].buffer = InvalidBuffer;
+			rdata[0].next = NULL;
 
-			(void) XLogInsert(RM_DBASE_ID,
-							  XLOG_DBASE_CREATE | XLR_SPECIAL_REL_UPDATE);
+			(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_CREATE, rdata);
 		}
 
 		/*
@@ -1330,11 +1224,11 @@ movedb(const char *dbname, const char *tblspcname)
 		ScanKeyInit(&scankey,
 					Anum_pg_database_datname,
 					BTEqualStrategyNumber, F_NAMEEQ,
-					CStringGetDatum(dbname));
+					NameGetDatum(dbname));
 		sysscan = systable_beginscan(pgdbrel, DatabaseNameIndexId, true,
 									 NULL, 1, &scankey);
 		oldtuple = systable_getnext(sysscan);
-		if (!HeapTupleIsValid(oldtuple))	/* shouldn't happen... */
+		if (!HeapTupleIsValid(oldtuple))		/* shouldn't happen... */
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_DATABASE),
 					 errmsg("database \"%s\" does not exist", dbname)));
@@ -1349,9 +1243,13 @@ movedb(const char *dbname, const char *tblspcname)
 		newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(pgdbrel),
 									 new_record,
 									 new_record_nulls, new_record_repl);
-		CatalogTupleUpdate(pgdbrel, &oldtuple->t_self, newtuple);
+		simple_heap_update(pgdbrel, &oldtuple->t_self, newtuple);
 
-		InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
+		/* Update indexes */
+		CatalogUpdateIndexes(pgdbrel, newtuple);
+
+		InvokeObjectPostAlterHook(DatabaseRelationId,
+								  HeapTupleGetOid(newtuple), 0);
 
 		systable_endscan(sysscan);
 
@@ -1365,7 +1263,7 @@ movedb(const char *dbname, const char *tblspcname)
 
 		/*
 		 * Force synchronous commit, thus minimizing the window between
-		 * copying the database files and committal of the transaction. If we
+		 * copying the database files and commital of the transaction. If we
 		 * crash before committing, we'll leave an orphaned set of files on
 		 * disk, which is not fatal but not good either.
 		 */
@@ -1374,7 +1272,7 @@ movedb(const char *dbname, const char *tblspcname)
 		/*
 		 * Close pg_database, but keep lock till commit.
 		 */
-		table_close(pgdbrel, NoLock);
+		heap_close(pgdbrel, NoLock);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(movedb_failure_callback,
 								PointerGetDatum(&fparms));
@@ -1409,16 +1307,17 @@ movedb(const char *dbname, const char *tblspcname)
 	 */
 	{
 		xl_dbase_drop_rec xlrec;
+		XLogRecData rdata[1];
 
 		xlrec.db_id = db_id;
-		xlrec.ntablespaces = 1;
+		xlrec.tablespace_id = src_tblspcoid;
 
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, sizeof(xl_dbase_drop_rec));
-		XLogRegisterData((char *) &src_tblspcoid, sizeof(Oid));
+		rdata[0].data = (char *) &xlrec;
+		rdata[0].len = sizeof(xl_dbase_drop_rec);
+		rdata[0].buffer = InvalidBuffer;
+		rdata[0].next = NULL;
 
-		(void) XLogInsert(RM_DBASE_ID,
-						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
+		(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_DROP, rdata);
 	}
 
 	/* Now it's safe to release the database lock */
@@ -1439,50 +1338,21 @@ movedb_failure_callback(int code, Datum arg)
 	(void) rmtree(dstpath, true);
 }
 
-/*
- * Process options and call dropdb function.
- */
-void
-DropDatabase(ParseState *pstate, DropdbStmt *stmt)
-{
-	bool		force = false;
-	ListCell   *lc;
-
-	foreach(lc, stmt->options)
-	{
-		DefElem    *opt = (DefElem *) lfirst(lc);
-
-		if (strcmp(opt->defname, "force") == 0)
-			force = true;
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized DROP DATABASE option \"%s\"", opt->defname),
-					 parser_errposition(pstate, opt->location)));
-	}
-
-	dropdb(stmt->dbname, stmt->missing_ok, force);
-}
 
 /*
  * ALTER DATABASE name ...
  */
 Oid
-AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
+AlterDatabase(AlterDatabaseStmt *stmt, bool isTopLevel)
 {
 	Relation	rel;
 	Oid			dboid;
 	HeapTuple	tuple,
 				newtuple;
-	Form_pg_database datform;
 	ScanKeyData scankey;
 	SysScanDesc scan;
 	ListCell   *option;
-	bool		dbistemplate = false;
-	bool		dballowconnections = true;
-	int			dbconnlimit = -1;
-	DefElem    *distemplate = NULL;
-	DefElem    *dallowconnections = NULL;
+	int			connlimit = -1;
 	DefElem    *dconnlimit = NULL;
 	DefElem    *dtablespace = NULL;
 	Datum		new_record[Natts_pg_database];
@@ -1494,31 +1364,12 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	{
 		DefElem    *defel = (DefElem *) lfirst(option);
 
-		if (strcmp(defel->defname, "is_template") == 0)
-		{
-			if (distemplate)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
-			distemplate = defel;
-		}
-		else if (strcmp(defel->defname, "allow_connections") == 0)
-		{
-			if (dallowconnections)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
-			dallowconnections = defel;
-		}
-		else if (strcmp(defel->defname, "connection_limit") == 0)
+		if (strcmp(defel->defname, "connectionlimit") == 0)
 		{
 			if (dconnlimit)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dconnlimit = defel;
 		}
 		else if (strcmp(defel->defname, "tablespace") == 0)
@@ -1526,47 +1377,31 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 			if (dtablespace)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+						 errmsg("conflicting or redundant options")));
 			dtablespace = defel;
 		}
 		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("option \"%s\" not recognized", defel->defname),
-					 parser_errposition(pstate, defel->location)));
+			elog(ERROR, "option \"%s\" not recognized",
+				 defel->defname);
 	}
 
 	if (dtablespace)
 	{
-		/*
-		 * While the SET TABLESPACE syntax doesn't allow any other options,
-		 * somebody could write "WITH TABLESPACE ...".  Forbid any other
-		 * options from being specified in that case.
-		 */
-		if (list_length(stmt->options) != 1)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("option \"%s\" cannot be specified with other options",
-							dtablespace->defname),
-					 parser_errposition(pstate, dtablespace->location)));
+		/* currently, can't be specified along with any other options */
+		Assert(!dconnlimit);
 		/* this case isn't allowed within a transaction block */
-		PreventInTransactionBlock(isTopLevel, "ALTER DATABASE SET TABLESPACE");
-		movedb(stmt->dbname, defGetString(dtablespace));
+		PreventTransactionChain(isTopLevel, "ALTER DATABASE SET TABLESPACE");
+		movedb(stmt->dbname, strVal(dtablespace->arg));
 		return InvalidOid;
 	}
 
-	if (distemplate && distemplate->arg)
-		dbistemplate = defGetBoolean(distemplate);
-	if (dallowconnections && dallowconnections->arg)
-		dballowconnections = defGetBoolean(dallowconnections);
-	if (dconnlimit && dconnlimit->arg)
+	if (dconnlimit)
 	{
-		dbconnlimit = defGetInt32(dconnlimit);
-		if (dbconnlimit < -1)
+		connlimit = intVal(dconnlimit->arg);
+		if (connlimit < -1)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid connection limit: %d", dbconnlimit)));
+					 errmsg("invalid connection limit: %d", connlimit)));
 	}
 
 	/*
@@ -1574,11 +1409,11 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	 * because we're not going to do anything that would mess up incoming
 	 * connections.
 	 */
-	rel = table_open(DatabaseRelationId, RowExclusiveLock);
+	rel = heap_open(DatabaseRelationId, RowExclusiveLock);
 	ScanKeyInit(&scankey,
 				Anum_pg_database_datname,
 				BTEqualStrategyNumber, F_NAMEEQ,
-				CStringGetDatum(stmt->dbname));
+				NameGetDatum(stmt->dbname));
 	scan = systable_beginscan(rel, DatabaseNameIndexId, true,
 							  NULL, 1, &scankey);
 	tuple = systable_getnext(scan);
@@ -1587,23 +1422,11 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 				(errcode(ERRCODE_UNDEFINED_DATABASE),
 				 errmsg("database \"%s\" does not exist", stmt->dbname)));
 
-	datform = (Form_pg_database) GETSTRUCT(tuple);
-	dboid = datform->oid;
+	dboid = HeapTupleGetOid(tuple);
 
-	if (!pg_database_ownercheck(dboid, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+	if (!pg_database_ownercheck(HeapTupleGetOid(tuple), GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 					   stmt->dbname);
-
-	/*
-	 * In order to avoid getting locked out and having to go through
-	 * standalone mode, we refuse to disallow connections to the database
-	 * we're currently connected to.  Lockout can still happen with concurrent
-	 * sessions but the likeliness of that is not high enough to worry about.
-	 */
-	if (!dballowconnections && dboid == MyDatabaseId)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("cannot disallow connections for current database")));
 
 	/*
 	 * Build an updated tuple, perusing the information just obtained
@@ -1612,32 +1435,26 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	MemSet(new_record_nulls, false, sizeof(new_record_nulls));
 	MemSet(new_record_repl, false, sizeof(new_record_repl));
 
-	if (distemplate)
-	{
-		new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(dbistemplate);
-		new_record_repl[Anum_pg_database_datistemplate - 1] = true;
-	}
-	if (dallowconnections)
-	{
-		new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(dballowconnections);
-		new_record_repl[Anum_pg_database_datallowconn - 1] = true;
-	}
 	if (dconnlimit)
 	{
-		new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(dbconnlimit);
+		new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(connlimit);
 		new_record_repl[Anum_pg_database_datconnlimit - 1] = true;
 	}
 
 	newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel), new_record,
 								 new_record_nulls, new_record_repl);
-	CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+	simple_heap_update(rel, &tuple->t_self, newtuple);
 
-	InvokeObjectPostAlterHook(DatabaseRelationId, dboid, 0);
+	/* Update indexes */
+	CatalogUpdateIndexes(rel, newtuple);
+
+	InvokeObjectPostAlterHook(DatabaseRelationId,
+							  HeapTupleGetOid(newtuple), 0);
 
 	systable_endscan(scan);
 
 	/* Close pg_database, but keep lock till commit */
-	table_close(rel, NoLock);
+	heap_close(rel, NoLock);
 
 	return dboid;
 }
@@ -1658,7 +1475,7 @@ AlterDatabaseSet(AlterDatabaseSetStmt *stmt)
 	shdepLockAndCheckObject(DatabaseRelationId, datid);
 
 	if (!pg_database_ownercheck(datid, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+		aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 					   stmt->dbname);
 
 	AlterSetting(datid, InvalidOid, stmt->setstmt);
@@ -1672,7 +1489,7 @@ AlterDatabaseSet(AlterDatabaseSetStmt *stmt)
 /*
  * ALTER DATABASE name OWNER TO newowner
  */
-ObjectAddress
+Oid
 AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 {
 	Oid			db_id;
@@ -1681,18 +1498,17 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 	ScanKeyData scankey;
 	SysScanDesc scan;
 	Form_pg_database datForm;
-	ObjectAddress address;
 
 	/*
 	 * Get the old tuple.  We don't need a lock on the database per se,
 	 * because we're not going to do anything that would mess up incoming
 	 * connections.
 	 */
-	rel = table_open(DatabaseRelationId, RowExclusiveLock);
+	rel = heap_open(DatabaseRelationId, RowExclusiveLock);
 	ScanKeyInit(&scankey,
 				Anum_pg_database_datname,
 				BTEqualStrategyNumber, F_NAMEEQ,
-				CStringGetDatum(dbname));
+				NameGetDatum(dbname));
 	scan = systable_beginscan(rel, DatabaseNameIndexId, true,
 							  NULL, 1, &scankey);
 	tuple = systable_getnext(scan);
@@ -1701,8 +1517,8 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 				(errcode(ERRCODE_UNDEFINED_DATABASE),
 				 errmsg("database \"%s\" does not exist", dbname)));
 
+	db_id = HeapTupleGetOid(tuple);
 	datForm = (Form_pg_database) GETSTRUCT(tuple);
-	db_id = datForm->oid;
 
 	/*
 	 * If the new owner is the same as the existing owner, consider the
@@ -1720,8 +1536,8 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		HeapTuple	newtuple;
 
 		/* Otherwise, must be owner of the existing object */
-		if (!pg_database_ownercheck(db_id, GetUserId()))
-			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
+		if (!pg_database_ownercheck(HeapTupleGetOid(tuple), GetUserId()))
+			aclcheck_error(ACLCHECK_NOT_OWNER, ACL_KIND_DATABASE,
 						   dbname);
 
 		/* Must be able to become new owner */
@@ -1739,7 +1555,7 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		if (!have_createdb_privilege())
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("permission denied to change owner of database")));
+				   errmsg("permission denied to change owner of database")));
 
 		memset(repl_null, false, sizeof(repl_null));
 		memset(repl_repl, false, sizeof(repl_repl));
@@ -1764,24 +1580,24 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		}
 
 		newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel), repl_val, repl_null, repl_repl);
-		CatalogTupleUpdate(rel, &newtuple->t_self, newtuple);
+		simple_heap_update(rel, &newtuple->t_self, newtuple);
+		CatalogUpdateIndexes(rel, newtuple);
 
 		heap_freetuple(newtuple);
 
 		/* Update owner dependency reference */
-		changeDependencyOnOwner(DatabaseRelationId, db_id, newOwnerId);
+		changeDependencyOnOwner(DatabaseRelationId, HeapTupleGetOid(tuple),
+								newOwnerId);
 	}
 
-	InvokeObjectPostAlterHook(DatabaseRelationId, db_id, 0);
-
-	ObjectAddressSet(address, DatabaseRelationId, db_id);
+	InvokeObjectPostAlterHook(DatabaseRelationId, HeapTupleGetOid(tuple), 0);
 
 	systable_endscan(scan);
 
 	/* Close pg_database, but keep lock till commit */
-	table_close(rel, NoLock);
+	heap_close(rel, NoLock);
 
-	return address;
+	return db_id;
 }
 
 
@@ -1792,8 +1608,8 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 /*
  * Look up info about the database named "name".  If the database exists,
  * obtain the specified lock type on it, fill in any of the remaining
- * parameters that aren't NULL, and return true.  If no such database,
- * return false.
+ * parameters that aren't NULL, and return TRUE.  If no such database,
+ * return FALSE.
  */
 static bool
 get_db_info(const char *name, LOCKMODE lockmode,
@@ -1809,7 +1625,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 	AssertArg(name);
 
 	/* Caller may wish to grab a better lock on pg_database beforehand... */
-	relation = table_open(DatabaseRelationId, AccessShareLock);
+	relation = heap_open(DatabaseRelationId, AccessShareLock);
 
 	/*
 	 * Loop covers the rare case where the database is renamed before we can
@@ -1830,7 +1646,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 		ScanKeyInit(&scanKey,
 					Anum_pg_database_datname,
 					BTEqualStrategyNumber, F_NAMEEQ,
-					CStringGetDatum(name));
+					NameGetDatum(name));
 
 		scan = systable_beginscan(relation, DatabaseNameIndexId, true,
 								  NULL, 1, &scanKey);
@@ -1844,7 +1660,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 			break;
 		}
 
-		dbOid = ((Form_pg_database) GETSTRUCT(tuple))->oid;
+		dbOid = HeapTupleGetOid(tuple);
 
 		systable_endscan(scan);
 
@@ -1887,7 +1703,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 				/* limit of frozen XIDs */
 				if (dbFrozenXidP)
 					*dbFrozenXidP = dbform->datfrozenxid;
-				/* minimum MultiXactId */
+				/* minimum MultixactId */
 				if (dbMinMultiP)
 					*dbMinMultiP = dbform->datminmxid;
 				/* default tablespace for this database */
@@ -1910,7 +1726,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 			UnlockSharedObject(DatabaseRelationId, dbOid, 0, lockmode);
 	}
 
-	table_close(relation, AccessShareLock);
+	heap_close(relation, AccessShareLock);
 
 	return result;
 }
@@ -1945,20 +1761,14 @@ static void
 remove_dbtablespaces(Oid db_id)
 {
 	Relation	rel;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	HeapTuple	tuple;
-	List	   *ltblspc = NIL;
-	ListCell   *cell;
-	int			ntblspc;
-	int			i;
-	Oid		   *tablespace_ids;
 
-	rel = table_open(TableSpaceRelationId, AccessShareLock);
-	scan = table_beginscan_catalog(rel, 0, NULL);
+	rel = heap_open(TableSpaceRelationId, AccessShareLock);
+	scan = heap_beginscan_catalog(rel, 0, NULL);
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		Form_pg_tablespace spcform = (Form_pg_tablespace) GETSTRUCT(tuple);
-		Oid			dsttablespace = spcform->oid;
+		Oid			dsttablespace = HeapTupleGetOid(tuple);
 		char	   *dstpath;
 		struct stat st;
 
@@ -1980,48 +1790,32 @@ remove_dbtablespaces(Oid db_id)
 					(errmsg("some useless files may be left behind in old database directory \"%s\"",
 							dstpath)));
 
-		ltblspc = lappend_oid(ltblspc, dsttablespace);
+		/* Record the filesystem change in XLOG */
+		{
+			xl_dbase_drop_rec xlrec;
+			XLogRecData rdata[1];
+
+			xlrec.db_id = db_id;
+			xlrec.tablespace_id = dsttablespace;
+
+			rdata[0].data = (char *) &xlrec;
+			rdata[0].len = sizeof(xl_dbase_drop_rec);
+			rdata[0].buffer = InvalidBuffer;
+			rdata[0].next = NULL;
+
+			(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_DROP, rdata);
+		}
+
 		pfree(dstpath);
 	}
 
-	ntblspc = list_length(ltblspc);
-	if (ntblspc == 0)
-	{
-		table_endscan(scan);
-		table_close(rel, AccessShareLock);
-		return;
-	}
-
-	tablespace_ids = (Oid *) palloc(ntblspc * sizeof(Oid));
-	i = 0;
-	foreach(cell, ltblspc)
-		tablespace_ids[i++] = lfirst_oid(cell);
-
-	/* Record the filesystem change in XLOG */
-	{
-		xl_dbase_drop_rec xlrec;
-
-		xlrec.db_id = db_id;
-		xlrec.ntablespaces = ntblspc;
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, MinSizeOfDbaseDropRec);
-		XLogRegisterData((char *) tablespace_ids, ntblspc * sizeof(Oid));
-
-		(void) XLogInsert(RM_DBASE_ID,
-						  XLOG_DBASE_DROP | XLR_SPECIAL_REL_UPDATE);
-	}
-
-	list_free(ltblspc);
-	pfree(tablespace_ids);
-
-	table_endscan(scan);
-	table_close(rel, AccessShareLock);
+	heap_endscan(scan);
+	heap_close(rel, AccessShareLock);
 }
 
 /*
  * Check for existing files that conflict with a proposed new DB OID;
- * return true if there are any
+ * return TRUE if there are any
  *
  * If there were a subdirectory in any tablespace matching the proposed new
  * OID, we'd get a create failure due to the duplicate name ... and then we'd
@@ -2036,15 +1830,14 @@ check_db_file_conflict(Oid db_id)
 {
 	bool		result = false;
 	Relation	rel;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	HeapTuple	tuple;
 
-	rel = table_open(TableSpaceRelationId, AccessShareLock);
-	scan = table_beginscan_catalog(rel, 0, NULL);
+	rel = heap_open(TableSpaceRelationId, AccessShareLock);
+	scan = heap_beginscan_catalog(rel, 0, NULL);
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
-		Form_pg_tablespace spcform = (Form_pg_tablespace) GETSTRUCT(tuple);
-		Oid			dsttablespace = spcform->oid;
+		Oid			dsttablespace = HeapTupleGetOid(tuple);
 		char	   *dstpath;
 		struct stat st;
 
@@ -2065,8 +1858,8 @@ check_db_file_conflict(Oid db_id)
 		pfree(dstpath);
 	}
 
-	table_endscan(scan);
-	table_close(rel, AccessShareLock);
+	heap_endscan(scan);
+	heap_close(rel, AccessShareLock);
 
 	return result;
 }
@@ -2092,7 +1885,7 @@ errdetail_busy_db(int notherbackends, int npreparedxacts)
 						 notherbackends);
 	else
 		errdetail_plural("There is %d prepared transaction using the database.",
-						 "There are %d prepared transactions using the database.",
+					"There are %d prepared transactions using the database.",
 						 npreparedxacts,
 						 npreparedxacts);
 	return 0;					/* just to keep ereport macro happy */
@@ -2117,7 +1910,7 @@ get_database_oid(const char *dbname, bool missing_ok)
 	 * There's no syscache for pg_database indexed by name, so we must look
 	 * the hard way.
 	 */
-	pg_database = table_open(DatabaseRelationId, AccessShareLock);
+	pg_database = heap_open(DatabaseRelationId, AccessShareLock);
 	ScanKeyInit(&entry[0],
 				Anum_pg_database_datname,
 				BTEqualStrategyNumber, F_NAMEEQ,
@@ -2129,12 +1922,12 @@ get_database_oid(const char *dbname, bool missing_ok)
 
 	/* We assume that there can be at most one matching tuple */
 	if (HeapTupleIsValid(dbtuple))
-		oid = ((Form_pg_database) GETSTRUCT(dbtuple))->oid;
+		oid = HeapTupleGetOid(dbtuple);
 	else
 		oid = InvalidOid;
 
 	systable_endscan(scan);
-	table_close(pg_database, AccessShareLock);
+	heap_close(pg_database, AccessShareLock);
 
 	if (!OidIsValid(oid) && !missing_ok)
 		ereport(ERROR,
@@ -2173,12 +1966,12 @@ get_database_name(Oid dbid)
  * DATABASE resource manager's routines
  */
 void
-dbase_redo(XLogReaderState *record)
+dbase_redo(XLogRecPtr lsn, XLogRecord *record)
 {
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = record->xl_info & ~XLR_INFO_MASK;
 
 	/* Backup blocks are not used in dbase records */
-	Assert(!XLogRecHasAnyBlockRefs(record));
+	Assert(!(record->xl_info & XLR_BKP_BLOCK_MASK));
 
 	if (info == XLOG_DBASE_CREATE)
 	{
@@ -2221,7 +2014,8 @@ dbase_redo(XLogReaderState *record)
 	{
 		xl_dbase_drop_rec *xlrec = (xl_dbase_drop_rec *) XLogRecGetData(record);
 		char	   *dst_path;
-		int			i;
+
+		dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_id);
 
 		if (InHotStandby)
 		{
@@ -2230,38 +2024,25 @@ dbase_redo(XLogReaderState *record)
 			 * InitPostgres() cannot fully re-execute concurrently. This
 			 * avoids backends re-connecting automatically to same database,
 			 * which can happen in some cases.
-			 *
-			 * This will lock out walsenders trying to connect to db-specific
-			 * slots for logical decoding too, so it's safe for us to drop
-			 * slots.
 			 */
 			LockSharedObjectForSession(DatabaseRelationId, xlrec->db_id, 0, AccessExclusiveLock);
 			ResolveRecoveryConflictWithDatabase(xlrec->db_id);
 		}
 
-		/* Drop any database-specific replication slots */
-		ReplicationSlotsDropDBSlots(xlrec->db_id);
-
 		/* Drop pages for this database that are in the shared buffer cache */
 		DropDatabaseBuffers(xlrec->db_id);
 
 		/* Also, clean out any fsync requests that might be pending in md.c */
-		ForgetDatabaseSyncRequests(xlrec->db_id);
+		ForgetDatabaseFsyncRequests(xlrec->db_id);
 
 		/* Clean out the xlog relcache too */
 		XLogDropDatabase(xlrec->db_id);
 
-		for (i = 0; i < xlrec->ntablespaces; i++)
-		{
-			dst_path = GetDatabasePath(xlrec->db_id, xlrec->tablespace_ids[i]);
-
-			/* And remove the physical files */
-			if (!rmtree(dst_path, true))
-				ereport(WARNING,
-						(errmsg("some useless files may be left behind in old database directory \"%s\"",
-								dst_path)));
-			pfree(dst_path);
-		}
+		/* And remove the physical files */
+		if (!rmtree(dst_path, true))
+			ereport(WARNING,
+					(errmsg("some useless files may be left behind in old database directory \"%s\"",
+							dst_path)));
 
 		if (InHotStandby)
 		{

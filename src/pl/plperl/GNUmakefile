@@ -5,30 +5,34 @@ subdir = src/pl/plperl
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
+ifeq ($(perl_useshrplib),true)
+shared_libperl = yes
+endif
+ifeq ($(perl_useshrplib),yes)
+shared_libperl = yes
+endif
+
+# If we don't have a shared library, we have to skip it.
+ifeq ($(shared_libperl),yes)
+
 ifeq ($(PORTNAME), win32)
 override CPPFLAGS += -DPLPERL_HAVE_UID_GID
 # Perl on win32 contains /* within comment all over the header file,
 # so disable this warning.
-override CPPFLAGS += -Wno-comment
+override CFLAGS += -Wno-comment
 endif
 
-# Note: we need to include the perl_includespec directory last,
-# probably because it sometimes contains some header files with names
-# that clash with some of ours, or with some that we include, notably on
-# Windows.
-override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) $(perl_embed_ccflags) $(perl_includespec)
+override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) -I$(perl_archlibexp)/CORE
 
-# this is often, but not always, the same directory named by perl_includespec
 rpathdir = $(perl_archlibexp)/CORE
 
-PGFILEDESC = "PL/Perl - procedural language"
 
 NAME = plperl
 
-OBJS = plperl.o SPI.o Util.o $(WIN32RES)
+OBJS = plperl.o SPI.o Util.o
 
-DATA = plperl.control plperl--1.0.sql \
-       plperlu.control plperlu--1.0.sql
+DATA = plperl.control plperl--1.0.sql plperl--unpackaged--1.0.sql \
+       plperlu.control plperlu--1.0.sql plperlu--unpackaged--1.0.sql
 
 PERLCHUNKS = plc_perlboot.pl plc_trusted.pl
 
@@ -55,10 +59,8 @@ endif # win32
 
 SHLIB_LINK = $(perl_embed_ldflags)
 
-REGRESS_OPTS = --dbname=$(PL_TESTDB)
-REGRESS = plperl_setup plperl plperl_lc plperl_trigger plperl_shared \
-	plperl_elog plperl_util plperl_init plperlu plperl_array \
-	plperl_call plperl_transaction
+REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-extension=plperl  --load-extension=plperlu
+REGRESS = plperl plperl_lc plperl_trigger plperl_shared plperl_elog plperl_util plperl_init plperlu plperl_array
 # if Perl can support two interpreters in one backend,
 # test plperl-and-plperlu cases
 ifneq ($(PERL),)
@@ -66,6 +68,8 @@ ifeq ($(shell $(PERL) -V:usemultiplicity), usemultiplicity='define';)
 	REGRESS += plperl_plperlu
 endif
 endif
+# where to find psql for running the tests
+PSQLDIR = $(bindir)
 
 # where to find xsubpp for building XS.
 XSUBPPDIR = $(shell $(PERL) -e 'use List::Util qw(first); print first { -r "$$_/ExtUtils/xsubpp" } @INC')
@@ -84,35 +88,32 @@ perlchunks.h: $(PERLCHUNKS)
 
 all: all-lib
 
-%.c: %.xs
+SPI.c: SPI.xs plperl_helpers.h
 	@if [ x"$(perl_privlibexp)" = x"" ]; then echo "configure switch --with-perl was not specified."; exit 1; fi
-# xsubpp -output option is required for coverage+vpath, but requires Perl 5.9.3
-ifeq ($(enable_coverage)$(vpath_build),yesyes)
-	$(PERL) $(XSUBPPDIR)/ExtUtils/xsubpp -typemap $(perl_privlibexp)/ExtUtils/typemap -output $@ $<
-else
 	$(PERL) $(XSUBPPDIR)/ExtUtils/xsubpp -typemap $(perl_privlibexp)/ExtUtils/typemap $< >$@
-endif
+
+Util.c: Util.xs plperl_helpers.h
+	@if [ x"$(perl_privlibexp)" = x"" ]; then echo "configure switch --with-perl was not specified."; exit 1; fi
+	$(PERL) $(XSUBPPDIR)/ExtUtils/xsubpp -typemap $(perl_privlibexp)/ExtUtils/typemap $< >$@
 
 
 install: all install-lib install-data
 
 installdirs: installdirs-lib
-	$(MKDIR_P) '$(DESTDIR)$(datadir)/extension' '$(DESTDIR)$(includedir_server)'
+	$(MKDIR_P) '$(DESTDIR)$(datadir)/extension'
 
 uninstall: uninstall-lib uninstall-data
 
 install-data: installdirs
 	$(INSTALL_DATA) $(addprefix $(srcdir)/, $(DATA)) '$(DESTDIR)$(datadir)/extension/'
-	$(INSTALL_DATA) $(srcdir)/plperl.h $(srcdir)/ppport.h $(srcdir)/plperl_helpers.h '$(DESTDIR)$(includedir_server)'
 
 uninstall-data:
 	rm -f $(addprefix '$(DESTDIR)$(datadir)/extension'/, $(notdir $(DATA)))
-	rm -f $(addprefix '$(DESTDIR)$(includedir_server)'/, plperl.h ppport.h)
 
 .PHONY: install-data uninstall-data
 
 
-check: submake
+check: all submake
 	$(pg_regress_check) $(REGRESS_OPTS) $(REGRESS)
 
 installcheck: submake
@@ -128,3 +129,14 @@ clean distclean maintainer-clean: clean-lib
 ifeq ($(PORTNAME), win32)
 	rm -f $(perlwithver).def
 endif
+
+else # can't build
+
+all:
+	@echo ""; \
+	 echo "*** Cannot build PL/Perl because libperl is not a shared library."; \
+	 echo "*** You might have to rebuild your Perl installation.  Refer to"; \
+	 echo "*** the documentation for details."; \
+	 echo ""
+
+endif # can't build

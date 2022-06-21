@@ -3,7 +3,7 @@
  * username.c
  *	  get user name
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -18,8 +18,10 @@
 #include "postgres_fe.h"
 #endif
 
+#include <errno.h>
 #include <pwd.h>
 #include <unistd.h>
+#include <sys/types.h>
 
 #include "common/username.h"
 
@@ -42,7 +44,7 @@ get_user_name(char **errstr)
 	{
 		*errstr = psprintf(_("could not look up effective user ID %ld: %s"),
 						   (long) user_id,
-						   errno ? strerror(errno) : _("user does not exist"));
+						 errno ? strerror(errno) : _("user does not exist"));
 		return NULL;
 	}
 

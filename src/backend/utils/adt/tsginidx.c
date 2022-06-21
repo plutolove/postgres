@@ -3,7 +3,7 @@
  * tsginidx.c
  *	 GIN support functions for tsvector_ops
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -14,7 +14,7 @@
 #include "postgres.h"
 
 #include "access/gin.h"
-#include "access/stratnum.h"
+#include "access/skey.h"
 #include "miscadmin.h"
 #include "tsearch/ts_type.h"
 #include "tsearch/ts_utils.h"
@@ -175,40 +175,87 @@ typedef struct
 	QueryItem  *first_item;
 	GinTernaryValue *check;
 	int		   *map_item_operand;
+	bool	   *need_recheck;
 } GinChkVal;
 
-/*
- * TS_execute callback for matching a tsquery operand to GIN index data
- */
-static TSTernaryValue
-checkcondition_gin(void *checkval, QueryOperand *val, ExecPhraseData *data)
+static GinTernaryValue
+checkcondition_gin(void *checkval, QueryOperand *val)
 {
 	GinChkVal  *gcv = (GinChkVal *) checkval;
 	int			j;
-	GinTernaryValue result;
+
+	/* if any val requiring a weight is used, set recheck flag */
+	if (val->weight != 0)
+		*(gcv->need_recheck) = true;
 
 	/* convert item's number to corresponding entry's (operand's) number */
 	j = gcv->map_item_operand[((QueryItem *) val) - gcv->first_item];
 
-	/* determine presence of current entry in indexed value */
-	result = gcv->check[j];
+	/* return presence of current entry in indexed value */
+	return gcv->check[j];
+}
 
-	/*
-	 * If any val requiring a weight is used or caller needs position
-	 * information then we must recheck, so replace TRUE with MAYBE.
-	 */
-	if (result == GIN_TRUE)
+/*
+ * Evaluate tsquery boolean expression using ternary logic.
+ *
+ * chkcond is a callback function used to evaluate each VAL node in the query.
+ * checkval can be used to pass information to the callback. TS_execute doesn't
+ * do anything with it.
+ */
+static GinTernaryValue
+TS_execute_ternary(QueryItem *curitem, void *checkval,
+			  GinTernaryValue (*chkcond) (void *checkval, QueryOperand *val))
+{
+	GinTernaryValue val1,
+				val2,
+				result;
+
+	/* since this function recurses, it could be driven to stack overflow */
+	check_stack_depth();
+
+	if (curitem->type == QI_VAL)
+		return chkcond(checkval, (QueryOperand *) curitem);
+
+	switch (curitem->qoperator.oper)
 	{
-		if (val->weight != 0 || data != NULL)
-			result = GIN_MAYBE;
+		case OP_NOT:
+			result = TS_execute_ternary(curitem + 1, checkval, chkcond);
+			if (result == GIN_MAYBE)
+				return result;
+			return !result;
+
+		case OP_AND:
+			val1 = TS_execute_ternary(curitem + curitem->qoperator.left,
+									  checkval, chkcond);
+			if (val1 == GIN_FALSE)
+				return GIN_FALSE;
+			val2 = TS_execute_ternary(curitem + 1, checkval, chkcond);
+			if (val2 == GIN_FALSE)
+				return GIN_FALSE;
+			if (val1 == GIN_TRUE && val2 == GIN_TRUE)
+				return GIN_TRUE;
+			else
+				return GIN_MAYBE;
+
+		case OP_OR:
+			val1 = TS_execute_ternary(curitem + curitem->qoperator.left,
+									  checkval, chkcond);
+			if (val1 == GIN_TRUE)
+				return GIN_TRUE;
+			val2 = TS_execute_ternary(curitem + 1, checkval, chkcond);
+			if (val2 == GIN_TRUE)
+				return GIN_TRUE;
+			if (val1 == GIN_FALSE && val2 == GIN_FALSE)
+				return GIN_FALSE;
+			else
+				return GIN_MAYBE;
+
+		default:
+			elog(ERROR, "unrecognized operator: %d", curitem->qoperator.oper);
 	}
 
-	/*
-	 * We rely on GinTernaryValue and TSTernaryValue using equivalent value
-	 * assignments.  We could use a switch statement to map the values if that
-	 * ever stops being true, but it seems unlikely to happen.
-	 */
-	return (TSTernaryValue) result;
+	/* not reachable, but keep compiler quiet */
+	return false;
 }
 
 Datum
@@ -222,41 +269,29 @@ gin_tsquery_consistent(PG_FUNCTION_ARGS)
 	/* int32	nkeys = PG_GETARG_INT32(3); */
 	Pointer    *extra_data = (Pointer *) PG_GETARG_POINTER(4);
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(5);
-	bool		res = false;
+	bool		res = FALSE;
 
-	/* Initially assume query doesn't require recheck */
+	/* The query requires recheck only if it involves weights */
 	*recheck = false;
 
 	if (query->size > 0)
 	{
+		QueryItem  *item;
 		GinChkVal	gcv;
 
 		/*
 		 * check-parameter array has one entry for each value (operand) in the
 		 * query.
 		 */
-		gcv.first_item = GETQUERY(query);
-		StaticAssertStmt(sizeof(GinTernaryValue) == sizeof(bool),
-						 "sizes of GinTernaryValue and bool are not equal");
-		gcv.check = (GinTernaryValue *) check;
+		gcv.first_item = item = GETQUERY(query);
+		gcv.check = check;
 		gcv.map_item_operand = (int *) (extra_data[0]);
+		gcv.need_recheck = recheck;
 
-		switch (TS_execute_ternary(GETQUERY(query),
-								   &gcv,
-								   TS_EXEC_PHRASE_NO_POS,
-								   checkcondition_gin))
-		{
-			case TS_NO:
-				res = false;
-				break;
-			case TS_YES:
-				res = true;
-				break;
-			case TS_MAYBE:
-				res = true;
-				*recheck = true;
-				break;
-		}
+		res = TS_execute(GETQUERY(query),
+						 &gcv,
+						 true,
+						 checkcondition_gin);
 	}
 
 	PG_RETURN_BOOL(res);
@@ -273,23 +308,31 @@ gin_tsquery_triconsistent(PG_FUNCTION_ARGS)
 	/* int32	nkeys = PG_GETARG_INT32(3); */
 	Pointer    *extra_data = (Pointer *) PG_GETARG_POINTER(4);
 	GinTernaryValue res = GIN_FALSE;
+	bool		recheck;
+
+	/* The query requires recheck only if it involves weights */
+	recheck = false;
 
 	if (query->size > 0)
 	{
+		QueryItem  *item;
 		GinChkVal	gcv;
 
 		/*
 		 * check-parameter array has one entry for each value (operand) in the
 		 * query.
 		 */
-		gcv.first_item = GETQUERY(query);
+		gcv.first_item = item = GETQUERY(query);
 		gcv.check = check;
 		gcv.map_item_operand = (int *) (extra_data[0]);
+		gcv.need_recheck = &recheck;
 
 		res = TS_execute_ternary(GETQUERY(query),
 								 &gcv,
-								 TS_EXEC_PHRASE_NO_POS,
 								 checkcondition_gin);
+
+		if (res == GIN_TRUE && recheck)
+			res = GIN_MAYBE;
 	}
 
 	PG_RETURN_GIN_TERNARY_VALUE(res);
@@ -332,25 +375,5 @@ gin_tsquery_consistent_6args(PG_FUNCTION_ARGS)
 {
 	if (PG_NARGS() < 8)			/* should not happen */
 		elog(ERROR, "gin_tsquery_consistent requires eight arguments");
-	return gin_tsquery_consistent(fcinfo);
-}
-
-/*
- * Likewise, a stub version of gin_extract_tsquery declared with argument
- * types that are no longer considered appropriate.
- */
-Datum
-gin_extract_tsquery_oldsig(PG_FUNCTION_ARGS)
-{
-	return gin_extract_tsquery(fcinfo);
-}
-
-/*
- * Likewise, a stub version of gin_tsquery_consistent declared with argument
- * types that are no longer considered appropriate.
- */
-Datum
-gin_tsquery_consistent_oldsig(PG_FUNCTION_ARGS)
-{
 	return gin_tsquery_consistent(fcinfo);
 }

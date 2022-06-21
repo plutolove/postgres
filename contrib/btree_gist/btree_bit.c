@@ -5,7 +5,6 @@
 
 #include "btree_gist.h"
 #include "btree_utils_var.h"
-#include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/varbit.h"
 
@@ -24,7 +23,7 @@ PG_FUNCTION_INFO_V1(gbt_bit_same);
 /* define for comparison */
 
 static bool
-gbt_bitgt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bitgt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(bitgt,
 											PointerGetDatum(a),
@@ -32,7 +31,7 @@ gbt_bitgt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_bitge(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bitge(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(bitge,
 											PointerGetDatum(a),
@@ -40,7 +39,7 @@ gbt_bitge(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_biteq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_biteq(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(biteq,
 											PointerGetDatum(a),
@@ -48,7 +47,7 @@ gbt_biteq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_bitle(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bitle(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(bitle,
 											PointerGetDatum(a),
@@ -56,7 +55,7 @@ gbt_bitle(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_bitlt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bitlt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(bitlt,
 											PointerGetDatum(a),
@@ -64,7 +63,7 @@ gbt_bitlt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static int32
-gbt_bitcmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bitcmp(const void *a, const void *b, Oid collation)
 {
 	return DatumGetInt32(DirectFunctionCall2(byteacmp,
 											 PointerGetDatum(a),
@@ -92,7 +91,7 @@ gbt_bit_xfrm(bytea *leaf)
 
 
 static GBT_VARKEY *
-gbt_bit_l2n(GBT_VARKEY *leaf, FmgrInfo *flinfo)
+gbt_bit_l2n(GBT_VARKEY *leaf)
 {
 	GBT_VARKEY *out = leaf;
 	GBT_VARKEY_R r = gbt_var_key_readable(leaf);
@@ -100,7 +99,7 @@ gbt_bit_l2n(GBT_VARKEY *leaf, FmgrInfo *flinfo)
 
 	o = gbt_bit_xfrm(r.lower);
 	r.upper = r.lower = o;
-	out = gbt_var_key_copy(&r);
+	out = gbt_var_key_copy(&r, TRUE);
 	pfree(o);
 
 	return out;
@@ -111,7 +110,7 @@ static const gbtree_vinfo tinfo =
 {
 	gbt_t_bit,
 	0,
-	true,
+	TRUE,
 	gbt_bitgt,
 	gbt_bitge,
 	gbt_biteq,
@@ -152,13 +151,13 @@ gbt_bit_consistent(PG_FUNCTION_ARGS)
 
 	if (GIST_LEAF(entry))
 		retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-									true, &tinfo, fcinfo->flinfo);
+									TRUE, &tinfo);
 	else
 	{
 		bytea	   *q = gbt_bit_xfrm((bytea *) query);
 
 		retval = gbt_var_consistent(&r, q, strategy, PG_GET_COLLATION(),
-									false, &tinfo, fcinfo->flinfo);
+									FALSE, &tinfo);
 	}
 	PG_RETURN_BOOL(retval);
 }
@@ -172,7 +171,7 @@ gbt_bit_union(PG_FUNCTION_ARGS)
 	int32	   *size = (int *) PG_GETARG_POINTER(1);
 
 	PG_RETURN_POINTER(gbt_var_union(entryvec, size, PG_GET_COLLATION(),
-									&tinfo, fcinfo->flinfo));
+									&tinfo));
 }
 
 
@@ -183,7 +182,7 @@ gbt_bit_picksplit(PG_FUNCTION_ARGS)
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
 
 	gbt_var_picksplit(entryvec, v, PG_GET_COLLATION(),
-					  &tinfo, fcinfo->flinfo);
+					  &tinfo);
 	PG_RETURN_POINTER(v);
 }
 
@@ -194,7 +193,7 @@ gbt_bit_same(PG_FUNCTION_ARGS)
 	Datum		d2 = PG_GETARG_DATUM(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
+	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo);
 	PG_RETURN_POINTER(result);
 }
 
@@ -207,5 +206,5 @@ gbt_bit_penalty(PG_FUNCTION_ARGS)
 	float	   *result = (float *) PG_GETARG_POINTER(2);
 
 	PG_RETURN_POINTER(gbt_var_penalty(result, o, n, PG_GET_COLLATION(),
-									  &tinfo, fcinfo->flinfo));
+									  &tinfo));
 }

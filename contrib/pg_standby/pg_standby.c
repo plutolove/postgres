@@ -30,12 +30,9 @@
 #include <signal.h>
 #include <sys/time.h>
 
-#include "access/xlog_internal.h"
 #include "pg_getopt.h"
 
 const char *progname;
-
-int			WalSegSz = -1;
 
 /* Options and defaults */
 int			sleeptime = 5;		/* amount of time to sleep between file checks */
@@ -45,8 +42,8 @@ int			maxwaittime = 0;	/* how long are we prepared to wait for? */
 int			keepfiles = 0;		/* number of WAL files to keep, 0 keep all */
 int			maxretries = 3;		/* number of retries on restore command */
 bool		debug = false;		/* are we debugging? */
-bool		need_cleanup = false;	/* do we need to remove files from
-									 * archive? */
+bool		need_cleanup = false;		/* do we need to remove files from
+										 * archive? */
 
 #ifndef WIN32
 static volatile sig_atomic_t signaled = false;
@@ -57,10 +54,11 @@ char	   *triggerPath;		/* where to find the trigger file? */
 char	   *xlogFilePath;		/* where we are going to restore to */
 char	   *nextWALFileName;	/* the file we need to get from archive */
 char	   *restartWALFileName; /* the file from which we can restart restore */
-char		WALFilePath[MAXPGPATH * 2]; /* the file path including archive */
+char	   *priorWALFileName;	/* the file we need to get from archive */
+char		WALFilePath[MAXPGPATH];		/* the file path including archive */
 char		restoreCommand[MAXPGPATH];	/* run this to restore */
-char		exclusiveCleanupFileName[MAXFNAMELEN];	/* the file we need to get
-													 * from archive */
+char		exclusiveCleanupFileName[MAXPGPATH];		/* the file we need to
+														 * get from archive */
 
 /*
  * Two types of failover are supported (smart and fast failover).
@@ -92,16 +90,13 @@ int			restoreCommandType;
 
 #define XLOG_DATA			 0
 #define XLOG_HISTORY		 1
+#define XLOG_BACKUP_LABEL	 2
 int			nextWALFileType;
 
 #define SET_RESTORE_COMMAND(cmd, arg1, arg2) \
 	snprintf(restoreCommand, MAXPGPATH, cmd " \"%s\" \"%s\"", arg1, arg2)
 
 struct stat stat_buf;
-
-static bool SetWALFileNameForCleanup(void);
-static bool SetWALSegSize(void);
-
 
 /* =====================================================================
  *
@@ -113,10 +108,15 @@ static bool SetWALSegSize(void);
  *	accessible directory. If you want to make other assumptions,
  *	such as using a vendor-specific archive and access API, these
  *	routines are the ones you'll need to change. You're
- *	encouraged to submit any changes to pgsql-hackers@lists.postgresql.org
+ *	encouraged to submit any changes to pgsql-hackers@postgresql.org
  *	or personally to the current maintainer. Those changes may be
  *	folded in to later versions of this program.
  */
+
+#define XLOG_DATA_FNAME_LEN		24
+/* Reworked from access/xlog_internal.h */
+#define XLogFileName(fname, tli, log, seg)	\
+	snprintf(fname, XLOG_DATA_FNAME_LEN + 1, "%08X%08X%08X", tli, log, seg)
 
 /*
  *	Initialize allows customized commands into the warm standby program.
@@ -144,8 +144,10 @@ CustomizableInitialize(void)
 	switch (restoreCommandType)
 	{
 		case RESTORE_COMMAND_LINK:
+#if HAVE_WORKING_LINK
 			SET_RESTORE_COMMAND("ln -s -f", WALFilePath, xlogFilePath);
 			break;
+#endif
 		case RESTORE_COMMAND_COPY:
 		default:
 			SET_RESTORE_COMMAND("cp", WALFilePath, xlogFilePath);
@@ -172,43 +174,23 @@ CustomizableInitialize(void)
  *	  Is the requested file ready yet?
  */
 static bool
-CustomizableNextWALFileReady(void)
+CustomizableNextWALFileReady()
 {
 	if (stat(WALFilePath, &stat_buf) == 0)
 	{
 		/*
-		 * If we've not seen any WAL segments, we don't know the WAL segment
-		 * size, which we need. If it looks like a WAL segment, determine size
-		 * of segments for the cluster.
+		 * If it's a backup file, return immediately. If it's a regular file
+		 * return only if it's the right size already.
 		 */
-		if (WalSegSz == -1 && IsXLogFileName(nextWALFileName))
+		if (strlen(nextWALFileName) > 24 &&
+			strspn(nextWALFileName, "0123456789ABCDEF") == 24 &&
+		strcmp(nextWALFileName + strlen(nextWALFileName) - strlen(".backup"),
+			   ".backup") == 0)
 		{
-			if (SetWALSegSize())
-			{
-				/*
-				 * Successfully determined WAL segment size. Can compute
-				 * cleanup cutoff now.
-				 */
-				need_cleanup = SetWALFileNameForCleanup();
-				if (debug)
-				{
-					fprintf(stderr,
-							_("WAL segment size:     %d \n"), WalSegSz);
-					fprintf(stderr, "Keep archive history: ");
-
-					if (need_cleanup)
-						fprintf(stderr, "%s and later\n",
-								exclusiveCleanupFileName);
-					else
-						fprintf(stderr, "no cleanup required\n");
-				}
-			}
+			nextWALFileType = XLOG_BACKUP_LABEL;
+			return true;
 		}
-
-		/*
-		 * Return only if it's the right size already.
-		 */
-		if (WalSegSz > 0 && stat_buf.st_size == WalSegSz)
+		else if (stat_buf.st_size == XLOG_SEG_SIZE)
 		{
 #ifdef WIN32
 
@@ -228,7 +210,7 @@ CustomizableNextWALFileReady(void)
 		/*
 		 * If still too small, wait until it is the correct size
 		 */
-		if (WalSegSz > 0 && stat_buf.st_size > WalSegSz)
+		if (stat_buf.st_size > XLOG_SEG_SIZE)
 		{
 			if (debug)
 			{
@@ -241,6 +223,8 @@ CustomizableNextWALFileReady(void)
 
 	return false;
 }
+
+#define MaxSegmentsPerLogFile ( 0xFFFFFFFF / XLOG_SEG_SIZE )
 
 static void
 CustomizableCleanupPriorWALFiles(void)
@@ -277,13 +261,14 @@ CustomizableCleanupPriorWALFiles(void)
 				 * are not removed in the order they were originally written,
 				 * in case this worries you.
 				 */
-				if (IsXLogFileName(xlde->d_name) &&
-					strcmp(xlde->d_name + 8, exclusiveCleanupFileName + 8) < 0)
+				if (strlen(xlde->d_name) == XLOG_DATA_FNAME_LEN &&
+					strspn(xlde->d_name, "0123456789ABCDEF") == XLOG_DATA_FNAME_LEN &&
+				  strcmp(xlde->d_name + 8, exclusiveCleanupFileName + 8) < 0)
 				{
 #ifdef WIN32
-					snprintf(WALFilePath, sizeof(WALFilePath), "%s\\%s", archiveLocation, xlde->d_name);
+					snprintf(WALFilePath, MAXPGPATH, "%s\\%s", archiveLocation, xlde->d_name);
 #else
-					snprintf(WALFilePath, sizeof(WALFilePath), "%s/%s", archiveLocation, xlde->d_name);
+					snprintf(WALFilePath, MAXPGPATH, "%s/%s", archiveLocation, xlde->d_name);
 #endif
 
 					if (debug)
@@ -337,7 +322,6 @@ SetWALFileNameForCleanup(void)
 	uint32		log_diff = 0,
 				seg_diff = 0;
 	bool		cleanup = false;
-	int			max_segments_per_logfile = (0xFFFFFFFF / WalSegSz);
 
 	if (restartWALFileName)
 	{
@@ -359,12 +343,12 @@ SetWALFileNameForCleanup(void)
 		sscanf(nextWALFileName, "%08X%08X%08X", &tli, &log, &seg);
 		if (tli > 0 && seg > 0)
 		{
-			log_diff = keepfiles / max_segments_per_logfile;
-			seg_diff = keepfiles % max_segments_per_logfile;
+			log_diff = keepfiles / MaxSegmentsPerLogFile;
+			seg_diff = keepfiles % MaxSegmentsPerLogFile;
 			if (seg_diff > seg)
 			{
 				log_diff++;
-				seg = max_segments_per_logfile - (seg_diff - seg);
+				seg = MaxSegmentsPerLogFile - (seg_diff - seg);
 			}
 			else
 				seg -= seg_diff;
@@ -382,73 +366,9 @@ SetWALFileNameForCleanup(void)
 		}
 	}
 
-	XLogFileNameById(exclusiveCleanupFileName, tli, log, seg);
+	XLogFileName(exclusiveCleanupFileName, tli, log, seg);
 
 	return cleanup;
-}
-
-/*
- * Try to set the wal segment size from the WAL file specified by WALFilePath.
- *
- * Return true if size could be determined, false otherwise.
- */
-static bool
-SetWALSegSize(void)
-{
-	bool		ret_val = false;
-	int			fd;
-	PGAlignedXLogBlock buf;
-
-	Assert(WalSegSz == -1);
-
-	if ((fd = open(WALFilePath, O_RDWR, 0)) < 0)
-	{
-		fprintf(stderr, "%s: could not open WAL file \"%s\": %s\n",
-				progname, WALFilePath, strerror(errno));
-		return false;
-	}
-
-	errno = 0;
-	if (read(fd, buf.data, XLOG_BLCKSZ) == XLOG_BLCKSZ)
-	{
-		XLogLongPageHeader longhdr = (XLogLongPageHeader) buf.data;
-
-		WalSegSz = longhdr->xlp_seg_size;
-
-		if (IsValidWalSegSize(WalSegSz))
-		{
-			/* successfully retrieved WAL segment size */
-			ret_val = true;
-		}
-		else
-			fprintf(stderr,
-					"%s: WAL segment size must be a power of two between 1MB and 1GB, but the WAL file header specifies %d bytes\n",
-					progname, WalSegSz);
-	}
-	else
-	{
-		/*
-		 * Don't complain loudly, this is to be expected for segments being
-		 * created.
-		 */
-		if (errno != 0)
-		{
-			if (debug)
-				fprintf(stderr, "could not read file \"%s\": %s\n",
-						WALFilePath, strerror(errno));
-		}
-		else
-		{
-			if (debug)
-				fprintf(stderr, "not enough data in file \"%s\"\n",
-						WALFilePath);
-		}
-	}
-
-	fflush(stderr);
-
-	close(fd);
-	return ret_val;
 }
 
 /*
@@ -543,6 +463,7 @@ CheckForExternalTrigger(void)
 
 	fprintf(stderr, "WARNING: invalid content in \"%s\"\n", triggerPath);
 	fflush(stderr);
+	return;
 }
 
 /*
@@ -606,12 +527,11 @@ usage(void)
 	printf("  -w MAXWAITTIME     max seconds to wait for a file (0=no limit) (default=0)\n");
 	printf("  -?, --help         show this help, then exit\n");
 	printf("\n"
-		   "Main intended use as restore_command in postgresql.conf:\n"
+		   "Main intended use as restore_command in recovery.conf:\n"
 		   "  restore_command = 'pg_standby [OPTION]... ARCHIVELOCATION %%f %%p %%r'\n"
 		   "e.g.\n"
-		   "  restore_command = 'pg_standby /mnt/server/archiverdir %%f %%p %%r'\n");
-	printf("\nReport bugs to <%s>.\n", PACKAGE_BUGREPORT);
-	printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
+	"  restore_command = 'pg_standby /mnt/server/archiverdir %%f %%p %%r'\n");
+	printf("\nReport bugs to <pgsql-bugs@postgresql.org>.\n");
 }
 
 #ifndef WIN32
@@ -669,7 +589,7 @@ main(int argc, char **argv)
 	 * There's no way to trigger failover via signal on Windows.
 	 */
 	(void) pqsignal(SIGUSR1, sighandler);
-	(void) pqsignal(SIGINT, sighandler);	/* deprecated, use SIGUSR1 */
+	(void) pqsignal(SIGINT, sighandler);		/* deprecated, use SIGUSR1 */
 	(void) pqsignal(SIGQUIT, sigquit_handler);
 #endif
 
@@ -719,7 +639,7 @@ main(int argc, char **argv)
 				}
 				break;
 			case 't':			/* Trigger file */
-				triggerPath = pg_strdup(optarg);
+				triggerPath = strdup(optarg);
 				break;
 			case 'w':			/* Max wait time */
 				maxwaittime = atoi(optarg);
@@ -795,6 +715,8 @@ main(int argc, char **argv)
 
 	CustomizableInitialize();
 
+	need_cleanup = SetWALFileNameForCleanup();
+
 	if (debug)
 	{
 		fprintf(stderr, "Trigger file:         %s\n", triggerPath ? triggerPath : "<not set>");
@@ -806,6 +728,11 @@ main(int argc, char **argv)
 		fprintf(stderr, "Max wait interval:    %d %s\n",
 				maxwaittime, (maxwaittime > 0 ? "seconds" : "forever"));
 		fprintf(stderr, "Command for restore:  %s\n", restoreCommand);
+		fprintf(stderr, "Keep archive history: ");
+		if (need_cleanup)
+			fprintf(stderr, "%s and later\n", exclusiveCleanupFileName);
+		else
+			fprintf(stderr, "no cleanup required\n");
 		fflush(stderr);
 	}
 
@@ -813,7 +740,10 @@ main(int argc, char **argv)
 	 * Check for initial history file: always the first file to be requested
 	 * It's OK if the file isn't there - all other files need to wait
 	 */
-	if (IsTLHistoryFileName(nextWALFileName))
+	if (strlen(nextWALFileName) > 8 &&
+		strspn(nextWALFileName, "0123456789ABCDEF") == 8 &&
+		strcmp(nextWALFileName + strlen(nextWALFileName) - strlen(".history"),
+			   ".history") == 0)
 	{
 		nextWALFileType = XLOG_HISTORY;
 		if (RestoreWALFileForRecovery())
@@ -859,7 +789,7 @@ main(int argc, char **argv)
 		{
 			/*
 			 * Once we have restored this file successfully we can remove some
-			 * prior WAL files. If this restore fails we mustn't remove any
+			 * prior WAL files. If this restore fails we musn't remove any
 			 * file because some of them will be requested again immediately
 			 * after the failed restore, or when we restart recovery.
 			 */

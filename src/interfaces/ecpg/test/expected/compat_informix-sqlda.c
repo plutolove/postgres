@@ -43,7 +43,7 @@ typedef struct sqlda_struct sqlda_t;
 
 #endif
 
-#endif							/* ECPG_SQLDA_H */
+#endif   /* ECPG_SQLDA_H */
 
 #line 7 "sqlda.pgc"
 
@@ -105,7 +105,7 @@ typedef struct sqlda_struct sqlda_t;
 #define SQLSERIAL8	ECPGt_long
 #endif
 
-#endif							/* ndef ECPG_SQLTYPES_H */
+#endif   /* ndef ECPG_SQLTYPES_H */
 
 #line 8 "sqlda.pgc"
 
@@ -142,7 +142,7 @@ dump_sqlda(sqlda_t *sqlda)
 			printf("name sqlda descriptor: '%s' value %d\n", sqlda->sqlvar[i].sqlname, *(int *)sqlda->sqlvar[i].sqldata);
 			break;
 		case SQLFLOAT:
-			printf("name sqlda descriptor: '%s' value %f\n", sqlda->sqlvar[i].sqlname, *(double *)sqlda->sqlvar[i].sqldata);
+			printf("name sqlda descriptor: '%s' value %lf\n", sqlda->sqlvar[i].sqlname, *(double *)sqlda->sqlvar[i].sqldata);
 			break;
 		case SQLDECIMAL:
 			{
@@ -184,7 +184,7 @@ main (void)
 	ECPGdebug(1, stderr);
 
 	strcpy(msg, "connect");
-	{ ECPGconnect(__LINE__, 1, "ecpg1_regression" , NULL, NULL , "regress1", 0); 
+	{ ECPGconnect(__LINE__, 1, "regress1" , NULL, NULL , "regress1", 0); 
 #line 68 "sqlda.pgc"
 
 if (sqlca.sqlcode < 0) exit (1);}
@@ -236,7 +236,7 @@ if (sqlca.sqlcode < 0) exit (1);}
 
 
 	strcpy(msg, "declare");
-	/* declare mycur1 cursor for $1 */
+	ECPG_informix_reset_sqlca(); /* declare mycur1 cursor for $1 */
 #line 98 "sqlda.pgc"
 
 
@@ -311,7 +311,7 @@ if (sqlca.sqlcode < 0) exit (1);}
 
 
 	strcpy(msg, "declare");
-	/* declare mycur2 cursor for $1 */
+	ECPG_informix_reset_sqlca(); /* declare mycur2 cursor for $1 */
 #line 135 "sqlda.pgc"
 
 
@@ -427,7 +427,7 @@ if (sqlca.sqlcode < 0) exit (1);}
 	 * on a named connection
 	 */
 
-	{ ECPGconnect(__LINE__, 1, "ecpg1_regression" , NULL, NULL , "con2", 0); 
+	{ ECPGconnect(__LINE__, 1, "regress1" , NULL, NULL , "con2", 0); 
 #line 199 "sqlda.pgc"
 
 if (sqlca.sqlcode < 0) exit (1);}
@@ -526,5 +526,5 @@ if (sqlca.sqlcode < 0) exit (1);}
 #line 247 "sqlda.pgc"
 
 
-	return 0;
+	return (0);
 }

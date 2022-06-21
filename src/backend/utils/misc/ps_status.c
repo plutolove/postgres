@@ -7,7 +7,7 @@
  *
  * src/backend/utils/misc/ps_status.c
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  * various details abducted from various places
  *--------------------------------------------------------------------
  */
@@ -28,8 +28,6 @@
 
 #include "libpq/libpq.h"
 #include "miscadmin.h"
-#include "pgstat.h"
-#include "utils/guc.h"
 #include "utils/ps_status.h"
 
 extern char **environ;
@@ -39,9 +37,6 @@ bool		update_process_title = true;
 /*
  * Alternative ways of updating ps display:
  *
- * PS_USE_SETPROCTITLE_FAST
- *	   use the function setproctitle_fast(const char *, ...)
- *	   (newer FreeBSD systems)
  * PS_USE_SETPROCTITLE
  *	   use the function setproctitle(const char *, ...)
  *	   (newer BSD systems)
@@ -63,9 +58,7 @@ bool		update_process_title = true;
  *	   don't update ps display
  *	   (This is the default, as it is safest.)
  */
-#if defined(HAVE_SETPROCTITLE_FAST)
-#define PS_USE_SETPROCTITLE_FAST
-#elif defined(HAVE_SETPROCTITLE)
+#if defined(HAVE_SETPROCTITLE)
 #define PS_USE_SETPROCTITLE
 #elif defined(HAVE_PSTAT) && defined(PSTAT_SETCMD)
 #define PS_USE_PSTAT
@@ -73,7 +66,7 @@ bool		update_process_title = true;
 #define PS_USE_PS_STRINGS
 #elif (defined(BSD) || defined(__hurd__)) && !defined(__darwin__)
 #define PS_USE_CHANGE_ARGV
-#elif defined(__linux__) || defined(_AIX) || defined(__sgi) || (defined(sun) && !defined(BSD)) || defined(__svr5__) || defined(__darwin__)
+#elif defined(__linux__) || defined(_AIX) || defined(__sgi) || (defined(sun) && !defined(BSD)) || defined(ultrix) || defined(__ksr__) || defined(__osf__) || defined(__svr5__) || defined(__darwin__)
 #define PS_USE_CLOBBER_ARGV
 #elif defined(WIN32)
 #define PS_USE_WIN32
@@ -90,8 +83,6 @@ bool		update_process_title = true;
 #endif
 
 
-#ifndef PS_USE_NONE
-
 #ifndef PS_USE_CLOBBER_ARGV
 /* all but one option need a buffer to write their ps line in */
 #define PS_BUFFER_SIZE 256
@@ -101,13 +92,11 @@ static const size_t ps_buffer_size = PS_BUFFER_SIZE;
 static char *ps_buffer;			/* will point to argv area */
 static size_t ps_buffer_size;	/* space determined at run time */
 static size_t last_status_len;	/* use to minimize length of clobber */
-#endif							/* PS_USE_CLOBBER_ARGV */
+#endif   /* PS_USE_CLOBBER_ARGV */
 
 static size_t ps_buffer_cur_len;	/* nominal strlen(ps_buffer) */
 
-static size_t ps_buffer_fixed_size; /* size of the constant prefix */
-
-#endif							/* not PS_USE_NONE */
+static size_t ps_buffer_fixed_size;		/* size of the constant prefix */
 
 /* save the original argv[] location here */
 static int	save_argc;
@@ -123,9 +112,6 @@ static char **save_argv;
  * overwritten during init_ps_display.  Also, the physical location of the
  * environment strings may be moved, so this should be called before any code
  * that might try to hang onto a getenv() result.)
- *
- * Note that in case of failure this cannot call elog() as that is not
- * initialized yet.  We rely on write_stderr() instead.
  */
 char	  **
 save_ps_display_args(int argc, char **argv)
@@ -176,24 +162,12 @@ save_ps_display_args(int argc, char **argv)
 		 * move the environment out of the way
 		 */
 		new_environ = (char **) malloc((i + 1) * sizeof(char *));
-		if (!new_environ)
-		{
-			write_stderr("out of memory\n");
-			exit(1);
-		}
 		for (i = 0; environ[i] != NULL; i++)
-		{
 			new_environ[i] = strdup(environ[i]);
-			if (!new_environ[i])
-			{
-				write_stderr("out of memory\n");
-				exit(1);
-			}
-		}
 		new_environ[i] = NULL;
 		environ = new_environ;
 	}
-#endif							/* PS_USE_CLOBBER_ARGV */
+#endif   /* PS_USE_CLOBBER_ARGV */
 
 #if defined(PS_USE_CHANGE_ARGV) || defined(PS_USE_CLOBBER_ARGV)
 
@@ -214,56 +188,37 @@ save_ps_display_args(int argc, char **argv)
 		int			i;
 
 		new_argv = (char **) malloc((argc + 1) * sizeof(char *));
-		if (!new_argv)
-		{
-			write_stderr("out of memory\n");
-			exit(1);
-		}
 		for (i = 0; i < argc; i++)
-		{
 			new_argv[i] = strdup(argv[i]);
-			if (!new_argv[i])
-			{
-				write_stderr("out of memory\n");
-				exit(1);
-			}
-		}
 		new_argv[argc] = NULL;
 
 #if defined(__darwin__)
 
 		/*
-		 * macOS (and perhaps other NeXT-derived platforms?) has a static copy
-		 * of the argv pointer, which we may fix like so:
+		 * Darwin (and perhaps other NeXT-derived platforms?) has a static
+		 * copy of the argv pointer, which we may fix like so:
 		 */
 		*_NSGetArgv() = new_argv;
 #endif
 
 		argv = new_argv;
 	}
-#endif							/* PS_USE_CHANGE_ARGV or PS_USE_CLOBBER_ARGV */
+#endif   /* PS_USE_CHANGE_ARGV or PS_USE_CLOBBER_ARGV */
 
 	return argv;
 }
 
 /*
  * Call this once during subprocess startup to set the identification
- * values.
- *
- * If fixed_part is NULL, a default will be obtained from MyBackendType.
- *
- * At this point, the original argv[] array may be overwritten.
+ * values.  At this point, the original argv[] array may be overwritten.
  */
 void
-init_ps_display(const char *fixed_part)
+init_ps_display(const char *username, const char *dbname,
+				const char *host_info, const char *initial_str)
 {
-#ifndef PS_USE_NONE
-	bool		save_update_process_title;
-#endif
-
-	Assert(fixed_part || MyBackendType);
-	if (!fixed_part)
-		fixed_part = GetBackendTypeDesc(MyBackendType);
+	Assert(username);
+	Assert(dbname);
+	Assert(host_info);
 
 #ifndef PS_USE_NONE
 	/* no ps display for stand-alone backend */
@@ -287,7 +242,7 @@ init_ps_display(const char *fixed_part)
 #ifdef PS_USE_CHANGE_ARGV
 	save_argv[0] = ps_buffer;
 	save_argv[1] = NULL;
-#endif							/* PS_USE_CHANGE_ARGV */
+#endif   /* PS_USE_CHANGE_ARGV */
 
 #ifdef PS_USE_CLOBBER_ARGV
 	{
@@ -297,46 +252,31 @@ init_ps_display(const char *fixed_part)
 		for (i = 1; i < save_argc; i++)
 			save_argv[i] = ps_buffer + ps_buffer_size;
 	}
-#endif							/* PS_USE_CLOBBER_ARGV */
+#endif   /* PS_USE_CLOBBER_ARGV */
 
 	/*
 	 * Make fixed prefix of ps display.
 	 */
 
-#if defined(PS_USE_SETPROCTITLE) || defined(PS_USE_SETPROCTITLE_FAST)
+#ifdef PS_USE_SETPROCTITLE
 
 	/*
 	 * apparently setproctitle() already adds a `progname:' prefix to the ps
 	 * line
 	 */
-#define PROGRAM_NAME_PREFIX ""
+	snprintf(ps_buffer, ps_buffer_size,
+			 "%s %s %s ",
+			 username, dbname, host_info);
 #else
-#define PROGRAM_NAME_PREFIX "postgres: "
+	snprintf(ps_buffer, ps_buffer_size,
+			 "postgres: %s %s %s ",
+			 username, dbname, host_info);
 #endif
-
-	if (*cluster_name == '\0')
-	{
-		snprintf(ps_buffer, ps_buffer_size,
-				 PROGRAM_NAME_PREFIX "%s ",
-				 fixed_part);
-	}
-	else
-	{
-		snprintf(ps_buffer, ps_buffer_size,
-				 PROGRAM_NAME_PREFIX "%s: %s ",
-				 cluster_name, fixed_part);
-	}
 
 	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
 
-	/*
-	 * On the first run, force the update.
-	 */
-	save_update_process_title = update_process_title;
-	update_process_title = true;
-	set_ps_display("");
-	update_process_title = save_update_process_title;
-#endif							/* not PS_USE_NONE */
+	set_ps_display(initial_str, true);
+#endif   /* not PS_USE_NONE */
 }
 
 
@@ -346,11 +286,11 @@ init_ps_display(const char *fixed_part)
  * indication of what you're currently doing passed in the argument.
  */
 void
-set_ps_display(const char *activity)
+set_ps_display(const char *activity, bool force)
 {
 #ifndef PS_USE_NONE
-	/* update_process_title=off disables updates */
-	if (!update_process_title)
+	/* update_process_title=off disables updates, unless force = true */
+	if (!force && !update_process_title)
 		return;
 
 	/* no ps display for stand-alone backend */
@@ -372,8 +312,6 @@ set_ps_display(const char *activity)
 
 #ifdef PS_USE_SETPROCTITLE
 	setproctitle("%s", ps_buffer);
-#elif defined(PS_USE_SETPROCTITLE_FAST)
-	setproctitle_fast("%s", ps_buffer);
 #endif
 
 #ifdef PS_USE_PSTAT
@@ -383,12 +321,12 @@ set_ps_display(const char *activity)
 		pst.pst_command = ps_buffer;
 		pstat(PSTAT_SETCMD, pst, ps_buffer_cur_len, 0, 0);
 	}
-#endif							/* PS_USE_PSTAT */
+#endif   /* PS_USE_PSTAT */
 
 #ifdef PS_USE_PS_STRINGS
 	PS_STRINGS->ps_nargvstr = 1;
 	PS_STRINGS->ps_argvstr = ps_buffer;
-#endif							/* PS_USE_PS_STRINGS */
+#endif   /* PS_USE_PS_STRINGS */
 
 #ifdef PS_USE_CLOBBER_ARGV
 	/* pad unused memory; need only clobber remainder of old status string */
@@ -396,7 +334,7 @@ set_ps_display(const char *activity)
 		MemSet(ps_buffer + ps_buffer_cur_len, PS_PADDING,
 			   last_status_len - ps_buffer_cur_len);
 	last_status_len = ps_buffer_cur_len;
-#endif							/* PS_USE_CLOBBER_ARGV */
+#endif   /* PS_USE_CLOBBER_ARGV */
 
 #ifdef PS_USE_WIN32
 	{
@@ -415,8 +353,8 @@ set_ps_display(const char *activity)
 
 		ident_handle = CreateEvent(NULL, TRUE, FALSE, name);
 	}
-#endif							/* PS_USE_WIN32 */
-#endif							/* not PS_USE_NONE */
+#endif   /* PS_USE_WIN32 */
+#endif   /* not PS_USE_NONE */
 }
 
 
@@ -438,11 +376,7 @@ get_ps_display(int *displen)
 	}
 #endif
 
-#ifndef PS_USE_NONE
 	*displen = (int) (ps_buffer_cur_len - ps_buffer_fixed_size);
 
 	return ps_buffer + ps_buffer_fixed_size;
-#else
-	return "";
-#endif
 }

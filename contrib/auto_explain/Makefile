@@ -1,10 +1,7 @@
 # contrib/auto_explain/Makefile
 
 MODULE_big = auto_explain
-OBJS = \
-	$(WIN32RES) \
-	auto_explain.o
-PGFILEDESC = "auto_explain - logging facility for execution plans"
+OBJS = auto_explain.o
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

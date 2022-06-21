@@ -2,7 +2,7 @@
  * gin.h
  *	  Public header file for Generalized Inverted Index access method.
  *
- *	Copyright (c) 2006-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2006-2014, PostgreSQL Global Development Group
  *
  *	src/include/access/gin.h
  *--------------------------------------------------------------------------
@@ -10,8 +10,7 @@
 #ifndef GIN_H
 #define GIN_H
 
-#include "access/xlogreader.h"
-#include "lib/stringinfo.h"
+#include "access/xlog.h"
 #include "storage/block.h"
 #include "utils/relcache.h"
 
@@ -25,8 +24,7 @@
 #define GIN_CONSISTENT_PROC			   4
 #define GIN_COMPARE_PARTIAL_PROC	   5
 #define GIN_TRICONSISTENT_PROC		   6
-#define GIN_OPTIONS_PROC	   7
-#define GINNProcs					   7
+#define GINNProcs					   6
 
 /*
  * searchMode settings for extractQueryFn.
@@ -34,7 +32,7 @@
 #define GIN_SEARCH_MODE_DEFAULT			0
 #define GIN_SEARCH_MODE_INCLUDE_EMPTY	1
 #define GIN_SEARCH_MODE_ALL				2
-#define GIN_SEARCH_MODE_EVERYTHING		3	/* for internal use only */
+#define GIN_SEARCH_MODE_EVERYTHING		3		/* for internal use only */
 
 /*
  * GinStatsData represents stats data for planner use
@@ -52,8 +50,8 @@ typedef struct GinStatsData
 /*
  * A ternary value used by tri-consistent functions.
  *
- * This must be of the same size as a bool because some code will cast a
- * pointer to a bool to a pointer to a GinTernaryValue.
+ * For convenience, this is compatible with booleans. A boolean can be
+ * safely cast to a GinTernaryValue.
  */
 typedef char GinTernaryValue;
 
@@ -66,13 +64,17 @@ typedef char GinTernaryValue;
 #define GinTernaryValueGetDatum(X) ((Datum)(X))
 #define PG_RETURN_GIN_TERNARY_VALUE(x) return GinTernaryValueGetDatum(x)
 
-/* GUC parameters */
+/* GUC parameter */
 extern PGDLLIMPORT int GinFuzzySearchLimit;
-extern int	gin_pending_list_limit;
 
 /* ginutil.c */
 extern void ginGetStats(Relation index, GinStatsData *stats);
-extern void ginUpdateStats(Relation index, const GinStatsData *stats,
-						   bool is_build);
+extern void ginUpdateStats(Relation index, const GinStatsData *stats);
 
-#endif							/* GIN_H */
+/* ginxlog.c */
+extern void gin_redo(XLogRecPtr lsn, XLogRecord *record);
+extern void gin_desc(StringInfo buf, uint8 xl_info, char *rec);
+extern void gin_xlog_startup(void);
+extern void gin_xlog_cleanup(void);
+
+#endif   /* GIN_H */

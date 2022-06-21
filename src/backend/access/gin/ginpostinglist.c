@@ -4,7 +4,7 @@
  *	  routines for dealing with posting lists.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -23,32 +23,25 @@
 /*
  * For encoding purposes, item pointers are represented as 64-bit unsigned
  * integers. The lowest 11 bits represent the offset number, and the next
- * lowest 32 bits are the block number. That leaves 21 bits unused, i.e.
+ * lowest 32 bits are the block number. That leaves 17 bits unused, ie.
  * only 43 low bits are used.
- *
- * 11 bits is enough for the offset number, because MaxHeapTuplesPerPage <
- * 2^11 on all supported block sizes. We are frugal with the bits, because
- * smaller integers use fewer bytes in the varbyte encoding, saving disk
- * space. (If we get a new table AM in the future that wants to use the full
- * range of possible offset numbers, we'll need to change this.)
  *
  * These 43-bit integers are encoded using varbyte encoding. In each byte,
  * the 7 low bits contain data, while the highest bit is a continuation bit.
  * When the continuation bit is set, the next byte is part of the same
- * integer, otherwise this is the last byte of this integer. 43 bits need
- * at most 7 bytes in this encoding:
+ * integer, otherwise this is the last byte of this integer.  43 bits fit
+ * conveniently in at most 6 bytes when varbyte encoded (the 6th byte does
+ * not need a continuation bit, because we know the max size to be 43 bits):
  *
  * 0XXXXXXX
  * 1XXXXXXX 0XXXXYYY
  * 1XXXXXXX 1XXXXYYY 0YYYYYYY
  * 1XXXXXXX 1XXXXYYY 1YYYYYYY 0YYYYYYY
  * 1XXXXXXX 1XXXXYYY 1YYYYYYY 1YYYYYYY 0YYYYYYY
- * 1XXXXXXX 1XXXXYYY 1YYYYYYY 1YYYYYYY 1YYYYYYY 0YYYYYYY
- * 1XXXXXXX 1XXXXYYY 1YYYYYYY 1YYYYYYY 1YYYYYYY 1YYYYYYY 0uuuuuuY
+ * 1XXXXXXX 1XXXXYYY 1YYYYYYY 1YYYYYYY 1YYYYYYY YYYYYYYY
  *
  * X = bits used for offset number
  * Y = bits used for block number
- * u = unused bit
  *
  * The bytes are in stored in little-endian order.
  *
@@ -58,16 +51,16 @@
  * Removing number is actually replacement of two numbers with their sum. We
  * have to prove that varbyte encoding of a sum can't be longer than varbyte
  * encoding of its summands. Sum of two numbers is at most one bit wider than
- * the larger of the summands. Widening a number by one bit enlarges its length
- * in varbyte encoding by at most one byte. Therefore, varbyte encoding of sum
- * is at most one byte longer than varbyte encoding of larger summand. Lesser
- * summand is at least one byte, so the sum cannot take more space than the
- * summands, Q.E.D.
+ * than the larger of the summands. Widening a number by one bit enlarges its
+ * length in varbyte encoding by at most one byte. Therefore, varbyte encoding
+ * of sum is at most one byte longer than varbyte encoding of larger summand.
+ * Lesser summand is at least one byte, so the sum cannot take more space than
+ * the summands, Q.E.D.
  *
  * This property greatly simplifies VACUUM, which can assume that posting
  * lists always fit on the same page after vacuuming. Note that even though
  * that holds for removing items from a posting list, you must also be
- * careful to not cause expansion e.g. when merging uncompressed items on the
+ * careful to not cause expansion e.g when merging uncompressed items on the
  * page into the compressed lists, when vacuuming.
  */
 
@@ -80,20 +73,19 @@
  */
 #define MaxHeapTuplesPerPageBits		11
 
-/* Max. number of bytes needed to encode the largest supported integer. */
-#define MaxBytesPerInteger				7
-
 static inline uint64
 itemptr_to_uint64(const ItemPointer iptr)
 {
 	uint64		val;
 
 	Assert(ItemPointerIsValid(iptr));
-	Assert(GinItemPointerGetOffsetNumber(iptr) < (1 << MaxHeapTuplesPerPageBits));
+	Assert(iptr->ip_posid < (1 << MaxHeapTuplesPerPageBits));
 
-	val = GinItemPointerGetBlockNumber(iptr);
+	val = iptr->ip_blkid.bi_hi;
+	val <<= 16;
+	val |= iptr->ip_blkid.bi_lo;
 	val <<= MaxHeapTuplesPerPageBits;
-	val |= GinItemPointerGetOffsetNumber(iptr);
+	val |= iptr->ip_posid;
 
 	return val;
 }
@@ -101,9 +93,11 @@ itemptr_to_uint64(const ItemPointer iptr)
 static inline void
 uint64_to_itemptr(uint64 val, ItemPointer iptr)
 {
-	GinItemPointerSetOffsetNumber(iptr, val & ((1 << MaxHeapTuplesPerPageBits) - 1));
+	iptr->ip_posid = val & ((1 << MaxHeapTuplesPerPageBits) - 1);
 	val = val >> MaxHeapTuplesPerPageBits;
-	GinItemPointerSetBlockNumber(iptr, val);
+	iptr->ip_blkid.bi_lo = val & 0xFFFF;
+	val = val >> 16;
+	iptr->ip_blkid.bi_hi = val & 0xFFFF;
 
 	Assert(ItemPointerIsValid(iptr));
 }
@@ -136,40 +130,33 @@ decode_varbyte(unsigned char **ptr)
 	unsigned char *p = *ptr;
 	uint64		c;
 
-	/* 1st byte */
 	c = *(p++);
 	val = c & 0x7F;
 	if (c & 0x80)
 	{
-		/* 2nd byte */
 		c = *(p++);
 		val |= (c & 0x7F) << 7;
 		if (c & 0x80)
 		{
-			/* 3rd byte */
 			c = *(p++);
 			val |= (c & 0x7F) << 14;
 			if (c & 0x80)
 			{
-				/* 4th byte */
 				c = *(p++);
 				val |= (c & 0x7F) << 21;
 				if (c & 0x80)
 				{
-					/* 5th byte */
 					c = *(p++);
 					val |= (c & 0x7F) << 28;
 					if (c & 0x80)
 					{
-						/* 6th byte */
 						c = *(p++);
 						val |= (c & 0x7F) << 35;
 						if (c & 0x80)
 						{
-							/* 7th byte, should not have continuation bit */
+							/* last byte, no continuation bit */
 							c = *(p++);
 							val |= c << 42;
-							Assert((c & 0x80) == 0);
 						}
 					}
 				}
@@ -225,15 +212,15 @@ ginCompressPostingList(const ItemPointer ipd, int nipd, int maxsize,
 
 		Assert(val > prev);
 
-		if (endptr - ptr >= MaxBytesPerInteger)
+		if (endptr - ptr >= 6)
 			encode_varbyte(delta, &ptr);
 		else
 		{
 			/*
-			 * There are less than 7 bytes left. Have to check if the next
+			 * There are less than 6 bytes left. Have to check if the next
 			 * item fits in that space before writing it out.
 			 */
-			unsigned char buf[MaxBytesPerInteger];
+			unsigned char buf[6];
 			unsigned char *p = buf;
 
 			encode_varbyte(delta, &p);
@@ -263,12 +250,15 @@ ginCompressPostingList(const ItemPointer ipd, int nipd, int maxsize,
 	 * Check that the encoded segment decodes back to the original items.
 	 */
 #if defined (CHECK_ENCODING_ROUNDTRIP)
+	if (assert_enabled)
 	{
 		int			ndecoded;
 		ItemPointer tmp = ginPostingListDecode(result, &ndecoded);
+		int			i;
 
 		Assert(ndecoded == totalpacked);
-		Assert(memcmp(tmp, ipd, ndecoded * sizeof(ItemPointerData)) == 0);
+		for (i = 0; i < ndecoded; i++)
+			Assert(memcmp(&tmp[i], &ipd[i], sizeof(ItemPointerData)) == 0);
 		pfree(tmp);
 	}
 #endif

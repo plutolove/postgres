@@ -9,7 +9,7 @@
  * proper FooMain() routine for the incarnation.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,14 @@
 
 #include <unistd.h>
 
+#if defined(__alpha) && defined(__osf__)		/* no __alpha__ ? */
+#include <sys/sysinfo.h>
+#include "machine/hal_sysinfo.h"
+#define ASSEMBLER
+#include <sys/proc.h>
+#undef ASSEMBLER
+#endif
+
 #if defined(__NetBSD__)
 #include <sys/param.h>
 #endif
@@ -33,9 +41,8 @@
 
 #include "bootstrap/bootstrap.h"
 #include "common/username.h"
-#include "port/atomics.h"
 #include "postmaster/postmaster.h"
-#include "storage/s_lock.h"
+#include "storage/barrier.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
@@ -61,14 +68,6 @@ main(int argc, char *argv[])
 {
 	bool		do_check_root = true;
 
-	/*
-	 * If supported on the current platform, set up a handler to be called if
-	 * the backend/postmaster crashes with a fatal signal or exception.
-	 */
-#if defined(WIN32) && defined(HAVE_MINIDUMP_TYPE)
-	pgwin32_install_crashdump_handler();
-#endif
-
 	progname = get_progname(argv[0]);
 
 	/*
@@ -90,6 +89,14 @@ main(int argc, char *argv[])
 	argv = save_ps_display_args(argc, argv);
 
 	/*
+	 * If supported on the current platform, set up a handler to be called if
+	 * the backend/postmaster crashes with a fatal signal or exception.
+	 */
+#if defined(WIN32) && defined(HAVE_MINIDUMP_TYPE)
+	pgwin32_install_crashdump_handler();
+#endif
+
+	/*
 	 * Fire up essential subsystems: error and memory management
 	 *
 	 * Code after this point is allowed to use elog/ereport, though
@@ -99,24 +106,42 @@ main(int argc, char *argv[])
 	MemoryContextInit();
 
 	/*
-	 * Set up locale information
+	 * Set up locale information from environment.  Note that LC_CTYPE and
+	 * LC_COLLATE will be overridden later from pg_control if we are in an
+	 * already-initialized database.  We set them here so that they will be
+	 * available to fill pg_control during initdb.  LC_MESSAGES will get set
+	 * later during GUC option processing, but we set it here to allow startup
+	 * error messages to be localized.
 	 */
+
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("postgres"));
 
-	/*
-	 * In the postmaster, absorb the environment values for LC_COLLATE and
-	 * LC_CTYPE.  Individual backends will change these later to settings
-	 * taken from pg_database, but the postmaster cannot do that.  If we leave
-	 * these set to "C" then message localization might not work well in the
-	 * postmaster.
-	 */
-	init_locale("LC_COLLATE", LC_COLLATE, "");
-	init_locale("LC_CTYPE", LC_CTYPE, "");
+#ifdef WIN32
 
 	/*
-	 * LC_MESSAGES will get set later during GUC option processing, but we set
-	 * it here to allow startup error messages to be localized.
+	 * Windows uses codepages rather than the environment, so we work around
+	 * that by querying the environment explicitly first for LC_COLLATE and
+	 * LC_CTYPE. We have to do this because initdb passes those values in the
+	 * environment. If there is nothing there we fall back on the codepage.
 	 */
+	{
+		char	   *env_locale;
+
+		if ((env_locale = getenv("LC_COLLATE")) != NULL)
+			init_locale("LC_COLLATE", LC_COLLATE, env_locale);
+		else
+			init_locale("LC_COLLATE", LC_COLLATE, "");
+
+		if ((env_locale = getenv("LC_CTYPE")) != NULL)
+			init_locale("LC_CTYPE", LC_CTYPE, env_locale);
+		else
+			init_locale("LC_CTYPE", LC_CTYPE, "");
+	}
+#else
+	init_locale("LC_COLLATE", LC_COLLATE, "");
+	init_locale("LC_CTYPE", LC_CTYPE, "");
+#endif
+
 #ifdef LC_MESSAGES
 	init_locale("LC_MESSAGES", LC_MESSAGES, "");
 #endif
@@ -136,8 +161,6 @@ main(int argc, char *argv[])
 	 */
 	unsetenv("LC_ALL");
 
-	check_strxfrm_bug();
-
 	/*
 	 * Catch standard options before doing much else, in particular before we
 	 * insist on not being root.
@@ -151,7 +174,7 @@ main(int argc, char *argv[])
 		}
 		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
 		{
-			fputs(PG_BACKEND_VERSIONSTR, stdout);
+			puts("postgres (PostgreSQL) " PG_VERSION);
 			exit(0);
 		}
 
@@ -161,7 +184,7 @@ main(int argc, char *argv[])
 		 * read-only activities.  The -C case is important because pg_ctl may
 		 * try to invoke it while still holding administrator privileges on
 		 * Windows.  Note that while -C can normally be in any argv position,
-		 * if you want to bypass the root check you must put it first.  This
+		 * if you wanna bypass the root check you gotta put it first.  This
 		 * reduces the risk that we might misinterpret some other mode's -C
 		 * switch as being the postmaster/postgres one.
 		 */
@@ -199,7 +222,7 @@ main(int argc, char *argv[])
 #endif
 
 	if (argc > 1 && strcmp(argv[1], "--boot") == 0)
-		AuxiliaryProcessMain(argc, argv);	/* does not return */
+		AuxiliaryProcessMain(argc, argv);		/* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)
 		GucInfoMain();			/* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--single") == 0)
@@ -207,7 +230,7 @@ main(int argc, char *argv[])
 					 NULL,		/* no dbname */
 					 strdup(get_user_name_or_exit(progname)));	/* does not return */
 	else
-		PostmasterMain(argc, argv); /* does not return */
+		PostmasterMain(argc, argv);		/* does not return */
 	abort();					/* should not get here */
 }
 
@@ -227,6 +250,27 @@ main(int argc, char *argv[])
 static void
 startup_hacks(const char *progname)
 {
+	/*
+	 * On some platforms, unaligned memory accesses result in a kernel trap;
+	 * the default kernel behavior is to emulate the memory access, but this
+	 * results in a significant performance penalty.  We want PG never to make
+	 * such unaligned memory accesses, so this code disables the kernel
+	 * emulation: unaligned accesses will result in SIGBUS instead.
+	 */
+#ifdef NOFIXADE
+
+#if defined(__alpha)			/* no __alpha__ ? */
+	{
+		int			buffer[] = {SSIN_UACPROC, UAC_SIGBUS | UAC_NOPRINT};
+
+		if (setsysinfo(SSI_NVPAIRS, buffer, 1, (caddr_t) NULL,
+					   (unsigned long) NULL) < 0)
+			write_stderr("%s: setsysinfo failed: %s\n",
+						 progname, strerror(errno));
+	}
+#endif   /* __alpha */
+#endif   /* NOFIXADE */
+
 	/*
 	 * Windows-specific execution environment hacking.
 	 */
@@ -252,23 +296,22 @@ startup_hacks(const char *progname)
 		SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 
 #if defined(_M_AMD64) && _MSC_VER == 1800
-
-		/*----------
-		 * Avoid crashing in certain floating-point operations if we were
-		 * compiled for x64 with MS Visual Studio 2013 and are running on
-		 * Windows prior to 7/2008R2 SP1 on an AVX2-capable CPU.
+		/*
+		 * Avoid crashing in certain floating-point operations if
+		 * we were compiled for x64 with MS Visual Studio 2013 and
+		 * are running on Windows prior to 7/2008R2 SP1 on an
+		 * AVX2-capable CPU.
 		 *
 		 * Ref: https://connect.microsoft.com/VisualStudio/feedback/details/811093/visual-studio-2013-rtm-c-x64-code-generation-bug-for-avx2-instructions
-		 *----------
 		 */
 		if (!IsWindows7SP1OrGreater())
 		{
 			_set_FMA3_enable(0);
 		}
-#endif							/* defined(_M_AMD64) && _MSC_VER == 1800 */
+#endif /* defined(_M_AMD64) && _MSC_VER == 1800 */
 
 	}
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 	/*
 	 * Initialize dummy_spinlock, in case we are on a platform where we have
@@ -310,6 +353,9 @@ help(const char *progname)
 	printf(_("%s is the PostgreSQL server.\n\n"), progname);
 	printf(_("Usage:\n  %s [OPTION]...\n\n"), progname);
 	printf(_("Options:\n"));
+#ifdef USE_ASSERT_CHECKING
+	printf(_("  -A 1|0             enable/disable run-time assert checking\n"));
+#endif
 	printf(_("  -B NBUFFERS        number of shared buffers\n"));
 	printf(_("  -c NAME=VALUE      set run-time parameter\n"));
 	printf(_("  -C NAME            print value of run-time parameter, then exit\n"));
@@ -357,10 +403,9 @@ help(const char *progname)
 	printf(_("  -x NUM             internal use\n"));
 
 	printf(_("\nPlease read the documentation for the complete list of run-time\n"
-			 "configuration settings and how to set them on the command line or in\n"
+	 "configuration settings and how to set them on the command line or in\n"
 			 "the configuration file.\n\n"
-			 "Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
-	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
+			 "Report bugs to <pgsql-bugs@postgresql.org>.\n"));
 }
 
 
@@ -373,8 +418,8 @@ check_root(const char *progname)
 	{
 		write_stderr("\"root\" execution of the PostgreSQL server is not permitted.\n"
 					 "The server must be started under an unprivileged user ID to prevent\n"
-					 "possible system security compromise.  See the documentation for\n"
-					 "more information on how to properly start the server.\n");
+		  "possible system security compromise.  See the documentation for\n"
+				  "more information on how to properly start the server.\n");
 		exit(1);
 	}
 
@@ -398,9 +443,9 @@ check_root(const char *progname)
 		write_stderr("Execution of PostgreSQL by a user with administrative permissions is not\n"
 					 "permitted.\n"
 					 "The server must be started under an unprivileged user ID to prevent\n"
-					 "possible system security compromises.  See the documentation for\n"
-					 "more information on how to properly start the server.\n");
+		 "possible system security compromises.  See the documentation for\n"
+				  "more information on how to properly start the server.\n");
 		exit(1);
 	}
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 }

@@ -2,7 +2,7 @@
  * pg_db_role_setting.c
  *		Routines to support manipulation of the pg_db_role_setting relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -13,12 +13,12 @@
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/tableam.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_db_role_setting.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 
 void
 AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
@@ -33,7 +33,7 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 	/* Get the old tuple, if any. */
 
-	rel = table_open(DbRoleSettingRelationId, RowExclusiveLock);
+	rel = heap_open(DbRoleSettingRelationId, RowExclusiveLock);
 	ScanKeyInit(&scankey[0],
 				Anum_pg_db_role_setting_setdatabase,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -88,10 +88,13 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 				newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
 											 repl_val, repl_null, repl_repl);
-				CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+				simple_heap_update(rel, &tuple->t_self, newtuple);
+
+				/* Update indexes */
+				CatalogUpdateIndexes(rel, newtuple);
 			}
 			else
-				CatalogTupleDelete(rel, &tuple->t_self);
+				simple_heap_delete(rel, &tuple->t_self);
 		}
 	}
 	else if (HeapTupleIsValid(tuple))
@@ -126,10 +129,13 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 
 			newtuple = heap_modify_tuple(tuple, RelationGetDescr(rel),
 										 repl_val, repl_null, repl_repl);
-			CatalogTupleUpdate(rel, &tuple->t_self, newtuple);
+			simple_heap_update(rel, &tuple->t_self, newtuple);
+
+			/* Update indexes */
+			CatalogUpdateIndexes(rel, newtuple);
 		}
 		else
-			CatalogTupleDelete(rel, &tuple->t_self);
+			simple_heap_delete(rel, &tuple->t_self);
 	}
 	else if (valuestr)
 	{
@@ -149,7 +155,10 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 		values[Anum_pg_db_role_setting_setconfig - 1] = PointerGetDatum(a);
 		newtuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
-		CatalogTupleInsert(rel, newtuple);
+		simple_heap_insert(rel, newtuple);
+
+		/* Update indexes */
+		CatalogUpdateIndexes(rel, newtuple);
 	}
 
 	InvokeObjectPostAlterHookArg(DbRoleSettingRelationId,
@@ -158,7 +167,7 @@ AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt)
 	systable_endscan(scan);
 
 	/* Close pg_db_role_setting, but keep lock till commit */
-	table_close(rel, NoLock);
+	heap_close(rel, NoLock);
 }
 
 /*
@@ -170,12 +179,12 @@ void
 DropSetting(Oid databaseid, Oid roleid)
 {
 	Relation	relsetting;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	ScanKeyData keys[2];
 	HeapTuple	tup;
 	int			numkeys = 0;
 
-	relsetting = table_open(DbRoleSettingRelationId, RowExclusiveLock);
+	relsetting = heap_open(DbRoleSettingRelationId, RowExclusiveLock);
 
 	if (OidIsValid(databaseid))
 	{
@@ -196,14 +205,14 @@ DropSetting(Oid databaseid, Oid roleid)
 		numkeys++;
 	}
 
-	scan = table_beginscan_catalog(relsetting, numkeys, keys);
+	scan = heap_beginscan_catalog(relsetting, numkeys, keys);
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
-		CatalogTupleDelete(relsetting, &tup->t_self);
+		simple_heap_delete(relsetting, &tup->t_self);
 	}
-	table_endscan(scan);
+	heap_endscan(scan);
 
-	table_close(relsetting, RowExclusiveLock);
+	heap_close(relsetting, RowExclusiveLock);
 }
 
 /*

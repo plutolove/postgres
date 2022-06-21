@@ -3,7 +3,7 @@ doc/src/sgml/ref/vacuumdb.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="app-vacuumdb">
+<refentry id="APP-VACUUMDB">
  <indexterm zone="app-vacuumdb">
   <primary>vacuumdb</primary>
  </indexterm>
@@ -15,7 +15,7 @@ PostgreSQL documentation
  </refmeta>
 
  <refnamediv>
-  <refname>vacuumdb</refname>
+  <refname id="vacuumdb">vacuumdb</refname>
   <refpurpose>garbage-collect and analyze a <productname>PostgreSQL</productname> database</refpurpose>
  </refnamediv>
 
@@ -28,8 +28,8 @@ PostgreSQL documentation
    <arg choice="plain" rep="repeat">
     <arg choice="opt">
      <group choice="plain">
-      <arg choice="plain"><option>-t</option></arg>
       <arg choice="plain"><option>--table</option></arg>
+      <arg choice="plain"><option>-t</option></arg>
      </group>
      <replaceable>table</replaceable>
      <arg choice="opt">( <replaceable class="parameter">column</replaceable> [,...] )</arg>
@@ -44,8 +44,8 @@ PostgreSQL documentation
    <arg rep="repeat"><replaceable>connection-option</replaceable></arg>
    <arg rep="repeat"><replaceable>option</replaceable></arg>
    <group choice="plain">
-    <arg choice="plain"><option>-a</option></arg>
     <arg choice="plain"><option>--all</option></arg>
+    <arg choice="plain"><option>-a</option></arg>
    </group>
   </cmdsynopsis>
  </refsynopsisdiv>
@@ -62,7 +62,7 @@ PostgreSQL documentation
 
   <para>
    <application>vacuumdb</application> is a wrapper around the SQL
-   command <xref linkend="sql-vacuum"/>.
+   command <xref linkend="SQL-VACUUM">.
    There is no effective difference between vacuuming and analyzing
    databases via this utility and via other methods for accessing the
    server.
@@ -88,41 +88,23 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option><optional>-d</optional> <replaceable class="parameter">dbname</replaceable></option></term>
-      <term><option><optional>--dbname=</optional><replaceable class="parameter">dbname</replaceable></option></term>
+      <term><option><optional>-d</> <replaceable class="parameter">dbname</replaceable></option></term>
+      <term><option><optional>--dbname=</><replaceable class="parameter">dbname</replaceable></option></term>
       <listitem>
        <para>
-        Specifies the name of the database to be cleaned or analyzed,
-        when <option>-a</option>/<option>--all</option> is not used.
-        If this is not specified, the database name is read
+        Specifies the name of the database to be cleaned or analyzed.
+        If this is not specified and <option>-a</option> (or
+        <option>--all</option>) is not used, the database name is read
         from the environment variable <envar>PGDATABASE</envar>.  If
         that is not set, the user name specified for the connection is
-        used.  The <replaceable>dbname</replaceable> can be a <link
-        linkend="libpq-connstring">connection string</link>.  If so,
-        connection string parameters will override any conflicting command
-        line options.
+        used.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--disable-page-skipping</option></term>
-      <listitem>
-       <para>
-        Disable skipping pages based on the contents of the visibility map.
-       </para>
-       <note>
-        <para>
-         This option is only available for servers running
-         <productname>PostgreSQL</productname> 9.6 and later.
-        </para>
-       </note>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-e</option></term>
-      <term><option>--echo</option></term>
+      <term><option>-e</></term>
+      <term><option>--echo</></term>
       <listitem>
        <para>
         Echo the commands that <application>vacuumdb</application> generates
@@ -152,123 +134,12 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-j <replaceable class="parameter">njobs</replaceable></option></term>
-      <term><option>--jobs=<replaceable class="parameter">njobs</replaceable></option></term>
-      <listitem>
-       <para>
-        Execute the vacuum or analyze commands in parallel by running
-        <replaceable class="parameter">njobs</replaceable>
-        commands simultaneously.  This option may reduce the processing time
-        but it also increases the load on the database server.
-       </para>
-       <para>
-        <application>vacuumdb</application> will open
-        <replaceable class="parameter">njobs</replaceable> connections to the
-        database, so make sure your <xref linkend="guc-max-connections"/>
-        setting is high enough to accommodate all connections.
-       </para>
-       <para>
-        Note that using this mode together with the <option>-f</option>
-        (<literal>FULL</literal>) option might cause deadlock failures if
-        certain system catalogs are processed in parallel.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--min-mxid-age <replaceable class="parameter">mxid_age</replaceable></option></term>
-      <listitem>
-       <para>
-        Only execute the vacuum or analyze commands on tables with a multixact
-        ID age of at least <replaceable class="parameter">mxid_age</replaceable>.
-        This setting is useful for prioritizing tables to process to prevent
-        multixact ID wraparound (see
-        <xref linkend="vacuum-for-multixact-wraparound"/>).
-       </para>
-       <para>
-        For the purposes of this option, the multixact ID age of a relation is
-        the greatest of the ages of the main relation and its associated
-        <acronym>TOAST</acronym> table, if one exists.  Since the commands
-        issued by <application>vacuumdb</application> will also process the
-        <acronym>TOAST</acronym> table for the relation if necessary, it does
-        not need to be considered separately.
-       </para>
-       <note>
-        <para>
-         This option is only available for servers running
-         <productname>PostgreSQL</productname> 9.6 and later.
-        </para>
-       </note>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--min-xid-age <replaceable class="parameter">xid_age</replaceable></option></term>
-      <listitem>
-       <para>
-        Only execute the vacuum or analyze commands on tables with a
-        transaction ID age of at least
-        <replaceable class="parameter">xid_age</replaceable>.  This setting
-        is useful for prioritizing tables to process to prevent transaction
-        ID wraparound (see <xref linkend="vacuum-for-wraparound"/>).
-       </para>
-       <para>
-        For the purposes of this option, the transaction ID age of a relation
-        is the greatest of the ages of the main relation and its associated
-        <acronym>TOAST</acronym> table, if one exists.  Since the commands
-        issued by <application>vacuumdb</application> will also process the
-        <acronym>TOAST</acronym> table for the relation if necessary, it does
-        not need to be considered separately.
-       </para>
-       <note>
-        <para>
-         This option is only available for servers running
-         <productname>PostgreSQL</productname> 9.6 and later.
-        </para>
-       </note>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-P <replaceable class="parameter">parallel_degree</replaceable></option></term>
-      <term><option>--parallel=<replaceable class="parameter">parallel_degree</replaceable></option></term>
-      <listitem>
-       <para>
-        Specify the parallel degree of <firstterm>parallel vacuum</firstterm>.
-        This allows the vacuum to leverage multiple CPUs to process indexes.
-        See <xref linkend="sql-vacuum"/>.
-       </para>
-       <note>
-        <para>
-         This option is only available for servers running
-         <productname>PostgreSQL</productname> 13 and later.
-        </para>
-       </note>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>-q</option></term>
-      <term><option>--quiet</option></term>
+      <term><option>-q</></term>
+      <term><option>--quiet</></term>
       <listitem>
        <para>
         Do not display progress messages.
        </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--skip-locked</option></term>
-      <listitem>
-       <para>
-        Skip relations that cannot be immediately locked for processing.
-       </para>
-       <note>
-        <para>
-         This option is only available for servers running
-         <productname>PostgreSQL</productname> 12 and later.
-        </para>
-       </note>
       </listitem>
      </varlistentry>
 
@@ -281,7 +152,7 @@ PostgreSQL documentation
         Column names can be specified only in conjunction with
         the <option>--analyze</option> or <option>--analyze-only</option> options.
         Multiple tables can be vacuumed by writing multiple
-        <option>-t</option> switches.
+        <option>-t</> switches.
        </para>
        <tip>
         <para>
@@ -303,8 +174,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-       <term><option>-V</option></term>
-       <term><option>--version</option></term>
+       <term><option>-V</></term>
+       <term><option>--version</></term>
        <listitem>
        <para>
        Print the <application>vacuumdb</application> version and exit.
@@ -353,8 +224,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-       <term><option>-?</option></term>
-       <term><option>--help</option></term>
+       <term><option>-?</></term>
+       <term><option>--help</></term>
        <listitem>
        <para>
        Show help about <application>vacuumdb</application> command line
@@ -371,8 +242,8 @@ PostgreSQL documentation
     the following command-line arguments for connection parameters:
     <variablelist>
      <varlistentry>
-      <term><option>-h <replaceable class="parameter">host</replaceable></option></term>
-      <term><option>--host=<replaceable class="parameter">host</replaceable></option></term>
+      <term><option>-h <replaceable class="parameter">host</replaceable></></term>
+      <term><option>--host=<replaceable class="parameter">host</replaceable></></term>
       <listitem>
        <para>
         Specifies the host name of the machine on which the server
@@ -383,8 +254,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-p <replaceable class="parameter">port</replaceable></option></term>
-      <term><option>--port=<replaceable class="parameter">port</replaceable></option></term>
+      <term><option>-p <replaceable class="parameter">port</replaceable></></term>
+      <term><option>--port=<replaceable class="parameter">port</replaceable></></term>
       <listitem>
        <para>
         Specifies the TCP port or local Unix domain socket file
@@ -395,8 +266,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-U <replaceable class="parameter">username</replaceable></option></term>
-      <term><option>--username=<replaceable class="parameter">username</replaceable></option></term>
+      <term><option>-U <replaceable class="parameter">username</replaceable></></term>
+      <term><option>--username=<replaceable class="parameter">username</replaceable></></term>
       <listitem>
        <para>
         User name to connect as.
@@ -405,8 +276,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-w</option></term>
-      <term><option>--no-password</option></term>
+      <term><option>-w</></term>
+      <term><option>--no-password</></term>
       <listitem>
        <para>
         Never issue a password prompt.  If the server requires
@@ -420,8 +291,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-W</option></term>
-      <term><option>--password</option></term>
+      <term><option>-W</></term>
+      <term><option>--password</></term>
       <listitem>
        <para>
         Force <application>vacuumdb</application> to prompt for a
@@ -434,26 +305,20 @@ PostgreSQL documentation
         for a password if the server demands password authentication.
         However, <application>vacuumdb</application> will waste a
         connection attempt finding out that the server wants a password.
-        In some cases it is worth typing <option>-W</option> to avoid the extra
+        In some cases it is worth typing <option>-W</> to avoid the extra
         connection attempt.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--maintenance-db=<replaceable class="parameter">dbname</replaceable></option></term>
+      <term><option>--maintenance-db=<replaceable class="parameter">dbname</replaceable></></term>
       <listitem>
        <para>
-        Specifies the name of the database to connect to to discover which
-        databases should be vacuumed,
-        when <option>-a</option>/<option>--all</option> is used.
-        If not specified, the <literal>postgres</literal> database will be used,
-        or if that does not exist, <literal>template1</literal> will be used.
-        This can be a <link linkend="libpq-connstring">connection
-        string</link>.  If so, connection string parameters will override any
-        conflicting command line options.  Also, connection string parameters
-        other than the database name itself will be re-used when connecting
-        to other databases.
+         Specifies the name of the database to connect to discover what other
+         databases should be vacuumed. If not specified, the
+         <literal>postgres</literal> database will be used,
+         and if that does not exist, <literal>template1</literal> will be used.
        </para>
       </listitem>
      </varlistentry>
@@ -478,23 +343,12 @@ PostgreSQL documentation
      </para>
     </listitem>
    </varlistentry>
-
-   <varlistentry>
-    <term><envar>PG_COLOR</envar></term>
-    <listitem>
-     <para>
-      Specifies whether to use color in diagnostic messages. Possible values
-      are <literal>always</literal>, <literal>auto</literal> and
-      <literal>never</literal>.
-     </para>
-    </listitem>
-   </varlistentry>
   </variablelist>
 
   <para>
-   This utility, like most other <productname>PostgreSQL</productname> utilities,
-   also uses the environment variables supported by <application>libpq</application>
-   (see <xref linkend="libpq-envars"/>).
+   This utility, like most other <productname>PostgreSQL</> utilities,
+   also uses the environment variables supported by <application>libpq</>
+   (see <xref linkend="libpq-envars">).
   </para>
 
  </refsect1>
@@ -504,8 +358,8 @@ PostgreSQL documentation
   <title>Diagnostics</title>
 
   <para>
-   In case of difficulty, see <xref linkend="sql-vacuum"/>
-   and <xref linkend="app-psql"/> for
+   In case of difficulty, see <xref linkend="SQL-VACUUM">
+   and <xref linkend="APP-PSQL"> for
    discussions of potential problems and error messages.
    The database server must be running at the
    targeted host.  Also, any default connection settings and environment
@@ -523,8 +377,8 @@ PostgreSQL documentation
    <application>vacuumdb</application> might need to connect several
    times to the <productname>PostgreSQL</productname> server, asking
    for a password each time. It is convenient to have a
-   <filename>~/.pgpass</filename> file in such cases. See <xref
-   linkend="libpq-pgpass"/> for more information.
+   <filename>~/.pgpass</> file in such cases. See <xref
+   linkend="libpq-pgpass"> for more information.
   </para>
  </refsect1>
 
@@ -552,7 +406,7 @@ PostgreSQL documentation
     <literal>xyzzy</literal>, and analyze a single column
     <literal>bar</literal> of the table for the optimizer:
 <screen>
-<prompt>$ </prompt><userinput>vacuumdb --analyze --verbose --table='foo(bar)' xyzzy</userinput>
+<prompt>$ </prompt><userinput>vacuumdb --analyze --verbose --table 'foo(bar)' xyzzy</userinput>
 </screen></para>
 
  </refsect1>
@@ -561,7 +415,7 @@ PostgreSQL documentation
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-vacuum"/></member>
+   <member><xref linkend="sql-vacuum"></member>
   </simplelist>
  </refsect1>
 

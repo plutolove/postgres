@@ -10,7 +10,7 @@
  * And contributors:
  * Nabil Sayegh <postgresql@e-trolley.de>
  *
- * Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2014, PostgreSQL Global Development Group
  *
  * Permission to use, copy, modify, and distribute this software and its
  * documentation for any purpose, without fee, and without a written agreement
@@ -40,48 +40,49 @@
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
-#include "tablefunc.h"
 #include "utils/builtins.h"
+
+#include "tablefunc.h"
 
 PG_MODULE_MAGIC;
 
 static HTAB *load_categories_hash(char *cats_sql, MemoryContext per_query_ctx);
 static Tuplestorestate *get_crosstab_tuplestore(char *sql,
-												HTAB *crosstab_hash,
-												TupleDesc tupdesc,
-												MemoryContext per_query_ctx,
-												bool randomAccess);
+						HTAB *crosstab_hash,
+						TupleDesc tupdesc,
+						MemoryContext per_query_ctx,
+						bool randomAccess);
 static void validateConnectbyTupleDesc(TupleDesc tupdesc, bool show_branch, bool show_serial);
 static bool compatCrosstabTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 static void compatConnectbyTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 static void get_normal_pair(float8 *x1, float8 *x2);
 static Tuplestorestate *connectby(char *relname,
-								  char *key_fld,
-								  char *parent_key_fld,
-								  char *orderby_fld,
-								  char *branch_delim,
-								  char *start_with,
-								  int max_depth,
-								  bool show_branch,
-								  bool show_serial,
-								  MemoryContext per_query_ctx,
-								  bool randomAccess,
-								  AttInMetadata *attinmeta);
+		  char *key_fld,
+		  char *parent_key_fld,
+		  char *orderby_fld,
+		  char *branch_delim,
+		  char *start_with,
+		  int max_depth,
+		  bool show_branch,
+		  bool show_serial,
+		  MemoryContext per_query_ctx,
+		  bool randomAccess,
+		  AttInMetadata *attinmeta);
 static void build_tuplestore_recursively(char *key_fld,
-										 char *parent_key_fld,
-										 char *relname,
-										 char *orderby_fld,
-										 char *branch_delim,
-										 char *start_with,
-										 char *branch,
-										 int level,
-										 int *serial,
-										 int max_depth,
-										 bool show_branch,
-										 bool show_serial,
-										 MemoryContext per_query_ctx,
-										 AttInMetadata *attinmeta,
-										 Tuplestorestate *tupstore);
+							 char *parent_key_fld,
+							 char *relname,
+							 char *orderby_fld,
+							 char *branch_delim,
+							 char *start_with,
+							 char *branch,
+							 int level,
+							 int *serial,
+							 int max_depth,
+							 bool show_branch,
+							 bool show_serial,
+							 MemoryContext per_query_ctx,
+							 AttInMetadata *attinmeta,
+							 Tuplestorestate *tupstore);
 
 typedef struct
 {
@@ -119,7 +120,7 @@ typedef struct
 typedef struct crosstab_cat_desc
 {
 	char	   *catname;		/* full category name */
-	uint64		attidx;			/* zero based */
+	int			attidx;			/* zero based */
 } crosstab_cat_desc;
 
 #define MAX_CATNAME_LEN			NAMEDATALEN
@@ -173,8 +174,8 @@ Datum
 normal_rand(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *funcctx;
-	uint64		call_cntr;
-	uint64		max_calls;
+	int			call_cntr;
+	int			max_calls;
 	normal_rand_fctx *fctx;
 	float8		mean;
 	float8		stddev;
@@ -351,8 +352,8 @@ crosstab(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Tuplestorestate *tupstore;
 	TupleDesc	tupdesc;
-	uint64		call_cntr;
-	uint64		max_calls;
+	int			call_cntr;
+	int			max_calls;
 	AttInMetadata *attinmeta;
 	SPITupleTable *spi_tuptable;
 	TupleDesc	spi_tupdesc;
@@ -363,7 +364,7 @@ crosstab(PG_FUNCTION_ARGS)
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	int			ret;
-	uint64		proc;
+	int			proc;
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -373,7 +374,8 @@ crosstab(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 
@@ -387,7 +389,7 @@ crosstab(PG_FUNCTION_ARGS)
 	proc = SPI_processed;
 
 	/* If no qualifying tuples, fall out early */
-	if (ret != SPI_OK_SELECT || proc == 0)
+	if (ret != SPI_OK_SELECT || proc <= 0)
 	{
 		SPI_finish();
 		rsinfo->isDone = ExprEndResult;
@@ -430,9 +432,7 @@ crosstab(PG_FUNCTION_ARGS)
 			break;
 		default:
 			/* result type isn't composite */
-			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
-					 errmsg("return type must be a row type")));
+			elog(ERROR, "return type must be a row type");
 			break;
 	}
 
@@ -649,7 +649,8 @@ crosstab_hash(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -681,7 +682,7 @@ crosstab_hash(PG_FUNCTION_ARGS)
 												crosstab_hash,
 												tupdesc,
 												per_query_ctx,
-												rsinfo->allowedModes & SFRM_Materialize_Random);
+							 rsinfo->allowedModes & SFRM_Materialize_Random);
 
 	/*
 	 * SFRM_Materialize mode expects us to return a NULL Datum. The actual
@@ -705,7 +706,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	HTAB	   *crosstab_hash;
 	HASHCTL		ctl;
 	int			ret;
-	uint64		proc;
+	int			proc;
 	MemoryContext SPIcontext;
 
 	/* initialize the category hash table */
@@ -737,7 +738,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	{
 		SPITupleTable *spi_tuptable = SPI_tuptable;
 		TupleDesc	spi_tupdesc = spi_tuptable->tupdesc;
-		uint64		i;
+		int			i;
 
 		/*
 		 * The provided categories SQL query must always return one column:
@@ -760,11 +761,6 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 
 			/* get the category from the current sql result tuple */
 			catname = SPI_getvalue(spi_tuple, spi_tupdesc, 1);
-			if (catname == NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("provided \"categories\" SQL must " \
-								"not return NULL values")));
 
 			SPIcontext = MemoryContextSwitchTo(per_query_ctx);
 
@@ -802,7 +798,7 @@ get_crosstab_tuplestore(char *sql,
 	char	  **values;
 	HeapTuple	tuple;
 	int			ret;
-	uint64		proc;
+	int			proc;
 
 	/* initialize our tuplestore (while still in query context!) */
 	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
@@ -825,8 +821,8 @@ get_crosstab_tuplestore(char *sql,
 		char	   *rowid;
 		char	   *lastrowid = NULL;
 		bool		firstpass = true;
-		uint64		i;
-		int			j;
+		int			i,
+					j;
 		int			result_ncols;
 
 		if (num_categories == 0)
@@ -869,8 +865,11 @@ get_crosstab_tuplestore(char *sql,
 							   "tuple has %d columns but crosstab " \
 							   "returns %d.", tupdesc->natts, result_ncols)));
 
-		/* allocate space and make sure it's clear */
-		values = (char **) palloc0(result_ncols * sizeof(char *));
+		/* allocate space */
+		values = (char **) palloc(result_ncols * sizeof(char *));
+
+		/* and make sure it's clear */
+		memset(values, '\0', result_ncols * sizeof(char *));
 
 		for (i = 0; i < proc; i++)
 		{
@@ -1009,7 +1008,8 @@ connectby_text(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	if (fcinfo->nargs == 6)
 	{
@@ -1044,7 +1044,7 @@ connectby_text(PG_FUNCTION_ARGS)
 								  show_branch,
 								  show_serial,
 								  per_query_ctx,
-								  rsinfo->allowedModes & SFRM_Materialize_Random,
+							  rsinfo->allowedModes & SFRM_Materialize_Random,
 								  attinmeta);
 	rsinfo->setDesc = tupdesc;
 
@@ -1088,7 +1088,8 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	if (fcinfo->nargs == 7)
 	{
@@ -1123,7 +1124,7 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 								  show_branch,
 								  show_serial,
 								  per_query_ctx,
-								  rsinfo->allowedModes & SFRM_Materialize_Random,
+							  rsinfo->allowedModes & SFRM_Materialize_Random,
 								  attinmeta);
 	rsinfo->setDesc = tupdesc;
 
@@ -1184,8 +1185,8 @@ connectby(char *relname,
 								 branch_delim,
 								 start_with,
 								 start_with,	/* current_branch */
-								 0, /* initial level is 0 */
-								 &serial,	/* initial serial is 1 */
+								 0,		/* initial level is 0 */
+								 &serial,		/* initial serial is 1 */
 								 max_depth,
 								 show_branch,
 								 show_serial,
@@ -1217,7 +1218,7 @@ build_tuplestore_recursively(char *key_fld,
 {
 	TupleDesc	tupdesc = attinmeta->tupdesc;
 	int			ret;
-	uint64		proc;
+	int			proc;
 	int			serial_column;
 	StringInfoData sql;
 	char	  **values;
@@ -1310,7 +1311,7 @@ build_tuplestore_recursively(char *key_fld,
 		HeapTuple	spi_tuple;
 		SPITupleTable *tuptable = SPI_tuptable;
 		TupleDesc	spi_tupdesc = tuptable->tupdesc;
-		uint64		i;
+		int			i;
 		StringInfoData branchstr;
 		StringInfoData chk_branchstr;
 		StringInfoData chk_current_key;
@@ -1349,9 +1350,7 @@ build_tuplestore_recursively(char *key_fld,
 				appendStringInfo(&chk_current_key, "%s%s%s",
 								 branch_delim, current_key, branch_delim);
 				if (strstr(chk_branchstr.data, chk_current_key.data))
-					ereport(ERROR,
-							(errcode(ERRCODE_INVALID_RECURSION),
-							 errmsg("infinite recursion detected")));
+					elog(ERROR, "infinite recursion detected");
 			}
 
 			/* OK, extend the branch */
@@ -1418,7 +1417,7 @@ build_tuplestore_recursively(char *key_fld,
  * Check expected (query runtime) tupdesc suitable for Connectby
  */
 static void
-validateConnectbyTupleDesc(TupleDesc td, bool show_branch, bool show_serial)
+validateConnectbyTupleDesc(TupleDesc tupdesc, bool show_branch, bool show_serial)
 {
 	int			serial_column = 0;
 
@@ -1428,63 +1427,55 @@ validateConnectbyTupleDesc(TupleDesc td, bool show_branch, bool show_serial)
 	/* are there the correct number of columns */
 	if (show_branch)
 	{
-		if (td->natts != (CONNECTBY_NCOLS + serial_column))
+		if (tupdesc->natts != (CONNECTBY_NCOLS + serial_column))
 			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("invalid return type"),
 					 errdetail("Query-specified return tuple has " \
 							   "wrong number of columns.")));
 	}
 	else
 	{
-		if (td->natts != CONNECTBY_NCOLS_NOBRANCH + serial_column)
+		if (tupdesc->natts != CONNECTBY_NCOLS_NOBRANCH + serial_column)
 			ereport(ERROR,
-					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("invalid return type"),
 					 errdetail("Query-specified return tuple has " \
 							   "wrong number of columns.")));
 	}
 
 	/* check that the types of the first two columns match */
-	if (TupleDescAttr(td, 0)->atttypid != TupleDescAttr(td, 1)->atttypid)
+	if (tupdesc->attrs[0]->atttypid != tupdesc->attrs[1]->atttypid)
 		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid return type"),
 				 errdetail("First two columns must be the same type.")));
 
 	/* check that the type of the third column is INT4 */
-	if (TupleDescAttr(td, 2)->atttypid != INT4OID)
+	if (tupdesc->attrs[2]->atttypid != INT4OID)
 		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid return type"),
 				 errdetail("Third column must be type %s.",
 						   format_type_be(INT4OID))));
 
 	/* check that the type of the fourth column is TEXT if applicable */
-	if (show_branch && TupleDescAttr(td, 3)->atttypid != TEXTOID)
+	if (show_branch && tupdesc->attrs[3]->atttypid != TEXTOID)
 		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid return type"),
 				 errdetail("Fourth column must be type %s.",
 						   format_type_be(TEXTOID))));
 
 	/* check that the type of the fifth column is INT4 */
-	if (show_branch && show_serial &&
-		TupleDescAttr(td, 4)->atttypid != INT4OID)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("query-specified return tuple not valid for Connectby: "
-						"fifth column must be type %s",
-						format_type_be(INT4OID))));
+	if (show_branch && show_serial && tupdesc->attrs[4]->atttypid != INT4OID)
+		elog(ERROR, "query-specified return tuple not valid for Connectby: "
+			 "fifth column must be type %s", format_type_be(INT4OID));
 
 	/* check that the type of the fifth column is INT4 */
-	if (!show_branch && show_serial &&
-		TupleDescAttr(td, 3)->atttypid != INT4OID)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("query-specified return tuple not valid for Connectby: "
-						"fourth column must be type %s",
-						format_type_be(INT4OID))));
+	if (!show_branch && show_serial && tupdesc->attrs[3]->atttypid != INT4OID)
+		elog(ERROR, "query-specified return tuple not valid for Connectby: "
+			 "fourth column must be type %s", format_type_be(INT4OID));
 
 	/* OK, the tupdesc is valid for our purposes */
 }
@@ -1495,51 +1486,20 @@ validateConnectbyTupleDesc(TupleDesc td, bool show_branch, bool show_serial)
 static void
 compatConnectbyTupleDescs(TupleDesc ret_tupdesc, TupleDesc sql_tupdesc)
 {
-	Oid			ret_atttypid;
-	Oid			sql_atttypid;
-	int32		ret_atttypmod;
-	int32		sql_atttypmod;
-
 	/*
 	 * Result must have at least 2 columns.
 	 */
 	if (sql_tupdesc->natts < 2)
 		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid return type"),
 				 errdetail("Query must return at least two columns.")));
 
 	/*
-	 * These columns must match the result type indicated by the calling
-	 * query.
+	 * We have failed to check datatype match since 2003, so we don't do that
+	 * here.  The call will work as long as the datatypes are I/O
+	 * representation compatible.
 	 */
-	ret_atttypid = TupleDescAttr(ret_tupdesc, 0)->atttypid;
-	sql_atttypid = TupleDescAttr(sql_tupdesc, 0)->atttypid;
-	ret_atttypmod = TupleDescAttr(ret_tupdesc, 0)->atttypmod;
-	sql_atttypmod = TupleDescAttr(sql_tupdesc, 0)->atttypmod;
-	if (ret_atttypid != sql_atttypid ||
-		(ret_atttypmod >= 0 && ret_atttypmod != sql_atttypmod))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("invalid return type"),
-				 errdetail("SQL key field type %s does " \
-						   "not match return key field type %s.",
-						   format_type_with_typemod(ret_atttypid, ret_atttypmod),
-						   format_type_with_typemod(sql_atttypid, sql_atttypmod))));
-
-	ret_atttypid = TupleDescAttr(ret_tupdesc, 1)->atttypid;
-	sql_atttypid = TupleDescAttr(sql_tupdesc, 1)->atttypid;
-	ret_atttypmod = TupleDescAttr(ret_tupdesc, 1)->atttypmod;
-	sql_atttypmod = TupleDescAttr(sql_tupdesc, 1)->atttypmod;
-	if (ret_atttypid != sql_atttypid ||
-		(ret_atttypmod >= 0 && ret_atttypmod != sql_atttypmod))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 errmsg("invalid return type"),
-				 errdetail("SQL parent key field type %s does " \
-						   "not match return parent key field type %s.",
-						   format_type_with_typemod(ret_atttypid, ret_atttypmod),
-						   format_type_with_typemod(sql_atttypid, sql_atttypmod))));
 
 	/* OK, the two tupdescs are compatible for our purposes */
 }
@@ -1561,11 +1521,11 @@ compatCrosstabTupleDescs(TupleDesc ret_tupdesc, TupleDesc sql_tupdesc)
 		return false;
 
 	/* check the rowid types match */
-	ret_atttypid = TupleDescAttr(ret_tupdesc, 0)->atttypid;
-	sql_atttypid = TupleDescAttr(sql_tupdesc, 0)->atttypid;
+	ret_atttypid = ret_tupdesc->attrs[0]->atttypid;
+	sql_atttypid = sql_tupdesc->attrs[0]->atttypid;
 	if (ret_atttypid != sql_atttypid)
 		ereport(ERROR,
-				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid return type"),
 				 errdetail("SQL rowid datatype does not match " \
 						   "return rowid datatype.")));
@@ -1575,10 +1535,10 @@ compatCrosstabTupleDescs(TupleDesc ret_tupdesc, TupleDesc sql_tupdesc)
 	 * attribute [2] of the sql tuple should match attributes [1] to [natts]
 	 * of the return tuple
 	 */
-	sql_attr = TupleDescAttr(sql_tupdesc, 2);
+	sql_attr = sql_tupdesc->attrs[2];
 	for (i = 1; i < ret_tupdesc->natts; i++)
 	{
-		ret_attr = TupleDescAttr(ret_tupdesc, i);
+		ret_attr = ret_tupdesc->attrs[i];
 
 		if (ret_attr->atttypid != sql_attr->atttypid)
 			return false;

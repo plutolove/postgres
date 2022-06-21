@@ -3,7 +3,7 @@
  * nodeNestloop.c
  *	  routines to support nest-loop joins
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,7 +23,6 @@
 
 #include "executor/execdebug.h"
 #include "executor/nodeNestloop.h"
-#include "miscadmin.h"
 #include "utils/memutils.h"
 
 
@@ -57,21 +56,18 @@
  *			   are prepared to return the first tuple.
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *
-ExecNestLoop(PlanState *pstate)
+TupleTableSlot *
+ExecNestLoop(NestLoopState *node)
 {
-	NestLoopState *node = castNode(NestLoopState, pstate);
 	NestLoop   *nl;
 	PlanState  *innerPlan;
 	PlanState  *outerPlan;
 	TupleTableSlot *outerTupleSlot;
 	TupleTableSlot *innerTupleSlot;
-	ExprState  *joinqual;
-	ExprState  *otherqual;
+	List	   *joinqual;
+	List	   *otherqual;
 	ExprContext *econtext;
 	ListCell   *lc;
-
-	CHECK_FOR_INTERRUPTS();
 
 	/*
 	 * get information from the node
@@ -86,8 +82,26 @@ ExecNestLoop(PlanState *pstate)
 	econtext = node->js.ps.ps_ExprContext;
 
 	/*
+	 * Check to see if we're still projecting out tuples from a previous join
+	 * tuple (because there is a function-returning-set in the projection
+	 * expressions).  If so, try to project another one.
+	 */
+	if (node->js.ps.ps_TupFromTlist)
+	{
+		TupleTableSlot *result;
+		ExprDoneCond isDone;
+
+		result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+		if (isDone == ExprMultipleResult)
+			return result;
+		/* Done with that source tuple... */
+		node->js.ps.ps_TupFromTlist = false;
+	}
+
+	/*
 	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.
+	 * storage allocated in the previous tuple cycle.  Note this can't happen
+	 * until we're done projecting out tuples from a join tuple.
 	 */
 	ResetExprContext(econtext);
 
@@ -180,16 +194,26 @@ ExecNestLoop(PlanState *pstate)
 
 				ENL1_printf("testing qualification for outer-join tuple");
 
-				if (otherqual == NULL || ExecQual(otherqual, econtext))
+				if (otherqual == NIL || ExecQual(otherqual, econtext, false))
 				{
 					/*
 					 * qualification was satisfied so we project and return
 					 * the slot containing the result tuple using
 					 * ExecProject().
 					 */
+					TupleTableSlot *result;
+					ExprDoneCond isDone;
+
 					ENL1_printf("qualification succeeded, projecting tuple");
 
-					return ExecProject(node->js.ps.ps_ProjInfo);
+					result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+
+					if (isDone != ExprEndResult)
+					{
+						node->js.ps.ps_TupFromTlist =
+							(isDone == ExprMultipleResult);
+						return result;
+					}
 				}
 				else
 					InstrCountFiltered2(node, 1);
@@ -211,7 +235,7 @@ ExecNestLoop(PlanState *pstate)
 		 */
 		ENL1_printf("testing qualification");
 
-		if (ExecQual(joinqual, econtext))
+		if (ExecQual(joinqual, econtext, false))
 		{
 			node->nl_MatchedOuter = true;
 
@@ -223,22 +247,31 @@ ExecNestLoop(PlanState *pstate)
 			}
 
 			/*
-			 * If we only need to join to the first matching inner tuple, then
-			 * consider returning this one, but after that continue with next
-			 * outer tuple.
+			 * In a semijoin, we'll consider returning the first match, but
+			 * after that we're done with this outer tuple.
 			 */
-			if (node->js.single_match)
+			if (node->js.jointype == JOIN_SEMI)
 				node->nl_NeedNewOuter = true;
 
-			if (otherqual == NULL || ExecQual(otherqual, econtext))
+			if (otherqual == NIL || ExecQual(otherqual, econtext, false))
 			{
 				/*
 				 * qualification was satisfied so we project and return the
 				 * slot containing the result tuple using ExecProject().
 				 */
+				TupleTableSlot *result;
+				ExprDoneCond isDone;
+
 				ENL1_printf("qualification succeeded, projecting tuple");
 
-				return ExecProject(node->js.ps.ps_ProjInfo);
+				result = ExecProject(node->js.ps.ps_ProjInfo, &isDone);
+
+				if (isDone != ExprEndResult)
+				{
+					node->js.ps.ps_TupFromTlist =
+						(isDone == ExprMultipleResult);
+					return result;
+				}
 			}
 			else
 				InstrCountFiltered2(node, 1);
@@ -276,7 +309,6 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate = makeNode(NestLoopState);
 	nlstate->js.ps.plan = (Plan *) node;
 	nlstate->js.ps.state = estate;
-	nlstate->js.ps.ExecProcNode = ExecNestLoop;
 
 	/*
 	 * Miscellaneous initialization
@@ -284,6 +316,20 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	 * create expression context for node
 	 */
 	ExecAssignExprContext(estate, &nlstate->js.ps);
+
+	/*
+	 * initialize child expressions
+	 */
+	nlstate->js.ps.targetlist = (List *)
+		ExecInitExpr((Expr *) node->join.plan.targetlist,
+					 (PlanState *) nlstate);
+	nlstate->js.ps.qual = (List *)
+		ExecInitExpr((Expr *) node->join.plan.qual,
+					 (PlanState *) nlstate);
+	nlstate->js.jointype = node->join.jointype;
+	nlstate->js.joinqual = (List *)
+		ExecInitExpr((Expr *) node->join.joinqual,
+					 (PlanState *) nlstate);
 
 	/*
 	 * initialize child nodes
@@ -302,27 +348,10 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	innerPlanState(nlstate) = ExecInitNode(innerPlan(node), estate, eflags);
 
 	/*
-	 * Initialize result slot, type and projection.
+	 * tuple table initialization
 	 */
-	ExecInitResultTupleSlotTL(&nlstate->js.ps, &TTSOpsVirtual);
-	ExecAssignProjectionInfo(&nlstate->js.ps, NULL);
+	ExecInitResultTupleSlot(estate, &nlstate->js.ps);
 
-	/*
-	 * initialize child expressions
-	 */
-	nlstate->js.ps.qual =
-		ExecInitQual(node->join.plan.qual, (PlanState *) nlstate);
-	nlstate->js.jointype = node->join.jointype;
-	nlstate->js.joinqual =
-		ExecInitQual(node->join.joinqual, (PlanState *) nlstate);
-
-	/*
-	 * detect whether we need only consider the first matching inner tuple
-	 */
-	nlstate->js.single_match = (node->join.inner_unique ||
-								node->join.jointype == JOIN_SEMI);
-
-	/* set up null tuples for outer joins, if needed */
 	switch (node->join.jointype)
 	{
 		case JOIN_INNER:
@@ -332,8 +361,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 		case JOIN_ANTI:
 			nlstate->nl_NullInnerTupleSlot =
 				ExecInitNullTupleSlot(estate,
-									  ExecGetResultType(innerPlanState(nlstate)),
-									  &TTSOpsVirtual);
+								 ExecGetResultType(innerPlanState(nlstate)));
 			break;
 		default:
 			elog(ERROR, "unrecognized join type: %d",
@@ -341,8 +369,15 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	}
 
 	/*
+	 * initialize tuple type and projection info
+	 */
+	ExecAssignResultTypeFromTL(&nlstate->js.ps);
+	ExecAssignProjectionInfo(&nlstate->js.ps, NULL);
+
+	/*
 	 * finally, wipe the current outer tuple clean.
 	 */
+	nlstate->js.ps.ps_TupFromTlist = false;
 	nlstate->nl_NeedNewOuter = true;
 	nlstate->nl_MatchedOuter = false;
 
@@ -406,6 +441,7 @@ ExecReScanNestLoop(NestLoopState *node)
 	 * outer Vars are used as run-time keys...
 	 */
 
+	node->js.ps.ps_TupFromTlist = false;
 	node->nl_NeedNewOuter = true;
 	node->nl_MatchedOuter = false;
 }

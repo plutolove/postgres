@@ -5,7 +5,6 @@
 
 #include "btree_gist.h"
 #include "btree_utils_var.h"
-#include "utils/builtins.h"
 #include "utils/bytea.h"
 
 
@@ -23,7 +22,7 @@ PG_FUNCTION_INFO_V1(gbt_bytea_same);
 /* define for comparison */
 
 static bool
-gbt_byteagt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_byteagt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(byteagt,
 											PointerGetDatum(a),
@@ -31,7 +30,7 @@ gbt_byteagt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_byteage(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_byteage(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(byteage,
 											PointerGetDatum(a),
@@ -39,7 +38,7 @@ gbt_byteage(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_byteaeq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_byteaeq(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(byteaeq,
 											PointerGetDatum(a),
@@ -47,7 +46,7 @@ gbt_byteaeq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_byteale(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_byteale(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(byteale,
 											PointerGetDatum(a),
@@ -55,7 +54,7 @@ gbt_byteale(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_bytealt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_bytealt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(bytealt,
 											PointerGetDatum(a),
@@ -63,7 +62,7 @@ gbt_bytealt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static int32
-gbt_byteacmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_byteacmp(const void *a, const void *b, Oid collation)
 {
 	return DatumGetInt32(DirectFunctionCall2(byteacmp,
 											 PointerGetDatum(a),
@@ -75,7 +74,7 @@ static const gbtree_vinfo tinfo =
 {
 	gbt_t_bytea,
 	0,
-	true,
+	TRUE,
 	gbt_byteagt,
 	gbt_byteage,
 	gbt_byteaeq,
@@ -118,7 +117,7 @@ gbt_bytea_consistent(PG_FUNCTION_ARGS)
 	*recheck = false;
 
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), &tinfo, fcinfo->flinfo);
+								GIST_LEAF(entry), &tinfo);
 	PG_RETURN_BOOL(retval);
 }
 
@@ -131,7 +130,7 @@ gbt_bytea_union(PG_FUNCTION_ARGS)
 	int32	   *size = (int *) PG_GETARG_POINTER(1);
 
 	PG_RETURN_POINTER(gbt_var_union(entryvec, size, PG_GET_COLLATION(),
-									&tinfo, fcinfo->flinfo));
+									&tinfo));
 }
 
 
@@ -142,7 +141,7 @@ gbt_bytea_picksplit(PG_FUNCTION_ARGS)
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
 
 	gbt_var_picksplit(entryvec, v, PG_GET_COLLATION(),
-					  &tinfo, fcinfo->flinfo);
+					  &tinfo);
 	PG_RETURN_POINTER(v);
 }
 
@@ -153,7 +152,7 @@ gbt_bytea_same(PG_FUNCTION_ARGS)
 	Datum		d2 = PG_GETARG_DATUM(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
+	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo);
 	PG_RETURN_POINTER(result);
 }
 
@@ -166,5 +165,5 @@ gbt_bytea_penalty(PG_FUNCTION_ARGS)
 	float	   *result = (float *) PG_GETARG_POINTER(2);
 
 	PG_RETURN_POINTER(gbt_var_penalty(result, o, n, PG_GET_COLLATION(),
-									  &tinfo, fcinfo->flinfo));
+									  &tinfo));
 }

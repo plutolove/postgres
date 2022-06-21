@@ -6,7 +6,7 @@
  * Attribute options are cached separately from the fixed-size portion of
  * pg_attribute entries, which are handled by the relcache.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -24,7 +24,7 @@
 #include "utils/syscache.h"
 
 
-/* Hash table for information about each attribute's options */
+/* Hash table for informations about each attribute's options */
 static HTAB *AttoptCacheHash = NULL;
 
 /* attrelid and attnum form the lookup key, and must appear first */
@@ -71,7 +71,7 @@ InvalidateAttoptCacheCallback(Datum arg, int cacheid, uint32 hashvalue)
 
 /*
  * InitializeAttoptCache
- *		Initialize the attribute options cache.
+ *		Initialize the tablespace cache.
  */
 static void
 InitializeAttoptCache(void)
@@ -82,9 +82,10 @@ InitializeAttoptCache(void)
 	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(AttoptCacheKey);
 	ctl.entrysize = sizeof(AttoptCacheEntry);
+	ctl.hash = tag_hash;
 	AttoptCacheHash =
 		hash_create("Attopt cache", 256, &ctl,
-					HASH_ELEM | HASH_BLOBS);
+					HASH_ELEM | HASH_FUNCTION);
 
 	/* Make sure we've initialized CacheMemoryContext. */
 	if (!CacheMemoryContext)
@@ -111,7 +112,8 @@ get_attribute_options(Oid attrelid, int attnum)
 	/* Find existing cache entry, if any. */
 	if (!AttoptCacheHash)
 		InitializeAttoptCache();
-	memset(&key, 0, sizeof(key));	/* make sure any padding bits are unset */
+	memset(&key, 0, sizeof(key));		/* make sure any padding bits are
+										 * unset */
 	key.attrelid = attrelid;
 	key.attnum = attnum;
 	attopt =

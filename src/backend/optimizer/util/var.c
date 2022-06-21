@@ -9,7 +9,7 @@
  * contains variables.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,9 +22,8 @@
 
 #include "access/sysattr.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/optimizer.h"
-#include "optimizer/placeholder.h"
 #include "optimizer/prep.h"
+#include "optimizer/var.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 
@@ -32,7 +31,6 @@
 typedef struct
 {
 	Relids		varnos;
-	PlannerInfo *root;
 	int			sublevels_up;
 } pull_varnos_context;
 
@@ -57,30 +55,31 @@ typedef struct
 typedef struct
 {
 	List	   *varlist;
-	int			flags;
+	PVCAggregateBehavior aggbehavior;
+	PVCPlaceHolderBehavior phbehavior;
 } pull_var_clause_context;
 
 typedef struct
 {
-	Query	   *query;			/* outer Query */
+	PlannerInfo *root;
 	int			sublevels_up;
-	bool		possible_sublink;	/* could aliases include a SubLink? */
-	bool		inserted_sublink;	/* have we inserted a SubLink? */
+	bool		possible_sublink;		/* could aliases include a SubLink? */
+	bool		inserted_sublink;		/* have we inserted a SubLink? */
 } flatten_join_alias_vars_context;
 
 static bool pull_varnos_walker(Node *node,
-							   pull_varnos_context *context);
+				   pull_varnos_context *context);
 static bool pull_varattnos_walker(Node *node, pull_varattnos_context *context);
 static bool pull_vars_walker(Node *node, pull_vars_context *context);
 static bool contain_var_clause_walker(Node *node, void *context);
 static bool contain_vars_of_level_walker(Node *node, int *sublevels_up);
 static bool locate_var_of_level_walker(Node *node,
-									   locate_var_of_level_context *context);
+						   locate_var_of_level_context *context);
 static bool pull_var_clause_walker(Node *node,
-								   pull_var_clause_context *context);
+					   pull_var_clause_context *context);
 static Node *flatten_join_alias_vars_mutator(Node *node,
-											 flatten_join_alias_vars_context *context);
-static Relids alias_relid_set(Query *query, Relids relids);
+								flatten_join_alias_vars_context *context);
+static Relids alias_relid_set(PlannerInfo *root, Relids relids);
 
 
 /*
@@ -96,16 +95,9 @@ static Relids alias_relid_set(Query *query, Relids relids);
 Relids
 pull_varnos(Node *node)
 {
-	return pull_varnos_new(NULL, node);
-}
-
-Relids
-pull_varnos_new(PlannerInfo *root, Node *node)
-{
 	pull_varnos_context context;
 
 	context.varnos = NULL;
-	context.root = root;
 	context.sublevels_up = 0;
 
 	/*
@@ -128,16 +120,9 @@ pull_varnos_new(PlannerInfo *root, Node *node)
 Relids
 pull_varnos_of_level(Node *node, int levelsup)
 {
-	return pull_varnos_of_level_new(NULL, node, levelsup);
-}
-
-Relids
-pull_varnos_of_level_new(PlannerInfo *root, Node *node, int levelsup)
-{
 	pull_varnos_context context;
 
 	context.varnos = NULL;
-	context.root = root;
 	context.sublevels_up = levelsup;
 
 	/*
@@ -175,56 +160,33 @@ pull_varnos_walker(Node *node, pull_varnos_context *context)
 	}
 	if (IsA(node, PlaceHolderVar))
 	{
-		PlaceHolderVar *phv = (PlaceHolderVar *) node;
-
 		/*
-		 * If a PlaceHolderVar is not of the target query level, ignore it,
-		 * instead recursing into its expression to see if it contains any
-		 * vars that are of the target level.
+		 * A PlaceHolderVar acts as a variable of its syntactic scope, or
+		 * lower than that if it references only a subset of the rels in its
+		 * syntactic scope.  It might also contain lateral references, but we
+		 * should ignore such references when computing the set of varnos in
+		 * an expression tree.  Also, if the PHV contains no variables within
+		 * its syntactic scope, it will be forced to be evaluated exactly at
+		 * the syntactic scope, so take that as the relid set.
 		 */
+		PlaceHolderVar *phv = (PlaceHolderVar *) node;
+		pull_varnos_context subcontext;
+
+		subcontext.varnos = NULL;
+		subcontext.sublevels_up = context->sublevels_up;
+		(void) pull_varnos_walker((Node *) phv->phexpr, &subcontext);
 		if (phv->phlevelsup == context->sublevels_up)
 		{
-			/*
-			 * Ideally, the PHV's contribution to context->varnos is its
-			 * ph_eval_at set.  However, this code can be invoked before
-			 * that's been computed.  If we cannot find a PlaceHolderInfo,
-			 * fall back to the conservative assumption that the PHV will be
-			 * evaluated at its syntactic level (phv->phrels).
-			 *
-			 * There is a second hazard: this code is also used to examine
-			 * qual clauses during deconstruct_jointree, when we may have a
-			 * PlaceHolderInfo but its ph_eval_at value is not yet final, so
-			 * that theoretically we could obtain a relid set that's smaller
-			 * than we'd see later on.  That should never happen though,
-			 * because we deconstruct the jointree working upwards.  Any outer
-			 * join that forces delay of evaluation of a given qual clause
-			 * will be processed before we examine that clause here, so the
-			 * ph_eval_at value should have been updated to include it.
-			 */
-			PlaceHolderInfo *phinfo = NULL;
-
-			if (phv->phlevelsup == 0 && context->root)
-			{
-				ListCell   *lc;
-
-				foreach(lc, context->root->placeholder_list)
-				{
-					phinfo = (PlaceHolderInfo *) lfirst(lc);
-					if (phinfo->phid == phv->phid)
-						break;
-					phinfo = NULL;
-				}
-			}
-			if (phinfo != NULL)
-				context->varnos = bms_add_members(context->varnos,
-												  phinfo->ph_eval_at);
-			else
+			subcontext.varnos = bms_int_members(subcontext.varnos,
+												phv->phrels);
+			if (bms_is_empty(subcontext.varnos))
 				context->varnos = bms_add_members(context->varnos,
 												  phv->phrels);
-			return false;		/* don't recurse into expression */
 		}
+		context->varnos = bms_join(context->varnos, subcontext.varnos);
+		return false;
 	}
-	else if (IsA(node, Query))
+	if (IsA(node, Query))
 	{
 		/* Recurse into RTE subquery or not-yet-planned sublink subquery */
 		bool		result;
@@ -279,7 +241,7 @@ pull_varattnos_walker(Node *node, pull_varattnos_context *context)
 		if (var->varno == context->varno && var->varlevelsup == 0)
 			context->varattnos =
 				bms_add_member(context->varattnos,
-							   var->varattno - FirstLowInvalidHeapAttributeNumber);
+						 var->varattno - FirstLowInvalidHeapAttributeNumber);
 		return false;
 	}
 
@@ -535,29 +497,17 @@ locate_var_of_level_walker(Node *node,
  * pull_var_clause
  *	  Recursively pulls all Var nodes from an expression clause.
  *
- *	  Aggrefs are handled according to these bits in 'flags':
+ *	  Aggrefs are handled according to 'aggbehavior':
+ *		PVC_REJECT_AGGREGATES		throw error if Aggref found
  *		PVC_INCLUDE_AGGREGATES		include Aggrefs in output list
  *		PVC_RECURSE_AGGREGATES		recurse into Aggref arguments
- *		neither flag				throw error if Aggref found
- *	  Vars within an Aggref's expression are included in the result only
- *	  when PVC_RECURSE_AGGREGATES is specified.
+ *	  Vars within an Aggref's expression are included only in the last case.
  *
- *	  WindowFuncs are handled according to these bits in 'flags':
- *		PVC_INCLUDE_WINDOWFUNCS		include WindowFuncs in output list
- *		PVC_RECURSE_WINDOWFUNCS		recurse into WindowFunc arguments
- *		neither flag				throw error if WindowFunc found
- *	  Vars within a WindowFunc's expression are included in the result only
- *	  when PVC_RECURSE_WINDOWFUNCS is specified.
- *
- *	  PlaceHolderVars are handled according to these bits in 'flags':
+ *	  PlaceHolderVars are handled according to 'phbehavior':
+ *		PVC_REJECT_PLACEHOLDERS		throw error if PlaceHolderVar found
  *		PVC_INCLUDE_PLACEHOLDERS	include PlaceHolderVars in output list
  *		PVC_RECURSE_PLACEHOLDERS	recurse into PlaceHolderVar arguments
- *		neither flag				throw error if PlaceHolderVar found
- *	  Vars within a PHV's expression are included in the result only
- *	  when PVC_RECURSE_PLACEHOLDERS is specified.
- *
- *	  GroupingFuncs are treated mostly like Aggrefs, and so do not need
- *	  their own flag bits.
+ *	  Vars within a PHV's expression are included only in the last case.
  *
  *	  CurrentOfExpr nodes are ignored in all cases.
  *
@@ -571,20 +521,14 @@ locate_var_of_level_walker(Node *node,
  * of sublinks to subplans!
  */
 List *
-pull_var_clause(Node *node, int flags)
+pull_var_clause(Node *node, PVCAggregateBehavior aggbehavior,
+				PVCPlaceHolderBehavior phbehavior)
 {
 	pull_var_clause_context context;
 
-	/* Assert that caller has not specified inconsistent flags */
-	Assert((flags & (PVC_INCLUDE_AGGREGATES | PVC_RECURSE_AGGREGATES))
-		   != (PVC_INCLUDE_AGGREGATES | PVC_RECURSE_AGGREGATES));
-	Assert((flags & (PVC_INCLUDE_WINDOWFUNCS | PVC_RECURSE_WINDOWFUNCS))
-		   != (PVC_INCLUDE_WINDOWFUNCS | PVC_RECURSE_WINDOWFUNCS));
-	Assert((flags & (PVC_INCLUDE_PLACEHOLDERS | PVC_RECURSE_PLACEHOLDERS))
-		   != (PVC_INCLUDE_PLACEHOLDERS | PVC_RECURSE_PLACEHOLDERS));
-
 	context.varlist = NIL;
-	context.flags = flags;
+	context.aggbehavior = aggbehavior;
+	context.phbehavior = phbehavior;
 
 	pull_var_clause_walker(node, &context);
 	return context.varlist;
@@ -606,74 +550,37 @@ pull_var_clause_walker(Node *node, pull_var_clause_context *context)
 	{
 		if (((Aggref *) node)->agglevelsup != 0)
 			elog(ERROR, "Upper-level Aggref found where not expected");
-		if (context->flags & PVC_INCLUDE_AGGREGATES)
+		switch (context->aggbehavior)
 		{
-			context->varlist = lappend(context->varlist, node);
-			/* we do NOT descend into the contained expression */
-			return false;
+			case PVC_REJECT_AGGREGATES:
+				elog(ERROR, "Aggref found where not expected");
+				break;
+			case PVC_INCLUDE_AGGREGATES:
+				context->varlist = lappend(context->varlist, node);
+				/* we do NOT descend into the contained expression */
+				return false;
+			case PVC_RECURSE_AGGREGATES:
+				/* ignore the aggregate, look at its argument instead */
+				break;
 		}
-		else if (context->flags & PVC_RECURSE_AGGREGATES)
-		{
-			/* fall through to recurse into the aggregate's arguments */
-		}
-		else
-			elog(ERROR, "Aggref found where not expected");
-	}
-	else if (IsA(node, GroupingFunc))
-	{
-		if (((GroupingFunc *) node)->agglevelsup != 0)
-			elog(ERROR, "Upper-level GROUPING found where not expected");
-		if (context->flags & PVC_INCLUDE_AGGREGATES)
-		{
-			context->varlist = lappend(context->varlist, node);
-			/* we do NOT descend into the contained expression */
-			return false;
-		}
-		else if (context->flags & PVC_RECURSE_AGGREGATES)
-		{
-			/*
-			 * We do NOT descend into the contained expression, even if the
-			 * caller asked for it, because we never actually evaluate it -
-			 * the result is driven entirely off the associated GROUP BY
-			 * clause, so we never need to extract the actual Vars here.
-			 */
-			return false;
-		}
-		else
-			elog(ERROR, "GROUPING found where not expected");
-	}
-	else if (IsA(node, WindowFunc))
-	{
-		/* WindowFuncs have no levelsup field to check ... */
-		if (context->flags & PVC_INCLUDE_WINDOWFUNCS)
-		{
-			context->varlist = lappend(context->varlist, node);
-			/* we do NOT descend into the contained expressions */
-			return false;
-		}
-		else if (context->flags & PVC_RECURSE_WINDOWFUNCS)
-		{
-			/* fall through to recurse into the windowfunc's arguments */
-		}
-		else
-			elog(ERROR, "WindowFunc found where not expected");
 	}
 	else if (IsA(node, PlaceHolderVar))
 	{
 		if (((PlaceHolderVar *) node)->phlevelsup != 0)
 			elog(ERROR, "Upper-level PlaceHolderVar found where not expected");
-		if (context->flags & PVC_INCLUDE_PLACEHOLDERS)
+		switch (context->phbehavior)
 		{
-			context->varlist = lappend(context->varlist, node);
-			/* we do NOT descend into the contained expression */
-			return false;
+			case PVC_REJECT_PLACEHOLDERS:
+				elog(ERROR, "PlaceHolderVar found where not expected");
+				break;
+			case PVC_INCLUDE_PLACEHOLDERS:
+				context->varlist = lappend(context->varlist, node);
+				/* we do NOT descend into the contained expression */
+				return false;
+			case PVC_RECURSE_PLACEHOLDERS:
+				/* ignore the placeholder, look at its argument instead */
+				break;
 		}
-		else if (context->flags & PVC_RECURSE_PLACEHOLDERS)
-		{
-			/* fall through to recurse into the placeholder's expression */
-		}
-		else
-			elog(ERROR, "PlaceHolderVar found where not expected");
 	}
 	return expression_tree_walker(node, pull_var_clause_walker,
 								  (void *) context);
@@ -696,9 +603,9 @@ pull_var_clause_walker(Node *node, pull_var_clause_context *context)
  * entries might now be arbitrary expressions, not just Vars.  This affects
  * this function in one important way: we might find ourselves inserting
  * SubLink expressions into subqueries, and we must make sure that their
- * Query.hasSubLinks fields get set to true if so.  If there are any
+ * Query.hasSubLinks fields get set to TRUE if so.  If there are any
  * SubLinks in the join alias lists, the outer Query should already have
- * hasSubLinks = true, so this is only relevant to un-flattened subqueries.
+ * hasSubLinks = TRUE, so this is only relevant to un-flattened subqueries.
  *
  * NOTE: this is used on not-yet-planned expressions.  We do not expect it
  * to be applied directly to the whole Query, so if we see a Query to start
@@ -706,16 +613,16 @@ pull_var_clause_walker(Node *node, pull_var_clause_context *context)
  * subqueries).
  */
 Node *
-flatten_join_alias_vars(Query *query, Node *node)
+flatten_join_alias_vars(PlannerInfo *root, Node *node)
 {
 	flatten_join_alias_vars_context context;
 
-	context.query = query;
+	context.root = root;
 	context.sublevels_up = 0;
 	/* flag whether join aliases could possibly contain SubLinks */
-	context.possible_sublink = query->hasSubLinks;
+	context.possible_sublink = root->parse->hasSubLinks;
 	/* if hasSubLinks is already true, no need to work hard */
-	context.inserted_sublink = query->hasSubLinks;
+	context.inserted_sublink = root->parse->hasSubLinks;
 
 	return flatten_join_alias_vars_mutator(node, &context);
 }
@@ -735,7 +642,7 @@ flatten_join_alias_vars_mutator(Node *node,
 		/* No change unless Var belongs to a JOIN of the target level */
 		if (var->varlevelsup != context->sublevels_up)
 			return node;		/* no need to copy, really */
-		rte = rt_fetch(var->varno, context->query->rtable);
+		rte = rt_fetch(var->varno, context->root->parse->rtable);
 		if (rte->rtekind != RTE_JOIN)
 			return node;
 		if (var->varattno == InvalidAttrNumber)
@@ -817,12 +724,12 @@ flatten_join_alias_vars_mutator(Node *node,
 		PlaceHolderVar *phv;
 
 		phv = (PlaceHolderVar *) expression_tree_mutator(node,
-														 flatten_join_alias_vars_mutator,
+											 flatten_join_alias_vars_mutator,
 														 (void *) context);
 		/* now fix PlaceHolderVar's relid sets */
 		if (phv->phlevelsup == context->sublevels_up)
 		{
-			phv->phrels = alias_relid_set(context->query,
+			phv->phrels = alias_relid_set(context->root,
 										  phv->phrels);
 		}
 		return (Node *) phv;
@@ -850,6 +757,7 @@ flatten_join_alias_vars_mutator(Node *node,
 	Assert(!IsA(node, SubPlan));
 	/* Shouldn't need to handle these planner auxiliary nodes here */
 	Assert(!IsA(node, SpecialJoinInfo));
+	Assert(!IsA(node, LateralJoinInfo));
 	Assert(!IsA(node, PlaceHolderInfo));
 	Assert(!IsA(node, MinMaxAggInfo));
 
@@ -862,20 +770,22 @@ flatten_join_alias_vars_mutator(Node *node,
  * underlying base relids
  */
 static Relids
-alias_relid_set(Query *query, Relids relids)
+alias_relid_set(PlannerInfo *root, Relids relids)
 {
 	Relids		result = NULL;
+	Relids		tmprelids;
 	int			rtindex;
 
-	rtindex = -1;
-	while ((rtindex = bms_next_member(relids, rtindex)) >= 0)
+	tmprelids = bms_copy(relids);
+	while ((rtindex = bms_first_member(tmprelids)) >= 0)
 	{
-		RangeTblEntry *rte = rt_fetch(rtindex, query->rtable);
+		RangeTblEntry *rte = rt_fetch(rtindex, root->parse->rtable);
 
 		if (rte->rtekind == RTE_JOIN)
-			result = bms_join(result, get_relids_for_join(query, rtindex));
+			result = bms_join(result, get_relids_for_join(root, rtindex));
 		else
 			result = bms_add_member(result, rtindex);
 	}
+	bms_free(tmprelids);
 	return result;
 }

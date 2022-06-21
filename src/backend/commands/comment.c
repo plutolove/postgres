@@ -4,7 +4,7 @@
  *
  * PostgreSQL object comments utility code.
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/commands/comment.c
@@ -15,9 +15,8 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/relation.h"
-#include "access/table.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_description.h"
@@ -28,6 +27,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 
 
 /*
@@ -36,11 +36,11 @@
  * This routine is used to add the associated comment into
  * pg_description for the object specified by the given SQL command.
  */
-ObjectAddress
+Oid
 CommentObject(CommentStmt *stmt)
 {
+	ObjectAddress address;
 	Relation	relation;
-	ObjectAddress address = InvalidObjectAddress;
 
 	/*
 	 * When loading a dump, we may see a COMMENT ON DATABASE for the old name
@@ -48,18 +48,19 @@ CommentObject(CommentStmt *stmt)
 	 * (which is really pg_restore's fault, but for now we will work around
 	 * the problem here).  Consensus is that the best fix is to treat wrong
 	 * database name as a WARNING not an ERROR; hence, the following special
-	 * case.
+	 * case.  (If the length of stmt->objname is not 1, get_object_address
+	 * will throw an error below; that's OK.)
 	 */
-	if (stmt->objtype == OBJECT_DATABASE)
+	if (stmt->objtype == OBJECT_DATABASE && list_length(stmt->objname) == 1)
 	{
-		char	   *database = strVal((Value *) stmt->object);
+		char	   *database = strVal(linitial(stmt->objname));
 
 		if (!OidIsValid(get_database_oid(database, true)))
 		{
 			ereport(WARNING,
 					(errcode(ERRCODE_UNDEFINED_DATABASE),
 					 errmsg("database \"%s\" does not exist", database)));
-			return address;
+			return InvalidOid;
 		}
 	}
 
@@ -69,12 +70,12 @@ CommentObject(CommentStmt *stmt)
 	 * does not exist, and will also acquire a lock on the target to guard
 	 * against concurrent DROP operations.
 	 */
-	address = get_object_address(stmt->objtype, stmt->object,
+	address = get_object_address(stmt->objtype, stmt->objname, stmt->objargs,
 								 &relation, ShareUpdateExclusiveLock, false);
 
 	/* Require ownership of the target object. */
 	check_object_ownership(GetUserId(), stmt->objtype, address,
-						   stmt->object, relation);
+						   stmt->objname, stmt->objargs, relation);
 
 	/* Perform other integrity checks as needed. */
 	switch (stmt->objtype)
@@ -94,8 +95,7 @@ CommentObject(CommentStmt *stmt)
 				relation->rd_rel->relkind != RELKIND_VIEW &&
 				relation->rd_rel->relkind != RELKIND_MATVIEW &&
 				relation->rd_rel->relkind != RELKIND_COMPOSITE_TYPE &&
-				relation->rd_rel->relkind != RELKIND_FOREIGN_TABLE &&
-				relation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+				relation->rd_rel->relkind != RELKIND_FOREIGN_TABLE)
 				ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("\"%s\" is not a table, view, materialized view, composite type, or foreign table",
@@ -126,7 +126,7 @@ CommentObject(CommentStmt *stmt)
 	if (relation != NULL)
 		relation_close(relation, NoLock);
 
-	return address;
+	return address.objectId;
 }
 
 /*
@@ -139,7 +139,7 @@ CommentObject(CommentStmt *stmt)
  * existing comment for the specified key.
  */
 void
-CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
+CreateComments(Oid oid, Oid classoid, int32 subid, char *comment)
 {
 	Relation	description;
 	ScanKeyData skey[3];
@@ -184,7 +184,7 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 				BTEqualStrategyNumber, F_INT4EQ,
 				Int32GetDatum(subid));
 
-	description = table_open(DescriptionRelationId, RowExclusiveLock);
+	description = heap_open(DescriptionRelationId, RowExclusiveLock);
 
 	sd = systable_beginscan(description, DescriptionObjIndexId, true,
 							NULL, 3, skey);
@@ -194,12 +194,12 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 		/* Found the old tuple, so delete or update it */
 
 		if (comment == NULL)
-			CatalogTupleDelete(description, &oldtuple->t_self);
+			simple_heap_delete(description, &oldtuple->t_self);
 		else
 		{
 			newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(description), values,
 										 nulls, replaces);
-			CatalogTupleUpdate(description, &oldtuple->t_self, newtuple);
+			simple_heap_update(description, &oldtuple->t_self, newtuple);
 		}
 
 		break;					/* Assume there can be only one match */
@@ -213,15 +213,19 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
 	{
 		newtuple = heap_form_tuple(RelationGetDescr(description),
 								   values, nulls);
-		CatalogTupleInsert(description, newtuple);
+		simple_heap_insert(description, newtuple);
 	}
 
+	/* Update indexes, if necessary */
 	if (newtuple != NULL)
+	{
+		CatalogUpdateIndexes(description, newtuple);
 		heap_freetuple(newtuple);
+	}
 
 	/* Done */
 
-	table_close(description, NoLock);
+	heap_close(description, NoLock);
 }
 
 /*
@@ -234,7 +238,7 @@ CreateComments(Oid oid, Oid classoid, int32 subid, const char *comment)
  * existing comment for the specified key.
  */
 void
-CreateSharedComments(Oid oid, Oid classoid, const char *comment)
+CreateSharedComments(Oid oid, Oid classoid, char *comment)
 {
 	Relation	shdescription;
 	ScanKeyData skey[2];
@@ -274,7 +278,7 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(classoid));
 
-	shdescription = table_open(SharedDescriptionRelationId, RowExclusiveLock);
+	shdescription = heap_open(SharedDescriptionRelationId, RowExclusiveLock);
 
 	sd = systable_beginscan(shdescription, SharedDescriptionObjIndexId, true,
 							NULL, 2, skey);
@@ -284,12 +288,12 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 		/* Found the old tuple, so delete or update it */
 
 		if (comment == NULL)
-			CatalogTupleDelete(shdescription, &oldtuple->t_self);
+			simple_heap_delete(shdescription, &oldtuple->t_self);
 		else
 		{
 			newtuple = heap_modify_tuple(oldtuple, RelationGetDescr(shdescription),
 										 values, nulls, replaces);
-			CatalogTupleUpdate(shdescription, &oldtuple->t_self, newtuple);
+			simple_heap_update(shdescription, &oldtuple->t_self, newtuple);
 		}
 
 		break;					/* Assume there can be only one match */
@@ -303,15 +307,19 @@ CreateSharedComments(Oid oid, Oid classoid, const char *comment)
 	{
 		newtuple = heap_form_tuple(RelationGetDescr(shdescription),
 								   values, nulls);
-		CatalogTupleInsert(shdescription, newtuple);
+		simple_heap_insert(shdescription, newtuple);
 	}
 
+	/* Update indexes, if necessary */
 	if (newtuple != NULL)
+	{
+		CatalogUpdateIndexes(shdescription, newtuple);
 		heap_freetuple(newtuple);
+	}
 
 	/* Done */
 
-	table_close(shdescription, NoLock);
+	heap_close(shdescription, NoLock);
 }
 
 /*
@@ -352,18 +360,18 @@ DeleteComments(Oid oid, Oid classoid, int32 subid)
 	else
 		nkeys = 2;
 
-	description = table_open(DescriptionRelationId, RowExclusiveLock);
+	description = heap_open(DescriptionRelationId, RowExclusiveLock);
 
 	sd = systable_beginscan(description, DescriptionObjIndexId, true,
 							NULL, nkeys, skey);
 
 	while ((oldtuple = systable_getnext(sd)) != NULL)
-		CatalogTupleDelete(description, &oldtuple->t_self);
+		simple_heap_delete(description, &oldtuple->t_self);
 
 	/* Done */
 
 	systable_endscan(sd);
-	table_close(description, RowExclusiveLock);
+	heap_close(description, RowExclusiveLock);
 }
 
 /*
@@ -388,18 +396,18 @@ DeleteSharedComments(Oid oid, Oid classoid)
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(classoid));
 
-	shdescription = table_open(SharedDescriptionRelationId, RowExclusiveLock);
+	shdescription = heap_open(SharedDescriptionRelationId, RowExclusiveLock);
 
 	sd = systable_beginscan(shdescription, SharedDescriptionObjIndexId, true,
 							NULL, 2, skey);
 
 	while ((oldtuple = systable_getnext(sd)) != NULL)
-		CatalogTupleDelete(shdescription, &oldtuple->t_self);
+		simple_heap_delete(shdescription, &oldtuple->t_self);
 
 	/* Done */
 
 	systable_endscan(sd);
-	table_close(shdescription, RowExclusiveLock);
+	heap_close(shdescription, RowExclusiveLock);
 }
 
 /*
@@ -430,7 +438,7 @@ GetComment(Oid oid, Oid classoid, int32 subid)
 				BTEqualStrategyNumber, F_INT4EQ,
 				Int32GetDatum(subid));
 
-	description = table_open(DescriptionRelationId, AccessShareLock);
+	description = heap_open(DescriptionRelationId, AccessShareLock);
 	tupdesc = RelationGetDescr(description);
 
 	sd = systable_beginscan(description, DescriptionObjIndexId, true,
@@ -452,7 +460,7 @@ GetComment(Oid oid, Oid classoid, int32 subid)
 	systable_endscan(sd);
 
 	/* Done */
-	table_close(description, AccessShareLock);
+	heap_close(description, AccessShareLock);
 
 	return comment;
 }

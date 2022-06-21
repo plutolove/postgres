@@ -3,7 +3,7 @@
  * timeout.c
  *	  Routines to multiplex SIGALRM interrupts for multiple timeout reasons.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -27,8 +27,7 @@ typedef struct timeout_params
 {
 	TimeoutId	index;			/* identifier of timeout reason */
 
-	/* volatile because these may be changed from the signal handler */
-	volatile bool active;		/* true if timeout is in active_timeouts[] */
+	/* volatile because it may be changed from the signal handler */
 	volatile bool indicator;	/* true if timeout has occurred */
 
 	/* callback function for timeout, or NULL if timeout not registered */
@@ -106,9 +105,6 @@ insert_timeout(TimeoutId id, int index)
 		elog(FATAL, "timeout index %d out of range 0..%d", index,
 			 num_active_timeouts);
 
-	Assert(!all_timeouts[id].active);
-	all_timeouts[id].active = true;
-
 	for (i = num_active_timeouts - 1; i >= index; i--)
 		active_timeouts[i + 1] = active_timeouts[i];
 
@@ -128,9 +124,6 @@ remove_timeout_index(int index)
 	if (index < 0 || index >= num_active_timeouts)
 		elog(FATAL, "timeout index %d out of range 0..%d", index,
 			 num_active_timeouts - 1);
-
-	Assert(active_timeouts[index]->active);
-	active_timeouts[index]->active = false;
 
 	for (i = index + 1; i < num_active_timeouts; i++)
 		active_timeouts[i - 1] = active_timeouts[i];
@@ -154,8 +147,9 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time)
 	 * If this timeout was already active, momentarily disable it.  We
 	 * interpret the call as a directive to reschedule the timeout.
 	 */
-	if (all_timeouts[id].active)
-		remove_timeout_index(find_active_timeout(id));
+	i = find_active_timeout(id);
+	if (i >= 0)
+		remove_timeout_index(i);
 
 	/*
 	 * Find out the index where to insert the new timeout.  We sort by
@@ -265,19 +259,36 @@ static void
 handle_sig_alarm(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
+	bool		save_ImmediateInterruptOK = ImmediateInterruptOK;
 
 	/*
-	 * Bump the holdoff counter, to make sure nothing we call will process
-	 * interrupts directly. No timeout handler should do that, but these
-	 * failures are hard to debug, so better be sure.
+	 * We may be executing while ImmediateInterruptOK is true (e.g., when
+	 * mainline is waiting for a lock).  If SIGINT or similar arrives while
+	 * this code is running, we'd lose control and perhaps leave our data
+	 * structures in an inconsistent state.  Disable immediate interrupts, and
+	 * just to be real sure, bump the holdoff counter as well.  (The reason
+	 * for this belt-and-suspenders-too approach is to make sure that nothing
+	 * bad happens if a timeout handler calls code that manipulates
+	 * ImmediateInterruptOK.)
+	 *
+	 * Note: it's possible for a SIGINT to interrupt handle_sig_alarm before
+	 * we manage to do this; the net effect would be as if the SIGALRM event
+	 * had been silently lost.  Therefore error recovery must include some
+	 * action that will allow any lost interrupt to be rescheduled.  Disabling
+	 * some or all timeouts is sufficient, or if that's not appropriate,
+	 * reschedule_timeouts() can be called.  Also, the signal blocking hazard
+	 * described below applies here too.
 	 */
+	ImmediateInterruptOK = false;
 	HOLD_INTERRUPTS();
 
 	/*
 	 * SIGALRM is always cause for waking anything waiting on the process
-	 * latch.
+	 * latch.  Cope with MyProc not being there, as the startup process also
+	 * uses this signal handler.
 	 */
-	SetLatch(MyLatch);
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
 
 	/*
 	 * Fire any pending timeouts, but only if we're enabled to do so.
@@ -308,7 +319,7 @@ handle_sig_alarm(SIGNAL_ARGS)
 				this_timeout->indicator = true;
 
 				/* And call its handler function */
-				this_timeout->timeout_handler();
+				(*this_timeout->timeout_handler) ();
 
 				/*
 				 * The handler might not take negligible time (CheckDeadLock
@@ -323,7 +334,24 @@ handle_sig_alarm(SIGNAL_ARGS)
 		}
 	}
 
+	/*
+	 * Re-allow query cancel, and then try to service any cancel request that
+	 * arrived meanwhile (this might in particular include a cancel request
+	 * fired by one of the timeout handlers).  Since we are in a signal
+	 * handler, we mustn't call ProcessInterrupts unless ImmediateInterruptOK
+	 * is set; if it isn't, the cancel will happen at the next mainline
+	 * CHECK_FOR_INTERRUPTS.
+	 *
+	 * Note: a longjmp from here is safe so far as our own data structures are
+	 * concerned; but on platforms that block a signal before calling the
+	 * handler and then un-block it on return, longjmping out of the signal
+	 * handler leaves SIGALRM still blocked.  Error cleanup is responsible for
+	 * unblocking any blocked signals.
+	 */
 	RESUME_INTERRUPTS();
+	ImmediateInterruptOK = save_ImmediateInterruptOK;
+	if (save_ImmediateInterruptOK)
+		CHECK_FOR_INTERRUPTS();
 
 	errno = save_errno;
 }
@@ -355,7 +383,6 @@ InitializeTimeouts(void)
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
 		all_timeouts[i].index = i;
-		all_timeouts[i].active = false;
 		all_timeouts[i].indicator = false;
 		all_timeouts[i].timeout_handler = NULL;
 		all_timeouts[i].start_time = 0;
@@ -531,6 +558,8 @@ enable_timeouts(const EnableTimeoutParams *timeouts, int count)
 void
 disable_timeout(TimeoutId id, bool keep_indicator)
 {
+	int			i;
+
 	/* Assert request is sane */
 	Assert(all_timeouts_initialized);
 	Assert(all_timeouts[id].timeout_handler != NULL);
@@ -539,8 +568,9 @@ disable_timeout(TimeoutId id, bool keep_indicator)
 	disable_alarm();
 
 	/* Find the timeout and remove it from the active list. */
-	if (all_timeouts[id].active)
-		remove_timeout_index(find_active_timeout(id));
+	i = find_active_timeout(id);
+	if (i >= 0)
+		remove_timeout_index(i);
 
 	/* Mark it inactive, whether it was active or not. */
 	if (!keep_indicator)
@@ -575,11 +605,13 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 	for (i = 0; i < count; i++)
 	{
 		TimeoutId	id = timeouts[i].id;
+		int			idx;
 
 		Assert(all_timeouts[id].timeout_handler != NULL);
 
-		if (all_timeouts[id].active)
-			remove_timeout_index(find_active_timeout(id));
+		idx = find_active_timeout(id);
+		if (idx >= 0)
+			remove_timeout_index(idx);
 
 		if (!timeouts[i].keep_indicator)
 			all_timeouts[id].indicator = false;
@@ -597,8 +629,6 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 void
 disable_all_timeouts(bool keep_indicators)
 {
-	int			i;
-
 	disable_alarm();
 
 	/*
@@ -617,24 +647,13 @@ disable_all_timeouts(bool keep_indicators)
 
 	num_active_timeouts = 0;
 
-	for (i = 0; i < MAX_TIMEOUTS; i++)
+	if (!keep_indicators)
 	{
-		all_timeouts[i].active = false;
-		if (!keep_indicators)
+		int			i;
+
+		for (i = 0; i < MAX_TIMEOUTS; i++)
 			all_timeouts[i].indicator = false;
 	}
-}
-
-/*
- * Return true if the timeout is active (enabled and not yet fired)
- *
- * This is, of course, subject to race conditions, as the timeout could fire
- * immediately after we look.
- */
-bool
-get_timeout_active(TimeoutId id)
-{
-	return all_timeouts[id].active;
 }
 
 /*

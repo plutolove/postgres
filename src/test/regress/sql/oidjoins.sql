@@ -13,18 +13,6 @@ SELECT	ctid, aggfinalfn
 FROM	pg_catalog.pg_aggregate fk
 WHERE	aggfinalfn != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.aggfinalfn);
-SELECT	ctid, aggcombinefn
-FROM	pg_catalog.pg_aggregate fk
-WHERE	aggcombinefn != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.aggcombinefn);
-SELECT	ctid, aggserialfn
-FROM	pg_catalog.pg_aggregate fk
-WHERE	aggserialfn != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.aggserialfn);
-SELECT	ctid, aggdeserialfn
-FROM	pg_catalog.pg_aggregate fk
-WHERE	aggdeserialfn != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.aggdeserialfn);
 SELECT	ctid, aggmtransfn
 FROM	pg_catalog.pg_aggregate fk
 WHERE	aggmtransfn != 0 AND
@@ -49,10 +37,70 @@ SELECT	ctid, aggmtranstype
 FROM	pg_catalog.pg_aggregate fk
 WHERE	aggmtranstype != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.aggmtranstype);
-SELECT	ctid, amhandler
+SELECT	ctid, amkeytype
 FROM	pg_catalog.pg_am fk
-WHERE	amhandler != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amhandler);
+WHERE	amkeytype != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.amkeytype);
+SELECT	ctid, aminsert
+FROM	pg_catalog.pg_am fk
+WHERE	aminsert != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.aminsert);
+SELECT	ctid, ambeginscan
+FROM	pg_catalog.pg_am fk
+WHERE	ambeginscan != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.ambeginscan);
+SELECT	ctid, amgettuple
+FROM	pg_catalog.pg_am fk
+WHERE	amgettuple != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amgettuple);
+SELECT	ctid, amgetbitmap
+FROM	pg_catalog.pg_am fk
+WHERE	amgetbitmap != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amgetbitmap);
+SELECT	ctid, amrescan
+FROM	pg_catalog.pg_am fk
+WHERE	amrescan != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amrescan);
+SELECT	ctid, amendscan
+FROM	pg_catalog.pg_am fk
+WHERE	amendscan != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amendscan);
+SELECT	ctid, ammarkpos
+FROM	pg_catalog.pg_am fk
+WHERE	ammarkpos != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.ammarkpos);
+SELECT	ctid, amrestrpos
+FROM	pg_catalog.pg_am fk
+WHERE	amrestrpos != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amrestrpos);
+SELECT	ctid, ambuild
+FROM	pg_catalog.pg_am fk
+WHERE	ambuild != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.ambuild);
+SELECT	ctid, ambuildempty
+FROM	pg_catalog.pg_am fk
+WHERE	ambuildempty != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.ambuildempty);
+SELECT	ctid, ambulkdelete
+FROM	pg_catalog.pg_am fk
+WHERE	ambulkdelete != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.ambulkdelete);
+SELECT	ctid, amvacuumcleanup
+FROM	pg_catalog.pg_am fk
+WHERE	amvacuumcleanup != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amvacuumcleanup);
+SELECT	ctid, amcanreturn
+FROM	pg_catalog.pg_am fk
+WHERE	amcanreturn != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amcanreturn);
+SELECT	ctid, amcostestimate
+FROM	pg_catalog.pg_am fk
+WHERE	amcostestimate != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amcostestimate);
+SELECT	ctid, amoptions
+FROM	pg_catalog.pg_am fk
+WHERE	amoptions != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.amoptions);
 SELECT	ctid, amopfamily
 FROM	pg_catalog.pg_amop fk
 WHERE	amopfamily != 0 AND
@@ -109,18 +157,6 @@ SELECT	ctid, attcollation
 FROM	pg_catalog.pg_attribute fk
 WHERE	attcollation != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.attcollation);
-SELECT	ctid, roleid
-FROM	pg_catalog.pg_auth_members fk
-WHERE	roleid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.roleid);
-SELECT	ctid, member
-FROM	pg_catalog.pg_auth_members fk
-WHERE	member != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.member);
-SELECT	ctid, grantor
-FROM	pg_catalog.pg_auth_members fk
-WHERE	grantor != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.grantor);
 SELECT	ctid, castsource
 FROM	pg_catalog.pg_cast fk
 WHERE	castsource != 0 AND
@@ -185,10 +221,6 @@ SELECT	ctid, conindid
 FROM	pg_catalog.pg_constraint fk
 WHERE	conindid != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.conindid);
-SELECT	ctid, conparentid
-FROM	pg_catalog.pg_constraint fk
-WHERE	conparentid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint pk WHERE pk.oid = fk.conparentid);
 SELECT	ctid, confrelid
 FROM	pg_catalog.pg_constraint fk
 WHERE	confrelid != 0 AND
@@ -241,18 +273,6 @@ SELECT	ctid, extnamespace
 FROM	pg_catalog.pg_extension fk
 WHERE	extnamespace != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace pk WHERE pk.oid = fk.extnamespace);
-SELECT	ctid, fdwowner
-FROM	pg_catalog.pg_foreign_data_wrapper fk
-WHERE	fdwowner != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.fdwowner);
-SELECT	ctid, srvowner
-FROM	pg_catalog.pg_foreign_server fk
-WHERE	srvowner != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.srvowner);
-SELECT	ctid, srvfdw
-FROM	pg_catalog.pg_foreign_server fk
-WHERE	srvfdw != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_foreign_data_wrapper pk WHERE pk.oid = fk.srvfdw);
 SELECT	ctid, indexrelid
 FROM	pg_catalog.pg_index fk
 WHERE	indexrelid != 0 AND
@@ -269,10 +289,6 @@ SELECT	ctid, inhparent
 FROM	pg_catalog.pg_inherits fk
 WHERE	inhparent != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.inhparent);
-SELECT	ctid, classoid
-FROM	pg_catalog.pg_init_privs fk
-WHERE	classoid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.classoid);
 SELECT	ctid, lanowner
 FROM	pg_catalog.pg_language fk
 WHERE	lanowner != 0 AND
@@ -289,14 +305,6 @@ SELECT	ctid, lanvalidator
 FROM	pg_catalog.pg_language fk
 WHERE	lanvalidator != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.lanvalidator);
-SELECT	ctid, loid
-FROM	pg_catalog.pg_largeobject fk
-WHERE	loid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_largeobject_metadata pk WHERE pk.oid = fk.loid);
-SELECT	ctid, lomowner
-FROM	pg_catalog.pg_largeobject_metadata fk
-WHERE	lomowner != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.lomowner);
 SELECT	ctid, nspowner
 FROM	pg_catalog.pg_namespace fk
 WHERE	nspowner != 0 AND
@@ -377,18 +385,6 @@ SELECT	ctid, opfowner
 FROM	pg_catalog.pg_opfamily fk
 WHERE	opfowner != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.opfowner);
-SELECT	ctid, partrelid
-FROM	pg_catalog.pg_partitioned_table fk
-WHERE	partrelid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.partrelid);
-SELECT	ctid, partdefid
-FROM	pg_catalog.pg_partitioned_table fk
-WHERE	partdefid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.partdefid);
-SELECT	ctid, polrelid
-FROM	pg_catalog.pg_policy fk
-WHERE	polrelid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.polrelid);
 SELECT	ctid, pronamespace
 FROM	pg_catalog.pg_proc fk
 WHERE	pronamespace != 0 AND
@@ -405,10 +401,10 @@ SELECT	ctid, provariadic
 FROM	pg_catalog.pg_proc fk
 WHERE	provariadic != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.provariadic);
-SELECT	ctid, prosupport
+SELECT	ctid, protransform
 FROM	pg_catalog.pg_proc fk
-WHERE	prosupport != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.prosupport);
+WHERE	protransform != 0 AND
+	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.protransform);
 SELECT	ctid, prorettype
 FROM	pg_catalog.pg_proc fk
 WHERE	prorettype != 0 AND
@@ -441,14 +437,6 @@ SELECT	ctid, ev_class
 FROM	pg_catalog.pg_rewrite fk
 WHERE	ev_class != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.ev_class);
-SELECT	ctid, seqrelid
-FROM	pg_catalog.pg_sequence fk
-WHERE	seqrelid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.seqrelid);
-SELECT	ctid, seqtypid
-FROM	pg_catalog.pg_sequence fk
-WHERE	seqtypid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.seqtypid);
 SELECT	ctid, refclassid
 FROM	pg_catalog.pg_shdepend fk
 WHERE	refclassid != 0 AND
@@ -481,70 +469,14 @@ SELECT	ctid, staop5
 FROM	pg_catalog.pg_statistic fk
 WHERE	staop5 != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_operator pk WHERE pk.oid = fk.staop5);
-SELECT	ctid, stacoll1
-FROM	pg_catalog.pg_statistic fk
-WHERE	stacoll1 != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.stacoll1);
-SELECT	ctid, stacoll2
-FROM	pg_catalog.pg_statistic fk
-WHERE	stacoll2 != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.stacoll2);
-SELECT	ctid, stacoll3
-FROM	pg_catalog.pg_statistic fk
-WHERE	stacoll3 != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.stacoll3);
-SELECT	ctid, stacoll4
-FROM	pg_catalog.pg_statistic fk
-WHERE	stacoll4 != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.stacoll4);
-SELECT	ctid, stacoll5
-FROM	pg_catalog.pg_statistic fk
-WHERE	stacoll5 != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.stacoll5);
-SELECT	ctid, stxrelid
-FROM	pg_catalog.pg_statistic_ext fk
-WHERE	stxrelid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.stxrelid);
-SELECT	ctid, stxnamespace
-FROM	pg_catalog.pg_statistic_ext fk
-WHERE	stxnamespace != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace pk WHERE pk.oid = fk.stxnamespace);
-SELECT	ctid, stxowner
-FROM	pg_catalog.pg_statistic_ext fk
-WHERE	stxowner != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.stxowner);
-SELECT	ctid, stxoid
-FROM	pg_catalog.pg_statistic_ext_data fk
-WHERE	stxoid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_statistic_ext pk WHERE pk.oid = fk.stxoid);
 SELECT	ctid, spcowner
 FROM	pg_catalog.pg_tablespace fk
 WHERE	spcowner != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_authid pk WHERE pk.oid = fk.spcowner);
-SELECT	ctid, trftype
-FROM	pg_catalog.pg_transform fk
-WHERE	trftype != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.trftype);
-SELECT	ctid, trflang
-FROM	pg_catalog.pg_transform fk
-WHERE	trflang != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_language pk WHERE pk.oid = fk.trflang);
-SELECT	ctid, trffromsql
-FROM	pg_catalog.pg_transform fk
-WHERE	trffromsql != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.trffromsql);
-SELECT	ctid, trftosql
-FROM	pg_catalog.pg_transform fk
-WHERE	trftosql != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc pk WHERE pk.oid = fk.trftosql);
 SELECT	ctid, tgrelid
 FROM	pg_catalog.pg_trigger fk
 WHERE	tgrelid != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class pk WHERE pk.oid = fk.tgrelid);
-SELECT	ctid, tgparentid
-FROM	pg_catalog.pg_trigger fk
-WHERE	tgparentid != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_trigger pk WHERE pk.oid = fk.tgparentid);
 SELECT	ctid, tgfoid
 FROM	pg_catalog.pg_trigger fk
 WHERE	tgfoid != 0 AND
@@ -701,26 +633,6 @@ SELECT	ctid, conexclop
 FROM	(SELECT ctid, unnest(conexclop) AS conexclop FROM pg_catalog.pg_constraint) fk
 WHERE	conexclop != 0 AND
 	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_operator pk WHERE pk.oid = fk.conexclop);
-SELECT	ctid, indcollation
-FROM	(SELECT ctid, unnest(indcollation) AS indcollation FROM pg_catalog.pg_index) fk
-WHERE	indcollation != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.indcollation);
-SELECT	ctid, indclass
-FROM	(SELECT ctid, unnest(indclass) AS indclass FROM pg_catalog.pg_index) fk
-WHERE	indclass != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_opclass pk WHERE pk.oid = fk.indclass);
-SELECT	ctid, partclass
-FROM	(SELECT ctid, unnest(partclass) AS partclass FROM pg_catalog.pg_partitioned_table) fk
-WHERE	partclass != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_opclass pk WHERE pk.oid = fk.partclass);
-SELECT	ctid, partcollation
-FROM	(SELECT ctid, unnest(partcollation) AS partcollation FROM pg_catalog.pg_partitioned_table) fk
-WHERE	partcollation != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_collation pk WHERE pk.oid = fk.partcollation);
-SELECT	ctid, proargtypes
-FROM	(SELECT ctid, unnest(proargtypes) AS proargtypes FROM pg_catalog.pg_proc) fk
-WHERE	proargtypes != 0 AND
-	NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type pk WHERE pk.oid = fk.proargtypes);
 SELECT	ctid, proallargtypes
 FROM	(SELECT ctid, unnest(proallargtypes) AS proallargtypes FROM pg_catalog.pg_proc) fk
 WHERE	proallargtypes != 0 AND

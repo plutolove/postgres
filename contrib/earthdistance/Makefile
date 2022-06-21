@@ -3,11 +3,10 @@
 MODULES = earthdistance
 
 EXTENSION = earthdistance
-DATA = earthdistance--1.1.sql earthdistance--1.0--1.1.sql
-PGFILEDESC = "earthdistance - calculate distances on the surface of the Earth"
+DATA = earthdistance--1.0.sql earthdistance--unpackaged--1.0.sql
 
 REGRESS = earthdistance
-EXTRA_INSTALL = contrib/cube
+REGRESS_OPTS = --extra-install=contrib/cube
 
 LDFLAGS_SL += $(filter -lm, $(LIBS))
 

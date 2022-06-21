@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_server.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="sql-dropserver">
+<refentry id="SQL-DROPSERVER">
  <indexterm zone="sql-dropserver">
   <primary>DROP SERVER</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP SERVER [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [, ...] [ CASCADE | RESTRICT ]
+DROP SERVER [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -63,9 +63,7 @@ DROP SERVER [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [, .
     <listitem>
      <para>
       Automatically drop objects that depend on the server (such as
-      user mappings),
-      and in turn all objects that depend on those objects
-      (see <xref linkend="ddl-depend"/>).
+      user mappings).
      </para>
     </listitem>
    </varlistentry>
@@ -86,7 +84,7 @@ DROP SERVER [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [, .
   <title>Examples</title>
 
   <para>
-   Drop a server <literal>foo</literal> if it exists:
+   Drop a server <literal>foo</> if it exists:
 <programlisting>
 DROP SERVER IF EXISTS foo;
 </programlisting></para>
@@ -97,8 +95,8 @@ DROP SERVER IF EXISTS foo;
 
   <para>
    <command>DROP SERVER</command> conforms to ISO/IEC 9075-9
-   (SQL/MED).  The <literal>IF EXISTS</literal> clause is
-   a <productname>PostgreSQL</productname> extension.
+   (SQL/MED).  The <literal>IF EXISTS</> clause is
+   a <productname>PostgreSQL</> extension.
   </para>
  </refsect1>
 
@@ -106,8 +104,8 @@ DROP SERVER IF EXISTS foo;
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-createserver"/></member>
-   <member><xref linkend="sql-alterserver"/></member>
+   <member><xref linkend="sql-createserver"></member>
+   <member><xref linkend="sql-alterserver"></member>
   </simplelist>
  </refsect1>
 

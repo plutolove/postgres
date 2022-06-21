@@ -3,7 +3,7 @@
  * varchar.c
  *	  Functions for the built-in types char(n) and varchar(n).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,19 +14,15 @@
  */
 #include "postgres.h"
 
-#include "access/detoast.h"
-#include "catalog/pg_collation.h"
-#include "catalog/pg_type.h"
-#include "common/hashfn.h"
+
+#include "access/hash.h"
+#include "access/tuptoaster.h"
 #include "libpq/pqformat.h"
-#include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/supportnodes.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/pg_locale.h"
-#include "utils/varlena.h"
+#include "mb/pg_wchar.h"
+
 
 /* common code for bpchartypmodin and varchartypmodin */
 static int32
@@ -469,8 +465,8 @@ varchar_input(const char *s, size_t len, int32 atttypmod)
 			if (s[j] != ' ')
 				ereport(ERROR,
 						(errcode(ERRCODE_STRING_DATA_RIGHT_TRUNCATION),
-						 errmsg("value too long for type character varying(%d)",
-								(int) maxlen)));
+					  errmsg("value too long for type character varying(%d)",
+							 (int) maxlen)));
 		}
 
 		len = mbmaxlen;
@@ -548,41 +544,33 @@ varcharsend(PG_FUNCTION_ARGS)
 
 
 /*
- * varchar_support()
- *
- * Planner support function for the varchar() length coercion function.
- *
- * Currently, the only interesting thing we can do is flatten calls that set
- * the new maximum length >= the previous maximum length.  We can ignore the
- * isExplicit argument, since that only affects truncation cases.
+ * varchar_transform()
+ * Flatten calls to varchar's length coercion function that set the new maximum
+ * length >= the previous maximum length.  We can ignore the isExplicit
+ * argument, since that only affects truncation cases.
  */
 Datum
-varchar_support(PG_FUNCTION_ARGS)
+varchar_transform(PG_FUNCTION_ARGS)
 {
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
+	FuncExpr   *expr = (FuncExpr *) PG_GETARG_POINTER(0);
 	Node	   *ret = NULL;
+	Node	   *typmod;
 
-	if (IsA(rawreq, SupportRequestSimplify))
+	Assert(IsA(expr, FuncExpr));
+	Assert(list_length(expr->args) >= 2);
+
+	typmod = (Node *) lsecond(expr->args);
+
+	if (IsA(typmod, Const) &&!((Const *) typmod)->constisnull)
 	{
-		SupportRequestSimplify *req = (SupportRequestSimplify *) rawreq;
-		FuncExpr   *expr = req->fcall;
-		Node	   *typmod;
+		Node	   *source = (Node *) linitial(expr->args);
+		int32		old_typmod = exprTypmod(source);
+		int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
+		int32		old_max = old_typmod - VARHDRSZ;
+		int32		new_max = new_typmod - VARHDRSZ;
 
-		Assert(list_length(expr->args) >= 2);
-
-		typmod = (Node *) lsecond(expr->args);
-
-		if (IsA(typmod, Const) && !((Const *) typmod)->constisnull)
-		{
-			Node	   *source = (Node *) linitial(expr->args);
-			int32		old_typmod = exprTypmod(source);
-			int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
-			int32		old_max = old_typmod - VARHDRSZ;
-			int32		new_max = new_typmod - VARHDRSZ;
-
-			if (new_typmod < 0 || (old_typmod >= 0 && old_max <= new_max))
-				ret = relabel_to_typmod(source, new_typmod);
-		}
+		if (new_typmod < 0 || (old_typmod >= 0 && old_max <= new_max))
+			ret = relabel_to_typmod(source, new_typmod);
 	}
 
 	PG_RETURN_POINTER(ret);
@@ -631,8 +619,8 @@ varchar(PG_FUNCTION_ARGS)
 			if (s_data[i] != ' ')
 				ereport(ERROR,
 						(errcode(ERRCODE_STRING_DATA_RIGHT_TRUNCATION),
-						 errmsg("value too long for type character varying(%d)",
-								maxlen)));
+					  errmsg("value too long for type character varying(%d)",
+							 maxlen)));
 	}
 
 	PG_RETURN_VARCHAR_P((VarChar *) cstring_to_text_with_len(s_data,
@@ -661,21 +649,14 @@ varchartypmodout(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 /* "True" length (not counting trailing blanks) of a BpChar */
-static inline int
+static int
 bcTruelen(BpChar *arg)
 {
-	return bpchartruelen(VARDATA_ANY(arg), VARSIZE_ANY_EXHDR(arg));
-}
-
-int
-bpchartruelen(char *s, int len)
-{
+	char	   *s = VARDATA_ANY(arg);
 	int			i;
+	int			len;
 
-	/*
-	 * Note that we rely on the assumption that ' ' is a singleton unit on
-	 * every supported multibyte server encoding.
-	 */
+	len = VARSIZE_ANY_EXHDR(arg);
 	for (i = len - 1; i >= 0; i--)
 	{
 		if (s[i] != ' ')
@@ -718,22 +699,6 @@ bpcharoctetlen(PG_FUNCTION_ARGS)
  * need to be so careful.
  *****************************************************************************/
 
-static void
-check_collation_set(Oid collid)
-{
-	if (!OidIsValid(collid))
-	{
-		/*
-		 * This typically means that the parser could not resolve a conflict
-		 * of implicit collations, so report it that way.
-		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_INDETERMINATE_COLLATION),
-				 errmsg("could not determine which collation to use for string comparison"),
-				 errhint("Use the COLLATE clause to set the collation explicitly.")));
-	}
-}
-
 Datum
 bpchareq(PG_FUNCTION_ARGS)
 {
@@ -742,31 +707,18 @@ bpchareq(PG_FUNCTION_ARGS)
 	int			len1,
 				len2;
 	bool		result;
-	Oid			collid = PG_GET_COLLATION();
-
-	check_collation_set(collid);
 
 	len1 = bcTruelen(arg1);
 	len2 = bcTruelen(arg2);
 
-	if (lc_collate_is_c(collid) ||
-		collid == DEFAULT_COLLATION_OID ||
-		pg_newlocale_from_collation(collid)->deterministic)
-	{
-		/*
-		 * Since we only care about equality or not-equality, we can avoid all
-		 * the expense of strcoll() here, and just do bitwise comparison.
-		 */
-		if (len1 != len2)
-			result = false;
-		else
-			result = (memcmp(VARDATA_ANY(arg1), VARDATA_ANY(arg2), len1) == 0);
-	}
+	/*
+	 * Since we only care about equality or not-equality, we can avoid all the
+	 * expense of strcoll() here, and just do bitwise comparison.
+	 */
+	if (len1 != len2)
+		result = false;
 	else
-	{
-		result = (varstr_cmp(VARDATA_ANY(arg1), len1, VARDATA_ANY(arg2), len2,
-							 collid) == 0);
-	}
+		result = (memcmp(VARDATA_ANY(arg1), VARDATA_ANY(arg2), len1) == 0);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -782,31 +734,18 @@ bpcharne(PG_FUNCTION_ARGS)
 	int			len1,
 				len2;
 	bool		result;
-	Oid			collid = PG_GET_COLLATION();
-
-	check_collation_set(collid);
 
 	len1 = bcTruelen(arg1);
 	len2 = bcTruelen(arg2);
 
-	if (lc_collate_is_c(collid) ||
-		collid == DEFAULT_COLLATION_OID ||
-		pg_newlocale_from_collation(collid)->deterministic)
-	{
-		/*
-		 * Since we only care about equality or not-equality, we can avoid all
-		 * the expense of strcoll() here, and just do bitwise comparison.
-		 */
-		if (len1 != len2)
-			result = true;
-		else
-			result = (memcmp(VARDATA_ANY(arg1), VARDATA_ANY(arg2), len1) != 0);
-	}
+	/*
+	 * Since we only care about equality or not-equality, we can avoid all the
+	 * expense of strcoll() here, and just do bitwise comparison.
+	 */
+	if (len1 != len2)
+		result = true;
 	else
-	{
-		result = (varstr_cmp(VARDATA_ANY(arg1), len1, VARDATA_ANY(arg2), len2,
-							 collid) != 0);
-	}
+		result = (memcmp(VARDATA_ANY(arg1), VARDATA_ANY(arg2), len1) != 0);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -920,23 +859,6 @@ bpcharcmp(PG_FUNCTION_ARGS)
 }
 
 Datum
-bpchar_sortsupport(PG_FUNCTION_ARGS)
-{
-	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
-	Oid			collid = ssup->ssup_collation;
-	MemoryContext oldcontext;
-
-	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
-
-	/* Use generic string SortSupport */
-	varstr_sortsupport(ssup, BPCHAROID, collid);
-
-	MemoryContextSwitchTo(oldcontext);
-
-	PG_RETURN_VOID();
-}
-
-Datum
 bpchar_larger(PG_FUNCTION_ARGS)
 {
 	BpChar	   *arg1 = PG_GETARG_BPCHAR_PP(0);
@@ -976,60 +898,23 @@ bpchar_smaller(PG_FUNCTION_ARGS)
 /*
  * bpchar needs a specialized hash function because we want to ignore
  * trailing blanks in comparisons.
+ *
+ * Note: currently there is no need for locale-specific behavior here,
+ * but if we ever change the semantics of bpchar comparison to trust
+ * strcoll() completely, we'd need to do something different in non-C locales.
  */
 Datum
 hashbpchar(PG_FUNCTION_ARGS)
 {
 	BpChar	   *key = PG_GETARG_BPCHAR_PP(0);
-	Oid			collid = PG_GET_COLLATION();
 	char	   *keydata;
 	int			keylen;
-	pg_locale_t mylocale = 0;
 	Datum		result;
-
-	if (!collid)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDETERMINATE_COLLATION),
-				 errmsg("could not determine which collation to use for string hashing"),
-				 errhint("Use the COLLATE clause to set the collation explicitly.")));
 
 	keydata = VARDATA_ANY(key);
 	keylen = bcTruelen(key);
 
-	if (!lc_collate_is_c(collid) && collid != DEFAULT_COLLATION_OID)
-		mylocale = pg_newlocale_from_collation(collid);
-
-	if (!mylocale || mylocale->deterministic)
-	{
-		result = hash_any((unsigned char *) keydata, keylen);
-	}
-	else
-	{
-#ifdef USE_ICU
-		if (mylocale->provider == COLLPROVIDER_ICU)
-		{
-			int32_t		ulen = -1;
-			UChar	   *uchar = NULL;
-			Size		bsize;
-			uint8_t    *buf;
-
-			ulen = icu_to_uchar(&uchar, keydata, keylen);
-
-			bsize = ucol_getSortKey(mylocale->info.icu.ucol,
-									uchar, ulen, NULL, 0);
-			buf = palloc(bsize);
-			ucol_getSortKey(mylocale->info.icu.ucol,
-							uchar, ulen, buf, bsize);
-
-			result = hash_any(buf, bsize);
-
-			pfree(buf);
-		}
-		else
-#endif
-			/* shouldn't happen */
-			elog(ERROR, "unsupported collprovider: %c", mylocale->provider);
-	}
+	result = hash_any((unsigned char *) keydata, keylen);
 
 	/* Avoid leaking memory for toasted inputs */
 	PG_FREE_IF_COPY(key, 0);
@@ -1037,72 +922,12 @@ hashbpchar(PG_FUNCTION_ARGS)
 	return result;
 }
 
-Datum
-hashbpcharextended(PG_FUNCTION_ARGS)
-{
-	BpChar	   *key = PG_GETARG_BPCHAR_PP(0);
-	Oid			collid = PG_GET_COLLATION();
-	char	   *keydata;
-	int			keylen;
-	pg_locale_t mylocale = 0;
-	Datum		result;
-
-	if (!collid)
-		ereport(ERROR,
-				(errcode(ERRCODE_INDETERMINATE_COLLATION),
-				 errmsg("could not determine which collation to use for string hashing"),
-				 errhint("Use the COLLATE clause to set the collation explicitly.")));
-
-	keydata = VARDATA_ANY(key);
-	keylen = bcTruelen(key);
-
-	if (!lc_collate_is_c(collid) && collid != DEFAULT_COLLATION_OID)
-		mylocale = pg_newlocale_from_collation(collid);
-
-	if (!mylocale || mylocale->deterministic)
-	{
-		result = hash_any_extended((unsigned char *) keydata, keylen,
-								   PG_GETARG_INT64(1));
-	}
-	else
-	{
-#ifdef USE_ICU
-		if (mylocale->provider == COLLPROVIDER_ICU)
-		{
-			int32_t		ulen = -1;
-			UChar	   *uchar = NULL;
-			Size		bsize;
-			uint8_t    *buf;
-
-			ulen = icu_to_uchar(&uchar, VARDATA_ANY(key), VARSIZE_ANY_EXHDR(key));
-
-			bsize = ucol_getSortKey(mylocale->info.icu.ucol,
-									uchar, ulen, NULL, 0);
-			buf = palloc(bsize);
-			ucol_getSortKey(mylocale->info.icu.ucol,
-							uchar, ulen, buf, bsize);
-
-			result = hash_any_extended(buf, bsize, PG_GETARG_INT64(1));
-
-			pfree(buf);
-		}
-		else
-#endif
-			/* shouldn't happen */
-			elog(ERROR, "unsupported collprovider: %c", mylocale->provider);
-	}
-
-	PG_FREE_IF_COPY(key, 0);
-
-	return result;
-}
 
 /*
  * The following operators support character-by-character comparison
  * of bpchar datums, to allow building indexes suitable for LIKE clauses.
- * Note that the regular bpchareq/bpcharne comparison operators, and
- * regular support functions 1 and 2 with "C" collation are assumed to be
- * compatible with these!
+ * Note that the regular bpchareq/bpcharne comparison operators are assumed
+ * to be compatible with these!
  */
 
 static int
@@ -1204,21 +1029,4 @@ btbpchar_pattern_cmp(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(arg2, 1);
 
 	PG_RETURN_INT32(result);
-}
-
-
-Datum
-btbpchar_pattern_sortsupport(PG_FUNCTION_ARGS)
-{
-	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
-	MemoryContext oldcontext;
-
-	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
-
-	/* Use generic string SortSupport, forcing "C" collation */
-	varstr_sortsupport(ssup, BPCHAROID, C_COLLATION_OID);
-
-	MemoryContextSwitchTo(oldcontext);
-
-	PG_RETURN_VOID();
 }

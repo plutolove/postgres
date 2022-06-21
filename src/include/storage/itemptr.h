@@ -4,7 +4,7 @@
  *	  POSTGRES disk item pointer definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/itemptr.h
@@ -22,16 +22,17 @@
  *
  * This is a pointer to an item within a disk page of a known file
  * (for example, a cross-link from an index to its parent table).
- * ip_blkid tells us which block, ip_posid tells us which entry in
- * the linp (ItemIdData) array we want.
+ * blkid tells us which block, posid tells us which entry in the linp
+ * (ItemIdData) array we want.
  *
  * Note: because there is an item pointer in each tuple header and index
  * tuple header on disk, it's very important not to waste space with
  * structure padding bytes.  The struct is designed to be six bytes long
  * (it contains three int16 fields) but a few compilers will pad it to
  * eight bytes unless coerced.  We apply appropriate persuasion where
- * possible.  If your compiler can't be made to play along, you'll waste
- * lots of space.
+ * possible, and to cope with unpersuadable compilers, we try to use
+ * "SizeOfIptrData" rather than "sizeof(ItemPointerData)" when computing
+ * on-disk sizes.
  */
 typedef struct ItemPointerData
 {
@@ -39,36 +40,15 @@ typedef struct ItemPointerData
 	OffsetNumber ip_posid;
 }
 
-/* If compiler understands packed and aligned pragmas, use those */
-#if defined(pg_attribute_packed) && defined(pg_attribute_aligned)
-			pg_attribute_packed()
-			pg_attribute_aligned(2)
+#ifdef __arm__
+__attribute__((packed))			/* Appropriate whack upside the head for ARM */
 #endif
 ItemPointerData;
 
+#define SizeOfIptrData	\
+	(offsetof(ItemPointerData, ip_posid) + sizeof(OffsetNumber))
+
 typedef ItemPointerData *ItemPointer;
-
-/* ----------------
- *		special values used in heap tuples (t_ctid)
- * ----------------
- */
-
-/*
- * If a heap tuple holds a speculative insertion token rather than a real
- * TID, ip_posid is set to SpecTokenOffsetNumber, and the token is stored in
- * ip_blkid. SpecTokenOffsetNumber must be higher than MaxOffsetNumber, so
- * that it can be distinguished from a valid offset number in a regular item
- * pointer.
- */
-#define SpecTokenOffsetNumber		0xfffe
-
-/*
- * When a tuple is moved to a different partition by UPDATE, the t_ctid of
- * the old tuple version is set to this magic value.
- */
-#define MovedPartitionsOffsetNumber 0xfffd
-#define MovedPartitionsBlockNumber	InvalidBlockNumber
-
 
 /* ----------------
  *		support macros
@@ -83,41 +63,23 @@ typedef ItemPointerData *ItemPointer;
 	((bool) (PointerIsValid(pointer) && ((pointer)->ip_posid != 0)))
 
 /*
- * ItemPointerGetBlockNumberNoCheck
- *		Returns the block number of a disk item pointer.
- */
-#define ItemPointerGetBlockNumberNoCheck(pointer) \
-( \
-	BlockIdGetBlockNumber(&(pointer)->ip_blkid) \
-)
-
-/*
  * ItemPointerGetBlockNumber
- *		As above, but verifies that the item pointer looks valid.
+ *		Returns the block number of a disk item pointer.
  */
 #define ItemPointerGetBlockNumber(pointer) \
 ( \
 	AssertMacro(ItemPointerIsValid(pointer)), \
-	ItemPointerGetBlockNumberNoCheck(pointer) \
-)
-
-/*
- * ItemPointerGetOffsetNumberNoCheck
- *		Returns the offset number of a disk item pointer.
- */
-#define ItemPointerGetOffsetNumberNoCheck(pointer) \
-( \
-	(pointer)->ip_posid \
+	BlockIdGetBlockNumber(&(pointer)->ip_blkid) \
 )
 
 /*
  * ItemPointerGetOffsetNumber
- *		As above, but verifies that the item pointer looks valid.
+ *		Returns the offset number of a disk item pointer.
  */
 #define ItemPointerGetOffsetNumber(pointer) \
 ( \
 	AssertMacro(ItemPointerIsValid(pointer)), \
-	ItemPointerGetOffsetNumberNoCheck(pointer) \
+	(pointer)->ip_posid \
 )
 
 /*
@@ -176,25 +138,6 @@ typedef ItemPointerData *ItemPointer;
 	(pointer)->ip_posid = InvalidOffsetNumber \
 )
 
-/*
- * ItemPointerIndicatesMovedPartitions
- *		True iff the block number indicates the tuple has moved to another
- *		partition.
- */
-#define ItemPointerIndicatesMovedPartitions(pointer) \
-( \
-	ItemPointerGetOffsetNumber(pointer) == MovedPartitionsOffsetNumber && \
-	ItemPointerGetBlockNumberNoCheck(pointer) == MovedPartitionsBlockNumber \
-)
-
-/*
- * ItemPointerSetMovedPartitions
- *		Indicate that the item referenced by the itempointer has moved into a
- *		different partition.
- */
-#define ItemPointerSetMovedPartitions(pointer) \
-	ItemPointerSet((pointer), MovedPartitionsBlockNumber, MovedPartitionsOffsetNumber)
-
 /* ----------------
  *		externs
  * ----------------
@@ -203,4 +146,4 @@ typedef ItemPointerData *ItemPointer;
 extern bool ItemPointerEquals(ItemPointer pointer1, ItemPointer pointer2);
 extern int32 ItemPointerCompare(ItemPointer arg1, ItemPointer arg2);
 
-#endif							/* ITEMPTR_H */
+#endif   /* ITEMPTR_H */

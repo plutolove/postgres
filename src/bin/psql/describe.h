@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  *
  * src/bin/psql/describe.h
  */
@@ -11,9 +11,6 @@
 
 /* \da */
 extern bool describeAggregates(const char *pattern, bool verbose, bool showSystem);
-
-/* \dA */
-extern bool describeAccessMethods(const char *pattern, bool verbose);
 
 /* \db */
 extern bool describeTablespaces(const char *pattern, bool verbose);
@@ -28,10 +25,10 @@ extern bool describeTypes(const char *pattern, bool verbose, bool showSystem);
 extern bool describeOperators(const char *pattern, bool verbose, bool showSystem);
 
 /* \du, \dg */
-extern bool describeRoles(const char *pattern, bool verbose, bool showSystem);
+extern bool describeRoles(const char *pattern, bool verbose);
 
 /* \drds */
-extern bool listDbRoleSettings(const char *pattern, const char *pattern2);
+extern bool listDbRoleSettings(const char *pattern1, const char *pattern2);
 
 /* \z (or \dp) */
 extern bool permissionsList(const char *pattern);
@@ -62,9 +59,6 @@ extern bool listAllDbs(const char *pattern, bool verbose);
 
 /* \dt, \di, \ds, \dS, etc. */
 extern bool listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSystem);
-
-/* \dP */
-extern bool listPartitionedTables(const char *reltypes, const char *pattern, bool verbose);
 
 /* \dD */
 extern bool listDomains(const char *pattern, bool verbose, bool showSystem);
@@ -105,32 +99,4 @@ extern bool listExtensionContents(const char *pattern);
 /* \dy */
 extern bool listEventTriggers(const char *pattern, bool verbose);
 
-/* \dRp */
-bool		listPublications(const char *pattern);
-
-/* \dRp+ */
-bool		describePublications(const char *pattern);
-
-/* \dRs */
-bool		describeSubscriptions(const char *pattern, bool verbose);
-
-/* \dAc */
-extern bool listOperatorClasses(const char *access_method_pattern,
-								const char *opclass_pattern,
-								bool verbose);
-
-/* \dAf */
-extern bool listOperatorFamilies(const char *access_method_pattern,
-								 const char *opclass_pattern,
-								 bool verbose);
-
-/* \dAo */
-extern bool listOpFamilyOperators(const char *accessMethod_pattern,
-								  const char *family_pattern, bool verbose);
-
-/* \dAp */
-extern bool listOpFamilyFunctions(const char *access_method_pattern,
-								  const char *family_pattern, bool verbose);
-
-
-#endif							/* DESCRIBE_H */
+#endif   /* DESCRIBE_H */

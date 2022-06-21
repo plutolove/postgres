@@ -1,14 +1,10 @@
 # contrib/uuid-ossp/Makefile
 
 MODULE_big = uuid-ossp
-OBJS = \
-	$(UUID_EXTRA_OBJS) \
-	$(WIN32RES) \
-	uuid-ossp.o
+OBJS = uuid-ossp.o $(UUID_EXTRA_OBJS)
 
 EXTENSION = uuid-ossp
-DATA = uuid-ossp--1.1.sql uuid-ossp--1.0--1.1.sql
-PGFILEDESC = "uuid-ossp - UUID generation"
+DATA = uuid-ossp--1.0.sql uuid-ossp--unpackaged--1.0.sql
 
 REGRESS = uuid_ossp
 

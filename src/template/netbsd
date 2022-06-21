@@ -1,4 +1,2 @@
 # src/template/netbsd
-
-# Extra CFLAGS for code that will go into a shared library
-CFLAGS_SL="-fPIC -DPIC"
+# tools/thread/thread_test must be run

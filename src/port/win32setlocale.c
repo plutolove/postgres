@@ -3,7 +3,7 @@
  * win32setlocale.c
  *		Wrapper to work around bugs in Windows setlocale() implementation
  *
- * Copyright (c) 2011-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2011-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/port/win32setlocale.c
@@ -40,9 +40,9 @@ struct locale_map
 {
 	/*
 	 * String in locale name to replace. Can be a single string (end is NULL),
-	 * or separate start and end strings. If two strings are given, the locale
-	 * name must contain both of them, and everything between them is
-	 * replaced. This is used for a poor-man's regexp search, allowing
+	 * or separate start and end strings. If two strings are given, the
+	 * locale name must contain both of them, and everything between them
+	 * is replaced. This is used for a poor-man's regexp search, allowing
 	 * replacement of "start.*end".
 	 */
 	const char *locale_name_start;
@@ -96,12 +96,8 @@ static const struct locale_map locale_map_result[] = {
 	 *
 	 * It's not clear what encoding setlocale() uses when it returns the
 	 * locale name, so to play it safe, we search for "Norwegian (Bok*l)".
-	 *
-	 * Just to make life even more complicated, some versions of Windows spell
-	 * the locale name without parentheses.  Translate that too.
 	 */
 	{"Norwegian (Bokm", "l)_Norway", "Norwegian_Norway"},
-	{"Norwegian Bokm", "l_Norway", "Norwegian_Norway"},
 	{NULL, NULL, NULL}
 };
 
@@ -187,7 +183,7 @@ pgwin32_setlocale(int category, const char *locale)
 	 * forbidden to modify, so casting away the "const" is innocuous.
 	 */
 	if (result)
-		result = unconstify(char *, map_locale(locale_map_result, result));
+		result = (char *) map_locale(locale_map_result, result);
 
 	return result;
 }

@@ -7,11 +7,18 @@ CREATE TABLE TIMESTAMPTZ_TBL (d1 timestamp(2) with time zone);
 -- Test shorthand input values
 -- We can't just "select" the results since they aren't constants; test for
 -- equality instead.  We can do that by running the test inside a transaction
--- block, within which the value of 'now' shouldn't change, and so these
--- related values shouldn't either.
+-- block, within which the value of 'now' shouldn't change.  We also check
+-- that 'now' *does* change over a reasonable interval such as 100 msec.
+-- NOTE: it is possible for this part of the test to fail if the transaction
+-- block is entered exactly at local midnight; then 'now' and 'today' have
+-- the same values and the counts will come out different.
+
+INSERT INTO TIMESTAMPTZ_TBL VALUES ('now');
+SELECT pg_sleep(0.1);
 
 BEGIN;
 
+INSERT INTO TIMESTAMPTZ_TBL VALUES ('now');
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('today');
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('yesterday');
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('tomorrow');
@@ -21,34 +28,31 @@ INSERT INTO TIMESTAMPTZ_TBL VALUES ('tomorrow zulu');
 SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp with time zone 'today';
 SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp with time zone 'tomorrow';
 SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp with time zone 'yesterday';
-SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp with time zone 'tomorrow EST';
-SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp with time zone 'tomorrow zulu';
+SELECT count(*) AS One FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp(2) with time zone 'now';
 
 COMMIT;
 
 DELETE FROM TIMESTAMPTZ_TBL;
 
--- Verify that 'now' *does* change over a reasonable interval such as 100 msec,
--- and that it doesn't change over the same interval within a transaction block
-
-INSERT INTO TIMESTAMPTZ_TBL VALUES ('now');
-SELECT pg_sleep(0.1);
-
+-- verify uniform transaction time within transaction block
 BEGIN;
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('now');
 SELECT pg_sleep(0.1);
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('now');
 SELECT pg_sleep(0.1);
 SELECT count(*) AS two FROM TIMESTAMPTZ_TBL WHERE d1 = timestamp(2) with time zone 'now';
-SELECT count(d1) AS three, count(DISTINCT d1) AS two FROM TIMESTAMPTZ_TBL;
 COMMIT;
 
-TRUNCATE TIMESTAMPTZ_TBL;
+DELETE FROM TIMESTAMPTZ_TBL;
 
 -- Special values
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('-infinity');
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('infinity');
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('epoch');
+-- Obsolete special values
+INSERT INTO TIMESTAMPTZ_TBL VALUES ('invalid');
+INSERT INTO TIMESTAMPTZ_TBL VALUES ('undefined');
+INSERT INTO TIMESTAMPTZ_TBL VALUES ('current');
 
 -- Postgres v6.0 standard output format
 INSERT INTO TIMESTAMPTZ_TBL VALUES ('Mon Feb 10 17:32:01 1997 PST');
@@ -158,13 +162,6 @@ SELECT 'Wed Jul 11 10:51:14 PST+03:00 2001'::timestamptz;
 
 SELECT '' AS "64", d1 FROM TIMESTAMPTZ_TBL;
 
--- Check behavior at the lower boundary of the timestamp range
-SELECT '4714-11-24 00:00:00+00 BC'::timestamptz;
-SELECT '4714-11-23 16:00:00-08 BC'::timestamptz;
-SELECT 'Sun Nov 23 16:00:00 4714 PST BC'::timestamptz;
-SELECT '4714-11-23 23:59:59+00 BC'::timestamptz;  -- out of range
--- The upper boundary differs between integer and float timestamps, so no check
-
 -- Demonstrate functions and operators
 SELECT '' AS "48", d1 FROM TIMESTAMPTZ_TBL
    WHERE d1 > timestamp with time zone '1997-01-02';
@@ -189,45 +186,26 @@ SELECT '' AS "54", d1 - timestamp with time zone '1997-01-02' AS diff
 
 SELECT '' AS date_trunc_week, date_trunc( 'week', timestamp with time zone '2004-02-29 15:44:17.71393' ) AS week_trunc;
 
-SELECT '' AS date_trunc_at_tz, date_trunc('day', timestamp with time zone '2001-02-16 20:38:40+00', 'Australia/Sydney') as sydney_trunc;  -- zone name
-SELECT '' AS date_trunc_at_tz, date_trunc('day', timestamp with time zone '2001-02-16 20:38:40+00', 'GMT') as gmt_trunc;  -- fixed-offset abbreviation
-SELECT '' AS date_trunc_at_tz, date_trunc('day', timestamp with time zone '2001-02-16 20:38:40+00', 'VET') as vet_trunc;  -- variable-offset abbreviation
-
 -- Test casting within a BETWEEN qualifier
 SELECT '' AS "54", d1 - timestamp with time zone '1997-01-02' AS diff
   FROM TIMESTAMPTZ_TBL
   WHERE d1 BETWEEN timestamp with time zone '1902-01-01' AND timestamp with time zone '2038-01-01';
 
--- DATE_PART (timestamptz_part)
-SELECT d1 as timestamptz,
+SELECT '' AS "54", d1 as timestamptz,
    date_part( 'year', d1) AS year, date_part( 'month', d1) AS month,
    date_part( 'day', d1) AS day, date_part( 'hour', d1) AS hour,
    date_part( 'minute', d1) AS minute, date_part( 'second', d1) AS second
-   FROM TIMESTAMPTZ_TBL;
+   FROM TIMESTAMPTZ_TBL WHERE d1 BETWEEN '1902-01-01' AND '2038-01-01';
 
-SELECT d1 as timestamptz,
+SELECT '' AS "54", d1 as timestamptz,
    date_part( 'quarter', d1) AS quarter, date_part( 'msec', d1) AS msec,
    date_part( 'usec', d1) AS usec
-   FROM TIMESTAMPTZ_TBL;
+   FROM TIMESTAMPTZ_TBL WHERE d1 BETWEEN '1902-01-01' AND '2038-01-01';
 
-SELECT d1 as timestamptz,
+SELECT '' AS "54", d1 as timestamptz,
    date_part( 'isoyear', d1) AS isoyear, date_part( 'week', d1) AS week,
-   date_part( 'isodow', d1) AS isodow, date_part( 'dow', d1) AS dow,
-   date_part( 'doy', d1) AS doy
-   FROM TIMESTAMPTZ_TBL;
-
-SELECT d1 as timestamptz,
-   date_part( 'decade', d1) AS decade,
-   date_part( 'century', d1) AS century,
-   date_part( 'millennium', d1) AS millennium,
-   round(date_part( 'julian', d1)) AS julian
-   FROM TIMESTAMPTZ_TBL;
-
-SELECT d1 as timestamptz,
-   date_part( 'timezone', d1) AS timezone,
-   date_part( 'timezone_hour', d1) AS timezone_hour,
-   date_part( 'timezone_minute', d1) AS timezone_minute
-   FROM TIMESTAMPTZ_TBL;
+   date_part( 'dow', d1) AS dow
+   FROM TIMESTAMPTZ_TBL WHERE d1 BETWEEN '1902-01-01' AND '2038-01-01';
 
 -- TO_CHAR()
 SELECT '' AS to_char_1, to_char(d1, 'DAY Day day DY Dy dy MONTH Month month RM MON Mon mon')
@@ -263,33 +241,21 @@ SELECT '' AS to_char_10, to_char(d1, 'IYYY IYY IY I IW IDDD ID')
 SELECT '' AS to_char_11, to_char(d1, 'FMIYYY FMIYY FMIY FMI FMIW FMIDDD FMID')
    FROM TIMESTAMPTZ_TBL;
 
-SELECT '' AS to_char_12, to_char(d, 'FF1 FF2 FF3 FF4 FF5 FF6  ff1 ff2 ff3 ff4 ff5 ff6  MS US')
-   FROM (VALUES
-       ('2018-11-02 12:34:56'::timestamptz),
-       ('2018-11-02 12:34:56.78'),
-       ('2018-11-02 12:34:56.78901'),
-       ('2018-11-02 12:34:56.78901234')
-   ) d(d);
-
--- Check OF, TZH, TZM with various zone offsets, particularly fractional hours
+-- Check OF with various zone offsets, particularly fractional hours
 SET timezone = '00:00';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '+02:00';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '-13:00';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '-00:30';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '00:30';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '-04:30';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 SET timezone = '04:30';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
-SET timezone = '-04:15';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
-SET timezone = '04:15';
-SELECT to_char(now(), 'OF') as "OF", to_char(now(), 'TZH:TZM') as "TZH:TZM";
+SELECT to_char(now(), 'OF');
 RESET timezone;
 
 CREATE TABLE TIMESTAMPTZ_TST (a int , b timestamptz);
@@ -307,7 +273,7 @@ SELECT * FROM TIMESTAMPTZ_TST ORDER BY a;
 DROP TABLE TIMESTAMPTZ_TST;
 
 -- test timestamptz constructors
-set TimeZone to 'America/New_York';
+set TimeZone to 'America/Santiago';
 
 -- numeric timezone
 SELECT make_timestamptz(1973, 07, 15, 08, 15, 55.33);
@@ -336,8 +302,8 @@ SELECT make_timestamptz(1881, 12, 10, 0, 0, 0, 'Europe/Paris') AT TIME ZONE 'UTC
 SELECT make_timestamptz(1910, 12, 24, 0, 0, 0, 'Nehwon/Lankhmar');
 
 -- abbreviations
-SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'EST');
-SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'EDT');
+SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'CLST');
+SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'CLT');
 SELECT make_timestamptz(2014, 12, 10, 10, 10, 10, 'PST8PDT');
 
 RESET TimeZone;
@@ -345,7 +311,8 @@ RESET TimeZone;
 --
 -- Test behavior with a dynamic (time-varying) timezone abbreviation.
 -- These tests rely on the knowledge that MSK (Europe/Moscow standard time)
--- moved forwards in Mar 2011 and backwards again in Oct 2014.
+-- moved forwards in Mar 2011 and that VET (America/Caracas standard time)
+-- moved backwards in Dec 2007.
 --
 
 SET TimeZone to 'UTC';
@@ -370,17 +337,23 @@ SELECT '2011-03-27 03:00:00 MSK'::timestamptz;
 SELECT '2011-03-27 03:00:01 MSK'::timestamptz;
 SELECT '2011-03-27 04:00:00 MSK'::timestamptz;
 
-SELECT '2014-10-26 00:00:00 Europe/Moscow'::timestamptz;
-SELECT '2014-10-26 00:59:59 Europe/Moscow'::timestamptz;
-SELECT '2014-10-26 01:00:00 Europe/Moscow'::timestamptz;
-SELECT '2014-10-26 01:00:01 Europe/Moscow'::timestamptz;
-SELECT '2014-10-26 02:00:00 Europe/Moscow'::timestamptz;
+SELECT '2007-12-09 02:00:00 America/Caracas'::timestamptz;
+SELECT '2007-12-09 02:29:59 America/Caracas'::timestamptz;
+SELECT '2007-12-09 02:30:00 America/Caracas'::timestamptz;
+SELECT '2007-12-09 02:30:01 America/Caracas'::timestamptz;
+SELECT '2007-12-09 02:59:59 America/Caracas'::timestamptz;
+SELECT '2007-12-09 03:00:00 America/Caracas'::timestamptz;
+SELECT '2007-12-09 03:00:01 America/Caracas'::timestamptz;
+SELECT '2007-12-09 04:00:00 America/Caracas'::timestamptz;
 
-SELECT '2014-10-26 00:00:00 MSK'::timestamptz;
-SELECT '2014-10-26 00:59:59 MSK'::timestamptz;
-SELECT '2014-10-26 01:00:00 MSK'::timestamptz;
-SELECT '2014-10-26 01:00:01 MSK'::timestamptz;
-SELECT '2014-10-26 02:00:00 MSK'::timestamptz;
+SELECT '2007-12-09 02:00:00 VET'::timestamptz;
+SELECT '2007-12-09 02:29:59 VET'::timestamptz;
+SELECT '2007-12-09 02:30:00 VET'::timestamptz;
+SELECT '2007-12-09 02:30:01 VET'::timestamptz;
+SELECT '2007-12-09 02:59:59 VET'::timestamptz;
+SELECT '2007-12-09 03:00:00 VET'::timestamptz;
+SELECT '2007-12-09 03:00:01 VET'::timestamptz;
+SELECT '2007-12-09 04:00:00 VET'::timestamptz;
 
 SELECT '2011-03-27 00:00:00'::timestamp AT TIME ZONE 'Europe/Moscow';
 SELECT '2011-03-27 01:00:00'::timestamp AT TIME ZONE 'Europe/Moscow';
@@ -402,32 +375,26 @@ SELECT '2011-03-27 03:00:00'::timestamp AT TIME ZONE 'MSK';
 SELECT '2011-03-27 03:00:01'::timestamp AT TIME ZONE 'MSK';
 SELECT '2011-03-27 04:00:00'::timestamp AT TIME ZONE 'MSK';
 
-SELECT '2014-10-26 00:00:00'::timestamp AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-26 00:59:59'::timestamp AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-26 01:00:00'::timestamp AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-26 01:00:01'::timestamp AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-26 02:00:00'::timestamp AT TIME ZONE 'Europe/Moscow';
+SELECT '2007-12-09 02:00:00'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 02:29:59'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 02:30:00'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 02:30:01'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 02:59:59'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 03:00:00'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 03:00:01'::timestamp AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 04:00:00'::timestamp AT TIME ZONE 'America/Caracas';
 
-SELECT '2014-10-26 00:00:00'::timestamp AT TIME ZONE 'MSK';
-SELECT '2014-10-26 00:59:59'::timestamp AT TIME ZONE 'MSK';
-SELECT '2014-10-26 01:00:00'::timestamp AT TIME ZONE 'MSK';
-SELECT '2014-10-26 01:00:01'::timestamp AT TIME ZONE 'MSK';
-SELECT '2014-10-26 02:00:00'::timestamp AT TIME ZONE 'MSK';
+SELECT '2007-12-09 02:00:00'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 02:29:59'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 02:30:00'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 02:30:01'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 02:59:59'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 03:00:00'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 03:00:01'::timestamp AT TIME ZONE 'VET';
+SELECT '2007-12-09 04:00:00'::timestamp AT TIME ZONE 'VET';
 
-SELECT make_timestamptz(2014, 10, 26, 0, 0, 0, 'MSK');
-SELECT make_timestamptz(2014, 10, 26, 1, 0, 0, 'MSK');
-
-SELECT to_timestamp(         0);          -- 1970-01-01 00:00:00+00
-SELECT to_timestamp( 946684800);          -- 2000-01-01 00:00:00+00
-SELECT to_timestamp(1262349296.7890123);  -- 2010-01-01 12:34:56.789012+00
--- edge cases
-SELECT to_timestamp(-210866803200);       --   4714-11-24 00:00:00+00 BC
--- upper limit varies between integer and float timestamps, so hard to test
--- nonfinite values
-SELECT to_timestamp(' Infinity'::float);
-SELECT to_timestamp('-Infinity'::float);
-SELECT to_timestamp('NaN'::float);
-
+SELECT make_timestamptz(2007, 12, 9, 2, 0, 0, 'VET');
+SELECT make_timestamptz(2007, 12, 9, 3, 0, 0, 'VET');
 
 SET TimeZone to 'Europe/Moscow';
 
@@ -439,11 +406,15 @@ SELECT '2011-03-26 23:00:01 UTC'::timestamptz;
 SELECT '2011-03-26 23:59:59 UTC'::timestamptz;
 SELECT '2011-03-27 00:00:00 UTC'::timestamptz;
 
-SELECT '2014-10-25 21:00:00 UTC'::timestamptz;
-SELECT '2014-10-25 21:59:59 UTC'::timestamptz;
-SELECT '2014-10-25 22:00:00 UTC'::timestamptz;
-SELECT '2014-10-25 22:00:01 UTC'::timestamptz;
-SELECT '2014-10-25 23:00:00 UTC'::timestamptz;
+SET TimeZone to 'America/Caracas';
+
+SELECT '2007-12-09 06:00:00 UTC'::timestamptz;
+SELECT '2007-12-09 06:30:00 UTC'::timestamptz;
+SELECT '2007-12-09 06:59:59 UTC'::timestamptz;
+SELECT '2007-12-09 07:00:00 UTC'::timestamptz;
+SELECT '2007-12-09 07:00:01 UTC'::timestamptz;
+SELECT '2007-12-09 07:29:59 UTC'::timestamptz;
+SELECT '2007-12-09 07:30:00 UTC'::timestamptz;
 
 RESET TimeZone;
 
@@ -455,11 +426,13 @@ SELECT '2011-03-26 23:00:01 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
 SELECT '2011-03-26 23:59:59 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
 SELECT '2011-03-27 00:00:00 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
 
-SELECT '2014-10-25 21:00:00 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-25 21:59:59 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-25 22:00:00 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-25 22:00:01 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
-SELECT '2014-10-25 23:00:00 UTC'::timestamptz AT TIME ZONE 'Europe/Moscow';
+SELECT '2007-12-09 06:00:00 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 06:30:00 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 06:59:59 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 07:00:00 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 07:00:01 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 07:29:59 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
+SELECT '2007-12-09 07:30:00 UTC'::timestamptz AT TIME ZONE 'America/Caracas';
 
 SELECT '2011-03-26 21:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
 SELECT '2011-03-26 22:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
@@ -469,17 +442,10 @@ SELECT '2011-03-26 23:00:01 UTC'::timestamptz AT TIME ZONE 'MSK';
 SELECT '2011-03-26 23:59:59 UTC'::timestamptz AT TIME ZONE 'MSK';
 SELECT '2011-03-27 00:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
 
-SELECT '2014-10-25 21:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
-SELECT '2014-10-25 21:59:59 UTC'::timestamptz AT TIME ZONE 'MSK';
-SELECT '2014-10-25 22:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
-SELECT '2014-10-25 22:00:01 UTC'::timestamptz AT TIME ZONE 'MSK';
-SELECT '2014-10-25 23:00:00 UTC'::timestamptz AT TIME ZONE 'MSK';
-
---
--- Test that AT TIME ZONE isn't misoptimized when using an index (bug #14504)
---
-create temp table tmptz (f1 timestamptz primary key);
-insert into tmptz values ('2017-01-18 00:00+00');
-explain (costs off)
-select * from tmptz where f1 at time zone 'utc' = '2017-01-18 00:00';
-select * from tmptz where f1 at time zone 'utc' = '2017-01-18 00:00';
+SELECT '2007-12-09 06:00:00 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 06:30:00 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 06:59:59 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 07:00:00 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 07:00:01 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 07:29:59 UTC'::timestamptz AT TIME ZONE 'VET';
+SELECT '2007-12-09 07:30:00 UTC'::timestamptz AT TIME ZONE 'VET';

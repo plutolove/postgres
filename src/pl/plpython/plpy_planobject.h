@@ -16,12 +16,11 @@ typedef struct PLyPlanObject
 	int			nargs;
 	Oid		   *types;
 	Datum	   *values;
-	PLyObToDatum *args;
-	MemoryContext mcxt;
+	PLyTypeInfo *args;
 } PLyPlanObject;
 
 extern void PLy_plan_init_type(void);
 extern PyObject *PLy_plan_new(void);
 extern bool is_PLyPlanObject(PyObject *ob);
 
-#endif							/* PLPY_PLANOBJECT_H */
+#endif   /* PLPY_PLANOBJECT_H */

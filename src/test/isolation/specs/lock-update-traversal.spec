@@ -7,9 +7,8 @@
 setup
 {
   CREATE TABLE foo (
-	key		int,
-	value	int,
-	PRIMARY KEY (key) INCLUDE (value)
+	key		int PRIMARY KEY,
+	value	int
   );
 
   INSERT INTO foo VALUES (1, 1);

@@ -40,90 +40,73 @@ main(void)
 {
 /* exec sql begin declare section */
 
-
 	   typedef char  string [ 8 ];
 
-#line 22 "define.pgc"
+#line 21 "define.pgc"
 
 	 
 	   
+	  	 
 
-	   
-
-	    
-
-
-
-	   
-
-  
-	   
-  
-	  	   
-
-	   
-
-
-
-#line 23 "define.pgc"
+#line 22 "define.pgc"
  intarray amount ;
  
-#line 24 "define.pgc"
+#line 23 "define.pgc"
  char name [ 6 ] [ 8 ] ;
  
-#line 37 "define.pgc"
+#line 24 "define.pgc"
  char letter [ 6 ] [ 1 ] ;
  
 #if 0
  
-#line 39 "define.pgc"
+#line 26 "define.pgc"
  int not_used ;
  
 #endif
 /* exec sql end declare section */
-#line 46 "define.pgc"
+#line 29 "define.pgc"
 
 	int i,j;
 
 	ECPGdebug(1, stderr);
 
-	{ ECPGconnect(__LINE__, 0, "ecpg1_regression" , NULL, NULL , NULL, 0); 
-#line 51 "define.pgc"
+	{ ECPGconnect(__LINE__, 0, "regress1" , NULL, NULL , NULL, 0); 
+#line 34 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 51 "define.pgc"
+#line 34 "define.pgc"
 
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "create table test ( name char ( 8 ) , amount int , letter char ( 1 ) )", ECPGt_EOIT, ECPGt_EORT);
-#line 53 "define.pgc"
+#line 36 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 53 "define.pgc"
+#line 36 "define.pgc"
 
 	{ ECPGtrans(__LINE__, NULL, "commit");
-#line 54 "define.pgc"
+#line 37 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 54 "define.pgc"
+#line 37 "define.pgc"
 
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "insert into Test ( name , amount , letter ) values ( 'false' , 1 , 'f' )", ECPGt_EOIT, ECPGt_EORT);
-#line 56 "define.pgc"
+#line 39 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 56 "define.pgc"
+#line 39 "define.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "insert into test ( name , amount , letter ) values ( 'true' , 2 , 't' )", ECPGt_EOIT, ECPGt_EORT);
-#line 57 "define.pgc"
+#line 40 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 57 "define.pgc"
+#line 40 "define.pgc"
 
 	{ ECPGtrans(__LINE__, NULL, "commit");
-#line 58 "define.pgc"
+#line 41 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 58 "define.pgc"
+#line 41 "define.pgc"
 
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "select * from test", ECPGt_EOIT, 
@@ -133,10 +116,10 @@ if (sqlca.sqlcode < 0) sqlprint();}
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, 
 	ECPGt_char,(letter),(long)1,(long)6,(1)*sizeof(char), 
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EORT);
-#line 60 "define.pgc"
+#line 43 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 60 "define.pgc"
+#line 43 "define.pgc"
 
 
 	for (i=0, j=sqlca.sqlerrd[2]; i<j; i++)
@@ -146,16 +129,16 @@ if (sqlca.sqlcode < 0) sqlprint();}
 		   
 		   
 		
-#line 65 "define.pgc"
+#line 48 "define.pgc"
  string n ;
  
-#line 66 "define.pgc"
+#line 49 "define.pgc"
  char l = letter [ i ] [ 0 ] ;
  
-#line 67 "define.pgc"
+#line 50 "define.pgc"
  int a = amount [ i ] ;
 /* exec sql end declare section */
-#line 68 "define.pgc"
+#line 51 "define.pgc"
 
 
 		strncpy(n, name[i],  8);
@@ -163,23 +146,23 @@ if (sqlca.sqlcode < 0) sqlprint();}
 	}
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "drop table test", ECPGt_EOIT, ECPGt_EORT);
-#line 74 "define.pgc"
+#line 57 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 74 "define.pgc"
+#line 57 "define.pgc"
 
 	{ ECPGtrans(__LINE__, NULL, "commit");
-#line 75 "define.pgc"
+#line 58 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 75 "define.pgc"
+#line 58 "define.pgc"
 
 	{ ECPGdisconnect(__LINE__, "CURRENT");
-#line 76 "define.pgc"
+#line 59 "define.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 76 "define.pgc"
+#line 59 "define.pgc"
 
 
-	return 0;
+	return (0);
 }

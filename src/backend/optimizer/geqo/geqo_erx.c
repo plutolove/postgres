@@ -32,10 +32,9 @@
 
 
 #include "postgres.h"
-#include "optimizer/geqo_random.h"
 #include "optimizer/geqo_recombination.h"
+#include "optimizer/geqo_random.h"
 
-#if defined(ERX)
 
 static int	gimme_edge(PlannerInfo *root, Gene gene1, Gene gene2, Edge *edge_table);
 static void remove_gene(PlannerInfo *root, Gene gene, Edge edge, Edge *edge_table);
@@ -112,7 +111,7 @@ gimme_edge_table(PlannerInfo *root, Gene *tour1, Gene *tour2,
 	for (index1 = 0; index1 < num_gene; index1++)
 	{
 		/*
-		 * presume the tour is circular, i.e. 1->2, 2->3, 3->1 this operation
+		 * presume the tour is circular, i.e. 1->2, 2->3, 3->1 this operaton
 		 * maps n back to 1
 		 */
 
@@ -139,7 +138,7 @@ gimme_edge_table(PlannerInfo *root, Gene *tour1, Gene *tour2,
  *	  registers edge from city1 to city2 in input edge table
  *
  *	  no assumptions about directionality are made;
- *	  therefore it is up to the calling routine to
+ *	  therefor it is up to the calling routine to
  *	  call gimme_edge twice to make a bi-directional edge
  *	  between city1 and city2;
  *	  uni-directional edges are possible as well (just call gimme_edge
@@ -315,7 +314,7 @@ gimme_gene(PlannerInfo *root, Edge edge, Edge *edge_table)
 		/*
 		 * give priority to candidates with fewest remaining unused edges;
 		 * find out what the minimum number of unused edges is
-		 * (minimum_edges); if there is more than one candidate with the
+		 * (minimum_edges); if there is more than one cadidate with the
 		 * minimum number of unused edges keep count of this number
 		 * (minimum_count);
 		 */
@@ -459,7 +458,7 @@ edge_failure(PlannerInfo *root, Gene *gene, int index, Edge *edge_table, int num
 			if (edge_table[i].unused_edges >= 0)
 				return (Gene) i;
 
-		elog(LOG, "no edge found via looking for the last unused point");
+		elog(LOG, "no edge found via looking for the last ununsed point");
 	}
 
 
@@ -467,5 +466,3 @@ edge_failure(PlannerInfo *root, Gene *gene, int index, Edge *edge_table, int num
 	elog(ERROR, "no edge found");
 	return 0;					/* to keep the compiler quiet */
 }
-
-#endif							/* defined(ERX) */

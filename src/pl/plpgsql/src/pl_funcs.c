@@ -3,7 +3,7 @@
  * pl_funcs.c		- Misc functions for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -13,10 +13,10 @@
  *-------------------------------------------------------------------------
  */
 
-#include "postgres.h"
-
 #include "plpgsql.h"
+
 #include "utils/memutils.h"
+
 
 /* ----------
  * Local variables for namespace handling
@@ -51,11 +51,11 @@ plpgsql_ns_init(void)
  * ----------
  */
 void
-plpgsql_ns_push(const char *label, PLpgSQL_label_type label_type)
+plpgsql_ns_push(const char *label)
 {
 	if (label == NULL)
 		label = "";
-	plpgsql_ns_additem(PLPGSQL_NSTYPE_LABEL, (int) label_type, label);
+	plpgsql_ns_additem(PLPGSQL_NSTYPE_LABEL, 0, label);
 }
 
 
@@ -89,7 +89,7 @@ plpgsql_ns_top(void)
  * ----------
  */
 void
-plpgsql_ns_additem(PLpgSQL_nsitem_type itemtype, int itemno, const char *name)
+plpgsql_ns_additem(int itemtype, int itemno, const char *name)
 {
 	PLpgSQL_nsitem *nse;
 
@@ -97,7 +97,7 @@ plpgsql_ns_additem(PLpgSQL_nsitem_type itemtype, int itemno, const char *name)
 	/* first item added must be a label */
 	Assert(ns_top != NULL || itemtype == PLPGSQL_NSTYPE_LABEL);
 
-	nse = palloc(offsetof(PLpgSQL_nsitem, name) + strlen(name) + 1);
+	nse = palloc(sizeof(PLpgSQL_nsitem) + strlen(name));
 	nse->itemtype = itemtype;
 	nse->itemno = itemno;
 	nse->prev = ns_top;
@@ -111,7 +111,7 @@ plpgsql_ns_additem(PLpgSQL_nsitem_type itemtype, int itemno, const char *name)
  *
  * Note that this only searches for variables, not labels.
  *
- * If localmode is true, only the topmost block level is searched.
+ * If localmode is TRUE, only the topmost block level is searched.
  *
  * name1 must be non-NULL.  Pass NULL for name2 and/or name3 if parsing a name
  * with fewer than three components.
@@ -206,32 +206,13 @@ plpgsql_ns_lookup_label(PLpgSQL_nsitem *ns_cur, const char *name)
 }
 
 
-/* ----------
- * plpgsql_ns_find_nearest_loop		Find innermost loop label in namespace chain
- * ----------
- */
-PLpgSQL_nsitem *
-plpgsql_ns_find_nearest_loop(PLpgSQL_nsitem *ns_cur)
-{
-	while (ns_cur != NULL)
-	{
-		if (ns_cur->itemtype == PLPGSQL_NSTYPE_LABEL &&
-			ns_cur->itemno == PLPGSQL_LABEL_LOOP)
-			return ns_cur;
-		ns_cur = ns_cur->prev;
-	}
-
-	return NULL;				/* no loop found */
-}
-
-
 /*
  * Statement type as a string, for use in error messages etc.
  */
 const char *
 plpgsql_stmt_typename(PLpgSQL_stmt *stmt)
 {
-	switch (stmt->cmd_type)
+	switch ((enum PLpgSQL_stmt_types) stmt->cmd_type)
 	{
 		case PLPGSQL_STMT_BLOCK:
 			return _("statement block");
@@ -263,17 +244,14 @@ plpgsql_stmt_typename(PLpgSQL_stmt *stmt)
 			return "RETURN QUERY";
 		case PLPGSQL_STMT_RAISE:
 			return "RAISE";
-		case PLPGSQL_STMT_ASSERT:
-			return "ASSERT";
 		case PLPGSQL_STMT_EXECSQL:
 			return _("SQL statement");
 		case PLPGSQL_STMT_DYNEXECUTE:
-			return "EXECUTE";
+			return _("EXECUTE statement");
 		case PLPGSQL_STMT_DYNFORS:
 			return _("FOR over EXECUTE statement");
 		case PLPGSQL_STMT_GETDIAG:
-			return ((PLpgSQL_stmt_getdiag *) stmt)->is_stacked ?
-				"GET STACKED DIAGNOSTICS" : "GET DIAGNOSTICS";
+			return "GET DIAGNOSTICS";
 		case PLPGSQL_STMT_OPEN:
 			return "OPEN";
 		case PLPGSQL_STMT_FETCH:
@@ -282,14 +260,6 @@ plpgsql_stmt_typename(PLpgSQL_stmt *stmt)
 			return "CLOSE";
 		case PLPGSQL_STMT_PERFORM:
 			return "PERFORM";
-		case PLPGSQL_STMT_CALL:
-			return ((PLpgSQL_stmt_call *) stmt)->is_call ? "CALL" : "DO";
-		case PLPGSQL_STMT_COMMIT:
-			return "COMMIT";
-		case PLPGSQL_STMT_ROLLBACK:
-			return "ROLLBACK";
-		case PLPGSQL_STMT_SET:
-			return "SET";
 	}
 
 	return "unknown";
@@ -299,12 +269,14 @@ plpgsql_stmt_typename(PLpgSQL_stmt *stmt)
  * GET DIAGNOSTICS item name as a string, for use in error messages etc.
  */
 const char *
-plpgsql_getdiag_kindname(PLpgSQL_getdiag_kind kind)
+plpgsql_getdiag_kindname(int kind)
 {
 	switch (kind)
 	{
 		case PLPGSQL_GETDIAG_ROW_COUNT:
 			return "ROW_COUNT";
+		case PLPGSQL_GETDIAG_RESULT_OID:
+			return "RESULT_OID";
 		case PLPGSQL_GETDIAG_CONTEXT:
 			return "PG_CONTEXT";
 		case PLPGSQL_GETDIAG_ERROR_CONTEXT:
@@ -358,7 +330,6 @@ static void free_return(PLpgSQL_stmt_return *stmt);
 static void free_return_next(PLpgSQL_stmt_return_next *stmt);
 static void free_return_query(PLpgSQL_stmt_return_query *stmt);
 static void free_raise(PLpgSQL_stmt_raise *stmt);
-static void free_assert(PLpgSQL_stmt_assert *stmt);
 static void free_execsql(PLpgSQL_stmt_execsql *stmt);
 static void free_dynexecute(PLpgSQL_stmt_dynexecute *stmt);
 static void free_dynfors(PLpgSQL_stmt_dynfors *stmt);
@@ -367,17 +338,13 @@ static void free_open(PLpgSQL_stmt_open *stmt);
 static void free_fetch(PLpgSQL_stmt_fetch *stmt);
 static void free_close(PLpgSQL_stmt_close *stmt);
 static void free_perform(PLpgSQL_stmt_perform *stmt);
-static void free_call(PLpgSQL_stmt_call *stmt);
-static void free_commit(PLpgSQL_stmt_commit *stmt);
-static void free_rollback(PLpgSQL_stmt_rollback *stmt);
-static void free_set(PLpgSQL_stmt_set *stmt);
 static void free_expr(PLpgSQL_expr *expr);
 
 
 static void
 free_stmt(PLpgSQL_stmt *stmt)
 {
-	switch (stmt->cmd_type)
+	switch ((enum PLpgSQL_stmt_types) stmt->cmd_type)
 	{
 		case PLPGSQL_STMT_BLOCK:
 			free_block((PLpgSQL_stmt_block *) stmt);
@@ -424,9 +391,6 @@ free_stmt(PLpgSQL_stmt *stmt)
 		case PLPGSQL_STMT_RAISE:
 			free_raise((PLpgSQL_stmt_raise *) stmt);
 			break;
-		case PLPGSQL_STMT_ASSERT:
-			free_assert((PLpgSQL_stmt_assert *) stmt);
-			break;
 		case PLPGSQL_STMT_EXECSQL:
 			free_execsql((PLpgSQL_stmt_execsql *) stmt);
 			break;
@@ -450,18 +414,6 @@ free_stmt(PLpgSQL_stmt *stmt)
 			break;
 		case PLPGSQL_STMT_PERFORM:
 			free_perform((PLpgSQL_stmt_perform *) stmt);
-			break;
-		case PLPGSQL_STMT_CALL:
-			free_call((PLpgSQL_stmt_call *) stmt);
-			break;
-		case PLPGSQL_STMT_COMMIT:
-			free_commit((PLpgSQL_stmt_commit *) stmt);
-			break;
-		case PLPGSQL_STMT_ROLLBACK:
-			free_rollback((PLpgSQL_stmt_rollback *) stmt);
-			break;
-		case PLPGSQL_STMT_SET:
-			free_set((PLpgSQL_stmt_set *) stmt);
 			break;
 		default:
 			elog(ERROR, "unrecognized cmd_type: %d", stmt->cmd_type);
@@ -611,28 +563,6 @@ free_perform(PLpgSQL_stmt_perform *stmt)
 }
 
 static void
-free_call(PLpgSQL_stmt_call *stmt)
-{
-	free_expr(stmt->expr);
-}
-
-static void
-free_commit(PLpgSQL_stmt_commit *stmt)
-{
-}
-
-static void
-free_rollback(PLpgSQL_stmt_rollback *stmt)
-{
-}
-
-static void
-free_set(PLpgSQL_stmt_set *stmt)
-{
-	free_expr(stmt->expr);
-}
-
-static void
 free_exit(PLpgSQL_stmt_exit *stmt)
 {
 	free_expr(stmt->cond);
@@ -678,13 +608,6 @@ free_raise(PLpgSQL_stmt_raise *stmt)
 
 		free_expr(opt->expr);
 	}
-}
-
-static void
-free_assert(PLpgSQL_stmt_assert *stmt)
-{
-	free_expr(stmt->cond);
-	free_expr(stmt->message);
 }
 
 static void
@@ -749,7 +672,6 @@ plpgsql_free_function_memory(PLpgSQL_function *func)
 		switch (d->dtype)
 		{
 			case PLPGSQL_DTYPE_VAR:
-			case PLPGSQL_DTYPE_PROMISE:
 				{
 					PLpgSQL_var *var = (PLpgSQL_var *) d;
 
@@ -760,11 +682,6 @@ plpgsql_free_function_memory(PLpgSQL_function *func)
 			case PLPGSQL_DTYPE_ROW:
 				break;
 			case PLPGSQL_DTYPE_REC:
-				{
-					PLpgSQL_rec *rec = (PLpgSQL_rec *) d;
-
-					free_expr(rec->default_val);
-				}
 				break;
 			case PLPGSQL_DTYPE_RECFIELD:
 				break;
@@ -815,7 +732,6 @@ static void dump_return(PLpgSQL_stmt_return *stmt);
 static void dump_return_next(PLpgSQL_stmt_return_next *stmt);
 static void dump_return_query(PLpgSQL_stmt_return_query *stmt);
 static void dump_raise(PLpgSQL_stmt_raise *stmt);
-static void dump_assert(PLpgSQL_stmt_assert *stmt);
 static void dump_execsql(PLpgSQL_stmt_execsql *stmt);
 static void dump_dynexecute(PLpgSQL_stmt_dynexecute *stmt);
 static void dump_dynfors(PLpgSQL_stmt_dynfors *stmt);
@@ -825,10 +741,6 @@ static void dump_fetch(PLpgSQL_stmt_fetch *stmt);
 static void dump_cursor_direction(PLpgSQL_stmt_fetch *stmt);
 static void dump_close(PLpgSQL_stmt_close *stmt);
 static void dump_perform(PLpgSQL_stmt_perform *stmt);
-static void dump_call(PLpgSQL_stmt_call *stmt);
-static void dump_commit(PLpgSQL_stmt_commit *stmt);
-static void dump_rollback(PLpgSQL_stmt_rollback *stmt);
-static void dump_set(PLpgSQL_stmt_set *stmt);
 static void dump_expr(PLpgSQL_expr *expr);
 
 
@@ -845,7 +757,7 @@ static void
 dump_stmt(PLpgSQL_stmt *stmt)
 {
 	printf("%3d:", stmt->lineno);
-	switch (stmt->cmd_type)
+	switch ((enum PLpgSQL_stmt_types) stmt->cmd_type)
 	{
 		case PLPGSQL_STMT_BLOCK:
 			dump_block((PLpgSQL_stmt_block *) stmt);
@@ -892,9 +804,6 @@ dump_stmt(PLpgSQL_stmt *stmt)
 		case PLPGSQL_STMT_RAISE:
 			dump_raise((PLpgSQL_stmt_raise *) stmt);
 			break;
-		case PLPGSQL_STMT_ASSERT:
-			dump_assert((PLpgSQL_stmt_assert *) stmt);
-			break;
 		case PLPGSQL_STMT_EXECSQL:
 			dump_execsql((PLpgSQL_stmt_execsql *) stmt);
 			break;
@@ -918,18 +827,6 @@ dump_stmt(PLpgSQL_stmt *stmt)
 			break;
 		case PLPGSQL_STMT_PERFORM:
 			dump_perform((PLpgSQL_stmt_perform *) stmt);
-			break;
-		case PLPGSQL_STMT_CALL:
-			dump_call((PLpgSQL_stmt_call *) stmt);
-			break;
-		case PLPGSQL_STMT_COMMIT:
-			dump_commit((PLpgSQL_stmt_commit *) stmt);
-			break;
-		case PLPGSQL_STMT_ROLLBACK:
-			dump_rollback((PLpgSQL_stmt_rollback *) stmt);
-			break;
-		case PLPGSQL_STMT_SET:
-			dump_set((PLpgSQL_stmt_set *) stmt);
 			break;
 		default:
 			elog(ERROR, "unrecognized cmd_type: %d", stmt->cmd_type);
@@ -1126,7 +1023,7 @@ static void
 dump_fors(PLpgSQL_stmt_fors *stmt)
 {
 	dump_ind();
-	printf("FORS %s ", stmt->var->refname);
+	printf("FORS %s ", (stmt->rec != NULL) ? stmt->rec->refname : stmt->row->refname);
 	dump_expr(stmt->query);
 	printf("\n");
 
@@ -1140,7 +1037,7 @@ static void
 dump_forc(PLpgSQL_stmt_forc *stmt)
 {
 	dump_ind();
-	printf("FORC %s ", stmt->var->refname);
+	printf("FORC %s ", stmt->rec->refname);
 	printf("curvar=%d\n", stmt->curvar);
 
 	dump_indent += 2;
@@ -1238,11 +1135,15 @@ dump_fetch(PLpgSQL_stmt_fetch *stmt)
 		dump_cursor_direction(stmt);
 
 		dump_indent += 2;
-		if (stmt->target != NULL)
+		if (stmt->rec != NULL)
 		{
 			dump_ind();
-			printf("    target = %d %s\n",
-				   stmt->target->dno, stmt->target->refname);
+			printf("    target = %d %s\n", stmt->rec->dno, stmt->rec->refname);
+		}
+		if (stmt->row != NULL)
+		{
+			dump_ind();
+			printf("    target = %d %s\n", stmt->row->dno, stmt->row->refname);
 		}
 		dump_indent -= 2;
 	}
@@ -1301,42 +1202,6 @@ dump_perform(PLpgSQL_stmt_perform *stmt)
 	printf("PERFORM expr = ");
 	dump_expr(stmt->expr);
 	printf("\n");
-}
-
-static void
-dump_call(PLpgSQL_stmt_call *stmt)
-{
-	dump_ind();
-	printf("%s expr = ", stmt->is_call ? "CALL" : "DO");
-	dump_expr(stmt->expr);
-	printf("\n");
-}
-
-static void
-dump_commit(PLpgSQL_stmt_commit *stmt)
-{
-	dump_ind();
-	if (stmt->chain)
-		printf("COMMIT AND CHAIN\n");
-	else
-		printf("COMMIT\n");
-}
-
-static void
-dump_rollback(PLpgSQL_stmt_rollback *stmt)
-{
-	dump_ind();
-	if (stmt->chain)
-		printf("ROLLBACK AND CHAIN\n");
-	else
-		printf("ROLLBACK\n");
-}
-
-static void
-dump_set(PLpgSQL_stmt_set *stmt)
-{
-	dump_ind();
-	printf("%s\n", stmt->expr->query);
 }
 
 static void
@@ -1489,25 +1354,6 @@ dump_raise(PLpgSQL_stmt_raise *stmt)
 }
 
 static void
-dump_assert(PLpgSQL_stmt_assert *stmt)
-{
-	dump_ind();
-	printf("ASSERT ");
-	dump_expr(stmt->cond);
-	printf("\n");
-
-	dump_indent += 2;
-	if (stmt->message != NULL)
-	{
-		dump_ind();
-		printf("    MESSAGE = ");
-		dump_expr(stmt->message);
-		printf("\n");
-	}
-	dump_indent -= 2;
-}
-
-static void
 dump_execsql(PLpgSQL_stmt_execsql *stmt)
 {
 	dump_ind();
@@ -1516,12 +1362,19 @@ dump_execsql(PLpgSQL_stmt_execsql *stmt)
 	printf("\n");
 
 	dump_indent += 2;
-	if (stmt->target != NULL)
+	if (stmt->rec != NULL)
 	{
 		dump_ind();
 		printf("    INTO%s target = %d %s\n",
 			   stmt->strict ? " STRICT" : "",
-			   stmt->target->dno, stmt->target->refname);
+			   stmt->rec->dno, stmt->rec->refname);
+	}
+	if (stmt->row != NULL)
+	{
+		dump_ind();
+		printf("    INTO%s target = %d %s\n",
+			   stmt->strict ? " STRICT" : "",
+			   stmt->row->dno, stmt->row->refname);
 	}
 	dump_indent -= 2;
 }
@@ -1535,12 +1388,19 @@ dump_dynexecute(PLpgSQL_stmt_dynexecute *stmt)
 	printf("\n");
 
 	dump_indent += 2;
-	if (stmt->target != NULL)
+	if (stmt->rec != NULL)
 	{
 		dump_ind();
 		printf("    INTO%s target = %d %s\n",
 			   stmt->strict ? " STRICT" : "",
-			   stmt->target->dno, stmt->target->refname);
+			   stmt->rec->dno, stmt->rec->refname);
+	}
+	if (stmt->row != NULL)
+	{
+		dump_ind();
+		printf("    INTO%s target = %d %s\n",
+			   stmt->strict ? " STRICT" : "",
+			   stmt->row->dno, stmt->row->refname);
 	}
 	if (stmt->params != NIL)
 	{
@@ -1567,7 +1427,8 @@ static void
 dump_dynfors(PLpgSQL_stmt_dynfors *stmt)
 {
 	dump_ind();
-	printf("FORS %s EXECUTE ", stmt->var->refname);
+	printf("FORS %s EXECUTE ",
+		   (stmt->rec != NULL) ? stmt->rec->refname : stmt->row->refname);
 	dump_expr(stmt->query);
 	printf("\n");
 	if (stmt->params != NIL)
@@ -1638,7 +1499,6 @@ plpgsql_dumptree(PLpgSQL_function *func)
 		switch (d->dtype)
 		{
 			case PLPGSQL_DTYPE_VAR:
-			case PLPGSQL_DTYPE_PROMISE:
 				{
 					PLpgSQL_var *var = (PLpgSQL_var *) d;
 
@@ -1665,9 +1525,6 @@ plpgsql_dumptree(PLpgSQL_function *func)
 						dump_expr(var->cursor_explicit_expr);
 						printf("\n");
 					}
-					if (var->promise != PLPGSQL_PROMISE_NONE)
-						printf("                                  PROMISE %d\n",
-							   (int) var->promise);
 				}
 				break;
 			case PLPGSQL_DTYPE_ROW:
@@ -1678,26 +1535,15 @@ plpgsql_dumptree(PLpgSQL_function *func)
 					printf("ROW %-16s fields", row->refname);
 					for (i = 0; i < row->nfields; i++)
 					{
-						printf(" %s=var %d", row->fieldnames[i],
-							   row->varnos[i]);
+						if (row->fieldnames[i])
+							printf(" %s=var %d", row->fieldnames[i],
+								   row->varnos[i]);
 					}
 					printf("\n");
 				}
 				break;
 			case PLPGSQL_DTYPE_REC:
-				printf("REC %-16s typoid %u\n",
-					   ((PLpgSQL_rec *) d)->refname,
-					   ((PLpgSQL_rec *) d)->rectypeid);
-				if (((PLpgSQL_rec *) d)->isconst)
-					printf("                                  CONSTANT\n");
-				if (((PLpgSQL_rec *) d)->notnull)
-					printf("                                  NOT NULL\n");
-				if (((PLpgSQL_rec *) d)->default_val != NULL)
-				{
-					printf("                                  DEFAULT ");
-					dump_expr(((PLpgSQL_rec *) d)->default_val);
-					printf("\n");
-				}
+				printf("REC %s\n", ((PLpgSQL_rec *) d)->refname);
 				break;
 			case PLPGSQL_DTYPE_RECFIELD:
 				printf("RECFIELD %-16s of REC %d\n",

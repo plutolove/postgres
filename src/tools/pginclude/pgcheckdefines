@@ -1,4 +1,4 @@
-#! /usr/bin/perl
+#! /usr/bin/perl -w
 
 #
 # This script looks for symbols that are referenced in #ifdef or defined()
@@ -20,17 +20,14 @@
 # src/tools/pginclude/pgcheckdefines
 #
 
-use strict;
-use warnings;
-
 use Cwd;
 use File::Basename;
 
-my $topdir = cwd();
+$topdir = cwd();
 
 # Programs to use
-my $FIND = "find";
-my $MAKE = "make";
+$FIND = "find";
+$MAKE = "make";
 
 #
 # Build arrays of all the .c and .h files in the tree
@@ -41,47 +38,43 @@ my $MAKE = "make";
 # Including these .h files would clutter the list of define'd symbols and
 # cause a lot of false-positive results.
 #
-my (@cfiles, @hfiles);
-
-open my $pipe, '-|', "$FIND * -type f -name '*.c'"
+open PIPE, "$FIND * -type f -name '*.c' |"
   or die "can't fork: $!";
-while (<$pipe>)
+while (<PIPE>)
 {
 	chomp;
 	push @cfiles, $_;
 }
-close $pipe or die "$FIND failed: $!";
+close PIPE or die "$FIND failed: $!";
 
-open $pipe, '-|', "$FIND * -type f -name '*.h'"
+open PIPE, "$FIND * -type f -name '*.h' |"
   or die "can't fork: $!";
-while (<$pipe>)
+while (<PIPE>)
 {
 	chomp;
 	push @hfiles, $_
 	  unless m|^src/include/port/|
-	  || m|^src/backend/port/\w+/|;
+		  || m|^src/backend/port/\w+/|;
 }
-close $pipe or die "$FIND failed: $!";
+close PIPE or die "$FIND failed: $!";
 
 #
 # For each .h file, extract all the symbols it #define's, and add them to
 # a hash table.  To cover the possibility of multiple .h files defining
 # the same symbol, we make each hash entry a hash of filenames.
 #
-my %defines;
-
-foreach my $hfile (@hfiles)
+foreach $hfile (@hfiles)
 {
-	open my $fh, '<', $hfile
+	open HFILE, $hfile
 	  or die "can't open $hfile: $!";
-	while (<$fh>)
+	while (<HFILE>)
 	{
 		if (m/^\s*#\s*define\s+(\w+)/)
 		{
 			$defines{$1}{$hfile} = 1;
 		}
 	}
-	close $fh;
+	close HFILE;
 }
 
 #
@@ -89,9 +82,9 @@ foreach my $hfile (@hfiles)
 # files it #include's.  Then extract all the symbols it tests for defined-ness,
 # and check each one against the previously built hashtable.
 #
-foreach my $file (@hfiles, @cfiles)
+foreach $file (@hfiles, @cfiles)
 {
-	my ($fname, $fpath) = fileparse($file);
+	($fname, $fpath) = fileparse($file);
 	chdir $fpath or die "can't chdir to $fpath: $!";
 
 	#
@@ -103,31 +96,26 @@ foreach my $file (@hfiles, @cfiles)
 	# hence printing multiple definitions --- we keep the last one, which
 	# should come from the current Makefile.
 	#
-	my $MAKECMD;
-
 	if (-f "Makefile" || -f "GNUmakefile")
 	{
 		$MAKECMD = "$MAKE -qp";
 	}
 	else
 	{
-		my $subdir = $fpath;
+		$subdir = $fpath;
 		chop $subdir;
-		my $top_builddir = "..";
-		my $tmp          = $fpath;
+		$top_builddir = "..";
+		$tmp          = $fpath;
 		while (($tmp = dirname($tmp)) ne '.')
 		{
 			$top_builddir = $top_builddir . "/..";
 		}
 		$MAKECMD =
-		  "$MAKE -qp 'subdir=$subdir' 'top_builddir=$top_builddir' -f '$top_builddir/src/Makefile.global'";
+"$MAKE -qp 'subdir=$subdir' 'top_builddir=$top_builddir' -f '$top_builddir/src/Makefile.global'";
 	}
-
-	my ($CPPFLAGS, $CFLAGS, $CFLAGS_SL, $PTHREAD_CFLAGS, $CC);
-
-	open $pipe, '-|', "$MAKECMD"
+	open PIPE, "$MAKECMD |"
 	  or die "can't fork: $!";
-	while (<$pipe>)
+	while (<PIPE>)
 	{
 		if (m/^CPPFLAGS :?= (.*)/)
 		{
@@ -165,15 +153,15 @@ foreach my $file (@hfiles, @cfiles)
 	# "gcc -H" reports inclusions on stderr as "... filename" where the
 	# number of dots varies according to nesting depth.
 	#
-	my @includes = ();
-	my $COMPILE  = "$CC $CPPFLAGS $CFLAGS -H -E $fname";
-	open $pipe, '-|', "$COMPILE 2>&1 >/dev/null"
+	@includes = ();
+	$COMPILE  = "$CC $CPPFLAGS $CFLAGS -H -E $fname";
+	open PIPE, "$COMPILE 2>&1 >/dev/null |"
 	  or die "can't fork: $!";
-	while (<$pipe>)
+	while (<PIPE>)
 	{
 		if (m/^\.+ (.*)/)
 		{
-			my $include = $1;
+			$include = $1;
 
 			# Ignore system headers (absolute paths); but complain if a
 			# .c file includes a system header before any PG header.
@@ -188,7 +176,7 @@ foreach my $file (@hfiles, @cfiles)
 			$include =~ s|^\./||;
 
 			# Make path relative to top of tree
-			my $ipath = $fpath;
+			$ipath = $fpath;
 			while ($include =~ s|^\.\./||)
 			{
 				$ipath = dirname($ipath) . "/";
@@ -212,19 +200,21 @@ foreach my $file (@hfiles, @cfiles)
 	# We assume #ifdef isn't continued across lines, and that defined(foo)
 	# isn't split across lines either
 	#
-	open my $fh, '<', $fname
+	open FILE, $fname
 	  or die "can't open $file: $!";
-	my $inif = 0;
-	while (<$fh>)
+	$inif = 0;
+	while (<FILE>)
 	{
-		my $line = $_;
+		$line = $_;
 		if ($line =~ m/^\s*#\s*ifdef\s+(\w+)/)
 		{
-			checkit($file, $1, @includes);
+			$symbol = $1;
+			&checkit;
 		}
 		if ($line =~ m/^\s*#\s*ifndef\s+(\w+)/)
 		{
-			checkit($file, $1, @includes);
+			$symbol = $1;
+			&checkit;
 		}
 		if ($line =~ m/^\s*#\s*if\s+/)
 		{
@@ -234,7 +224,8 @@ foreach my $file (@hfiles, @cfiles)
 		{
 			while ($line =~ s/\bdefined(\s+|\s*\(\s*)(\w+)//)
 			{
-				checkit($file, $2, @includes);
+				$symbol = $2;
+				&checkit;
 			}
 			if (!($line =~ m/\\$/))
 			{
@@ -242,7 +233,7 @@ foreach my $file (@hfiles, @cfiles)
 			}
 		}
 	}
-	close $fh;
+	close FILE;
 
 	chdir $topdir or die "can't chdir to $topdir: $!";
 }
@@ -252,7 +243,6 @@ exit 0;
 # Check an is-defined reference
 sub checkit
 {
-	my ($file, $symbol, @includes) = @_;
 
 	# Ignore if symbol isn't defined in any PG include files
 	if (!defined $defines{$symbol})
@@ -268,10 +258,10 @@ sub checkit
 	# occur after the use of the symbol.  Given our normal file layout,
 	# however, the risk is minimal.
 	#
-	foreach my $deffile (keys %{ $defines{$symbol} })
+	foreach $deffile (keys %{ $defines{$symbol} })
 	{
 		return if $deffile eq $file;
-		foreach my $reffile (@includes)
+		foreach $reffile (@includes)
 		{
 			return if $deffile eq $reffile;
 		}
@@ -283,7 +273,7 @@ sub checkit
 	#
 	if ($file =~ m/\.h$/)
 	{
-		foreach my $deffile (keys %{ $defines{$symbol} })
+		foreach $deffile (keys %{ $defines{$symbol} })
 		{
 			return if $deffile eq 'src/include/c.h';
 			return if $deffile eq 'src/include/postgres.h';
@@ -294,10 +284,8 @@ sub checkit
 	}
 
 	#
-	my @places = keys %{ $defines{$symbol} };
+	@places = keys %{ $defines{$symbol} };
 	print "$file references $symbol, defined in @places\n";
 
 	# print "includes: @includes\n";
-
-	return;
 }

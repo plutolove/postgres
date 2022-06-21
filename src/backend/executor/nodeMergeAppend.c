@@ -3,7 +3,7 @@
  * nodeMergeAppend.c
  *	  routines to handle MergeAppend nodes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,10 +39,9 @@
 #include "postgres.h"
 
 #include "executor/execdebug.h"
-#include "executor/execPartition.h"
 #include "executor/nodeMergeAppend.h"
+
 #include "lib/binaryheap.h"
-#include "miscadmin.h"
 
 /*
  * We have one slot for each item in the heap array.  We use SlotNumber
@@ -51,7 +50,6 @@
  */
 typedef int32 SlotNumber;
 
-static TupleTableSlot *ExecMergeAppend(PlanState *pstate);
 static int	heap_compare_slots(Datum a, Datum b, void *arg);
 
 
@@ -66,73 +64,25 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
 {
 	MergeAppendState *mergestate = makeNode(MergeAppendState);
 	PlanState **mergeplanstates;
-	Bitmapset  *validsubplans;
 	int			nplans;
-	int			i,
-				j;
+	int			i;
+	ListCell   *lc;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
+
+	/*
+	 * Set up empty vector of subplan states
+	 */
+	nplans = list_length(node->mergeplans);
+
+	mergeplanstates = (PlanState **) palloc0(nplans * sizeof(PlanState *));
 
 	/*
 	 * create new MergeAppendState for our node
 	 */
 	mergestate->ps.plan = (Plan *) node;
 	mergestate->ps.state = estate;
-	mergestate->ps.ExecProcNode = ExecMergeAppend;
-
-	/* If run-time partition pruning is enabled, then set that up now */
-	if (node->part_prune_info != NULL)
-	{
-		PartitionPruneState *prunestate;
-
-		/* We may need an expression context to evaluate partition exprs */
-		ExecAssignExprContext(estate, &mergestate->ps);
-
-		prunestate = ExecCreatePartitionPruneState(&mergestate->ps,
-												   node->part_prune_info);
-		mergestate->ms_prune_state = prunestate;
-
-		/* Perform an initial partition prune, if required. */
-		if (prunestate->do_initial_prune)
-		{
-			/* Determine which subplans survive initial pruning */
-			validsubplans = ExecFindInitialMatchingSubPlans(prunestate,
-															list_length(node->mergeplans));
-
-			nplans = bms_num_members(validsubplans);
-		}
-		else
-		{
-			/* We'll need to initialize all subplans */
-			nplans = list_length(node->mergeplans);
-			Assert(nplans > 0);
-			validsubplans = bms_add_range(NULL, 0, nplans - 1);
-		}
-
-		/*
-		 * When no run-time pruning is required and there's at least one
-		 * subplan, we can fill as_valid_subplans immediately, preventing
-		 * later calls to ExecFindMatchingSubPlans.
-		 */
-		if (!prunestate->do_exec_prune && nplans > 0)
-			mergestate->ms_valid_subplans = bms_add_range(NULL, 0, nplans - 1);
-	}
-	else
-	{
-		nplans = list_length(node->mergeplans);
-
-		/*
-		 * When run-time partition pruning is not enabled we can just mark all
-		 * subplans as valid; they must also all be initialized.
-		 */
-		Assert(nplans > 0);
-		mergestate->ms_valid_subplans = validsubplans =
-			bms_add_range(NULL, 0, nplans - 1);
-		mergestate->ms_prune_state = NULL;
-	}
-
-	mergeplanstates = (PlanState **) palloc(nplans * sizeof(PlanState *));
 	mergestate->mergeplans = mergeplanstates;
 	mergestate->ms_nplans = nplans;
 
@@ -143,28 +93,33 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
 	/*
 	 * Miscellaneous initialization
 	 *
-	 * MergeAppend nodes do have Result slots, which hold pointers to tuples,
-	 * so we have to initialize them.  FIXME
+	 * MergeAppend plans don't have expression contexts because they never
+	 * call ExecQual or ExecProject.
 	 */
-	ExecInitResultTupleSlotTL(&mergestate->ps, &TTSOpsVirtual);
-
-	/* node returns slots from each of its subnodes, therefore not fixed */
-	mergestate->ps.resultopsset = true;
-	mergestate->ps.resultopsfixed = false;
 
 	/*
-	 * call ExecInitNode on each of the valid plans to be executed and save
-	 * the results into the mergeplanstates array.
+	 * MergeAppend nodes do have Result slots, which hold pointers to tuples,
+	 * so we have to initialize them.
 	 */
-	j = 0;
-	i = -1;
-	while ((i = bms_next_member(validsubplans, i)) >= 0)
-	{
-		Plan	   *initNode = (Plan *) list_nth(node->mergeplans, i);
+	ExecInitResultTupleSlot(estate, &mergestate->ps);
 
-		mergeplanstates[j++] = ExecInitNode(initNode, estate, eflags);
+	/*
+	 * call ExecInitNode on each of the plans to be executed and save the
+	 * results into the array "mergeplans".
+	 */
+	i = 0;
+	foreach(lc, node->mergeplans)
+	{
+		Plan	   *initNode = (Plan *) lfirst(lc);
+
+		mergeplanstates[i] = ExecInitNode(initNode, estate, eflags);
+		i++;
 	}
 
+	/*
+	 * initialize output tuple type
+	 */
+	ExecAssignResultTypeFromTL(&mergestate->ps);
 	mergestate->ps.ps_ProjInfo = NULL;
 
 	/*
@@ -181,15 +136,6 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
 		sortKey->ssup_collation = node->collations[i];
 		sortKey->ssup_nulls_first = node->nullsFirst[i];
 		sortKey->ssup_attno = node->sortColIdx[i];
-
-		/*
-		 * It isn't feasible to perform abbreviated key conversion, since
-		 * tuples are pulled into mergestate's binary heap as needed.  It
-		 * would likely be counter-productive to convert tuples into an
-		 * abbreviated representation as they're pulled up, so opt out of that
-		 * additional optimization entirely.
-		 */
-		sortKey->abbreviate = false;
 
 		PrepareSortSupportFromOrderingOp(node->sortOperators[i], sortKey);
 	}
@@ -208,36 +154,19 @@ ExecInitMergeAppend(MergeAppend *node, EState *estate, int eflags)
  *		Handles iteration over multiple subplans.
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *
-ExecMergeAppend(PlanState *pstate)
+TupleTableSlot *
+ExecMergeAppend(MergeAppendState *node)
 {
-	MergeAppendState *node = castNode(MergeAppendState, pstate);
 	TupleTableSlot *result;
 	SlotNumber	i;
 
-	CHECK_FOR_INTERRUPTS();
-
 	if (!node->ms_initialized)
 	{
-		/* Nothing to do if all subplans were pruned */
-		if (node->ms_nplans == 0)
-			return ExecClearTuple(node->ps.ps_ResultTupleSlot);
-
 		/*
-		 * If we've yet to determine the valid subplans then do so now.  If
-		 * run-time pruning is disabled then the valid subplans will always be
-		 * set to all subplans.
+		 * First time through: pull the first tuple from each subplan, and set
+		 * up the heap.
 		 */
-		if (node->ms_valid_subplans == NULL)
-			node->ms_valid_subplans =
-				ExecFindMatchingSubPlans(node->ms_prune_state);
-
-		/*
-		 * First time through: pull the first tuple from each valid subplan,
-		 * and set up the heap.
-		 */
-		i = -1;
-		while ((i = bms_next_member(node->ms_valid_subplans, i)) >= 0)
+		for (i = 0; i < node->ms_nplans; i++)
 		{
 			node->ms_slots[i] = ExecProcNode(node->mergeplans[i]);
 			if (!TupIsNull(node->ms_slots[i]))
@@ -312,10 +241,7 @@ heap_compare_slots(Datum a, Datum b, void *arg)
 									  datum2, isNull2,
 									  sortKey);
 		if (compare != 0)
-		{
-			INVERT_COMPARE_RESULT(compare);
-			return compare;
-		}
+			return -compare;
 	}
 	return 0;
 }
@@ -352,19 +278,6 @@ void
 ExecReScanMergeAppend(MergeAppendState *node)
 {
 	int			i;
-
-	/*
-	 * If any PARAM_EXEC Params used in pruning expressions have changed, then
-	 * we'd better unset the valid subplans so that they are reselected for
-	 * the new parameter values.
-	 */
-	if (node->ms_prune_state &&
-		bms_overlap(node->ps.chgParam,
-					node->ms_prune_state->execparamids))
-	{
-		bms_free(node->ms_valid_subplans);
-		node->ms_valid_subplans = NULL;
-	}
 
 	for (i = 0; i < node->ms_nplans; i++)
 	{

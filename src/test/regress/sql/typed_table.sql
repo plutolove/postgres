@@ -60,16 +60,4 @@ INSERT INTO persons VALUES (1, 'test');
 CREATE FUNCTION namelen(person_type) RETURNS int LANGUAGE SQL AS $$ SELECT length($1.name) $$;
 SELECT id, namelen(persons) FROM persons;
 
-CREATE TABLE persons2 OF person_type (
-    id WITH OPTIONS PRIMARY KEY,
-    UNIQUE (name)
-);
-
-\d persons2
-
-CREATE TABLE persons3 OF person_type (
-    PRIMARY KEY (id),
-    name NOT NULL DEFAULT ''
-);
-
-\d persons3
+DROP TYPE person_type CASCADE;

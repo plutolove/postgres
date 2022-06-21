@@ -1,17 +1,18 @@
 /*-------------------------------------------------------------------------
  *
  * pg_trigger.h
- *	  definition of the "trigger" system catalog (pg_trigger)
+ *	  definition of the system "trigger" relation (pg_trigger)
+ *	  along with the relation's initial contents.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_trigger.h
  *
  * NOTES
- *	  The Catalog.pm module reads this file and derives schema
- *	  information.
+ *	  the genbki.pl script reads this file and generates .bki
+ *	  information from the DATA() statements.
  *
  *-------------------------------------------------------------------------
  */
@@ -19,7 +20,6 @@
 #define PG_TRIGGER_H
 
 #include "catalog/genbki.h"
-#include "catalog/pg_trigger_d.h"
 
 /* ----------------
  *		pg_trigger definition.  cpp turns this into
@@ -31,11 +31,11 @@
  * to be associated with a deferrable constraint.
  * ----------------
  */
-CATALOG(pg_trigger,2620,TriggerRelationId)
+#define TriggerRelationId  2620
+
+CATALOG(pg_trigger,2620)
 {
-	Oid			oid;			/* oid */
 	Oid			tgrelid;		/* relation trigger is attached to */
-	Oid			tgparentid;		/* OID of parent trigger, if any */
 	NameData	tgname;			/* trigger's name */
 	Oid			tgfoid;			/* OID of function to be called */
 	int16		tgtype;			/* BEFORE/AFTER/INSTEAD, UPDATE/DELETE/INSERT,
@@ -57,10 +57,8 @@ CATALOG(pg_trigger,2620,TriggerRelationId)
 	int2vector	tgattr;			/* column numbers, if trigger is on columns */
 
 #ifdef CATALOG_VARLEN
-	bytea		tgargs BKI_FORCE_NOT_NULL;	/* first\000second\000tgnargs\000 */
+	bytea		tgargs;			/* first\000second\000tgnargs\000 */
 	pg_node_tree tgqual;		/* WHEN expression, or NULL if none */
-	NameData	tgoldtable;		/* old transition table, or NULL if none */
-	NameData	tgnewtable;		/* new transition table, or NULL if none */
 #endif
 } FormData_pg_trigger;
 
@@ -71,7 +69,26 @@ CATALOG(pg_trigger,2620,TriggerRelationId)
  */
 typedef FormData_pg_trigger *Form_pg_trigger;
 
-#ifdef EXPOSE_TO_CLIENT_CODE
+/* ----------------
+ *		compiler constants for pg_trigger
+ * ----------------
+ */
+#define Natts_pg_trigger				15
+#define Anum_pg_trigger_tgrelid			1
+#define Anum_pg_trigger_tgname			2
+#define Anum_pg_trigger_tgfoid			3
+#define Anum_pg_trigger_tgtype			4
+#define Anum_pg_trigger_tgenabled		5
+#define Anum_pg_trigger_tgisinternal	6
+#define Anum_pg_trigger_tgconstrrelid	7
+#define Anum_pg_trigger_tgconstrindid	8
+#define Anum_pg_trigger_tgconstraint	9
+#define Anum_pg_trigger_tgdeferrable	10
+#define Anum_pg_trigger_tginitdeferred	11
+#define Anum_pg_trigger_tgnargs			12
+#define Anum_pg_trigger_tgattr			13
+#define Anum_pg_trigger_tgargs			14
+#define Anum_pg_trigger_tgqual			15
 
 /* Bits within tgtype */
 #define TRIGGER_TYPE_ROW				(1 << 0)
@@ -125,13 +142,4 @@ typedef FormData_pg_trigger *Form_pg_trigger;
 #define TRIGGER_TYPE_MATCHES(type, level, timing, event) \
 	(((type) & (TRIGGER_TYPE_LEVEL_MASK | TRIGGER_TYPE_TIMING_MASK | (event))) == ((level) | (timing) | (event)))
 
-/*
- * Macro to determine whether tgnewtable or tgoldtable has been specified for
- * a trigger.
- */
-#define TRIGGER_USES_TRANSITION_TABLE(namepointer) \
-	((namepointer) != (char *) NULL)
-
-#endif							/* EXPOSE_TO_CLIENT_CODE */
-
-#endif							/* PG_TRIGGER_H */
+#endif   /* PG_TRIGGER_H */

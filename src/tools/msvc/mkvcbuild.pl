@@ -7,14 +7,11 @@
 use strict;
 use warnings;
 
-use FindBin;
-use lib $FindBin::RealBin;
-
 use Mkvcbuild;
 
-chdir('../../..') if (-d '../msvc' && -d '../../../src');
+chdir('..\..\..') if (-d '..\msvc' && -d '..\..\..\src');
 die 'Must run from root or msvc directory'
-  unless (-d 'src/tools/msvc' && -d 'src');
+  unless (-d 'src\tools\msvc' && -d 'src');
 
 die 'Could not find config_default.pl'
   unless (-f 'src/tools/msvc/config_default.pl');
@@ -22,7 +19,7 @@ print "Warning: no config.pl found, using default.\n"
   unless (-f 'src/tools/msvc/config.pl');
 
 our $config;
-do './src/tools/msvc/config_default.pl';
-do './src/tools/msvc/config.pl' if (-f 'src/tools/msvc/config.pl');
+require 'src/tools/msvc/config_default.pl';
+require 'src/tools/msvc/config.pl' if (-f 'src/tools/msvc/config.pl');
 
 Mkvcbuild::mkvcbuild($config);

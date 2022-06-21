@@ -1,5 +1,5 @@
-/* This file was generated automatically by the Snowball to ISO C compiler */
-/* http://snowballstem.org/ */
+
+/* This file was generated automatically by the Snowball to ANSI C compiler */
 
 #ifdef __cplusplus
 extern "C" {

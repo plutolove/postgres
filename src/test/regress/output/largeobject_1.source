@@ -10,11 +10,11 @@ CREATE TABLE lotest_stash_values (loid oid, fd integer);
 -- returns the large object id
 INSERT INTO lotest_stash_values (loid) SELECT lo_creat(42);
 -- Test ALTER LARGE OBJECT
-CREATE ROLE regress_lo_user;
+CREATE ROLE regresslo;
 DO $$
   BEGIN
     EXECUTE 'ALTER LARGE OBJECT ' || (select loid from lotest_stash_values)
-		|| ' OWNER TO regress_lo_user';
+		|| ' OWNER TO regresslo';
   END
 $$;
 SELECT
@@ -23,9 +23,9 @@ FROM
 	lotest_stash_values s
 	JOIN pg_largeobject_metadata lo ON s.loid = lo.oid
 	JOIN pg_authid rol ON lo.lomowner = rol.oid;
-     rolname     
------------------
- regress_lo_user
+  rolname  
+-----------
+ regresslo
 (1 row)
 
 -- NOTE: large objects require transactions
@@ -90,8 +90,10 @@ END;
 -- it's left behind to help test pg_dump.
 SELECT lo_from_bytea(0, lo_get(loid)) AS newloid FROM lotest_stash_values
 \gset
--- Add a comment to it, as well, for pg_dump/pg_upgrade testing.
-COMMENT ON LARGE OBJECT :newloid IS 'I Wandered Lonely as a Cloud';
+-- Ideally we'd put a comment on this object for pg_dump testing purposes.
+-- But since pg_upgrade fails to preserve large object comments, doing so
+-- would break pg_upgrade's regression test.
+-- COMMENT ON LARGE OBJECT :newloid IS 'I Wandered Lonely as a Cloud';
 -- Read out a portion
 BEGIN;
 UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS integer));
@@ -326,7 +328,7 @@ SELECT lo_lseek(fd, 0, 2) FROM lotest_stash_values;
    680800
 (1 row)
 
--- with the default BLCKSZ, LOBLKSIZE = 2048, so this positions us for a block
+-- with the default BLKSZ, LOBLKSZ = 2048, so this positions us for a block
 -- edge case
 SELECT lo_lseek(fd, 2030, 0) FROM lotest_stash_values;
  lo_lseek 
@@ -385,10 +387,10 @@ SELECT lo_export(loid, '@abs_builddir@/results/lotest.txt') FROM lotest_stash_va
          1
 (1 row)
 
-\lo_import '@abs_builddir@/results/lotest.txt'
+\lo_import 'results/lotest.txt'
 \set newloid :LASTOID
 -- just make sure \lo_export does not barf
-\lo_export :newloid '@abs_builddir@/results/lotest2.txt'
+\lo_export :newloid 'results/lotest2.txt'
 -- This is a hack to test that export/import are reversible
 -- This uses knowledge about the inner workings of large object mechanism
 -- which should not be used outside it.  This makes it a HACK
@@ -407,7 +409,7 @@ SELECT lo_unlink(loid) FROM lotest_stash_values;
 
 TRUNCATE lotest_stash_values;
 \lo_unlink :newloid
-\lo_import '@abs_builddir@/results/lotest.txt'
+\lo_import 'results/lotest.txt'
 \set newloid_1 :LASTOID
 SELECT lo_from_bytea(0, lo_get(:newloid_1)) AS newloid_2
 \gset
@@ -467,15 +469,5 @@ SELECT lo_get(:newloid);
  \xdeadbeef
 (1 row)
 
--- Create one more object that we leave behind for testing pg_dump/pg_upgrade;
--- this one intentionally has an OID in the system range
-SELECT lo_create(2121);
- lo_create 
------------
-      2121
-(1 row)
-
-COMMENT ON LARGE OBJECT 2121 IS 'testing comments';
--- Clean up
 DROP TABLE lotest_stash_values;
-DROP ROLE regress_lo_user;
+DROP ROLE regresslo;

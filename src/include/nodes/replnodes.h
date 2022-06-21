@@ -4,7 +4,7 @@
  *	  definitions for replication grammar parse nodes
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/replnodes.h
@@ -55,8 +55,6 @@ typedef struct CreateReplicationSlotCmd
 	char	   *slotname;
 	ReplicationKind kind;
 	char	   *plugin;
-	bool		temporary;
-	List	   *options;
 } CreateReplicationSlotCmd;
 
 
@@ -68,7 +66,6 @@ typedef struct DropReplicationSlotCmd
 {
 	NodeTag		type;
 	char	   *slotname;
-	bool		wait;
 } DropReplicationSlotCmd;
 
 
@@ -97,13 +94,4 @@ typedef struct TimeLineHistoryCmd
 	TimeLineID	timeline;
 } TimeLineHistoryCmd;
 
-/* ----------------------
- *		SQL commands
- * ----------------------
- */
-typedef struct SQLCmd
-{
-	NodeTag		type;
-} SQLCmd;
-
-#endif							/* REPLNODES_H */
+#endif   /* REPLNODES_H */

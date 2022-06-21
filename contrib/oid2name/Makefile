@@ -4,14 +4,10 @@ PGFILEDESC = "oid2name - examine the file structure"
 PGAPPICON = win32
 
 PROGRAM = oid2name
-OBJS = \
-	$(WIN32RES) \
-	oid2name.o
-
-TAP_TESTS = 1
+OBJS	= oid2name.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
-PG_LIBS_INTERNAL = $(libpq_pgport)
+PG_LIBS = $(libpq_pgport)
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

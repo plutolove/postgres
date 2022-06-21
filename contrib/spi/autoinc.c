@@ -3,7 +3,6 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "commands/sequence.h"
 #include "commands/trigger.h"
@@ -24,7 +23,6 @@ autoinc(PG_FUNCTION_ARGS)
 	int		   *chattrs;		/* attnums of attributes to change */
 	int			chnattrs = 0;	/* # of above */
 	Datum	   *newvals;		/* vals of above */
-	bool	   *newnulls;		/* null flags for above */
 	char	  **args;			/* arguments */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
@@ -66,7 +64,6 @@ autoinc(PG_FUNCTION_ARGS)
 
 	chattrs = (int *) palloc(nargs / 2 * sizeof(int));
 	newvals = (Datum *) palloc(nargs / 2 * sizeof(Datum));
-	newnulls = (bool *) palloc(nargs / 2 * sizeof(bool));
 
 	for (i = 0; i < nargs;)
 	{
@@ -74,7 +71,7 @@ autoinc(PG_FUNCTION_ARGS)
 		int32		val;
 		Datum		seqname;
 
-		if (attnum <= 0)
+		if (attnum < 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_TRIGGERED_ACTION_EXCEPTION),
 					 errmsg("\"%s\" has no attribute \"%s\"",
@@ -105,23 +102,23 @@ autoinc(PG_FUNCTION_ARGS)
 			newvals[chnattrs] = DirectFunctionCall1(nextval, seqname);
 			newvals[chnattrs] = Int32GetDatum((int32) DatumGetInt64(newvals[chnattrs]));
 		}
-		newnulls[chnattrs] = false;
-		pfree(DatumGetTextPP(seqname));
+		pfree(DatumGetTextP(seqname));
 		chnattrs++;
 		i++;
 	}
 
 	if (chnattrs > 0)
 	{
-		rettuple = heap_modify_tuple_by_cols(rettuple, tupdesc,
-											 chnattrs, chattrs,
-											 newvals, newnulls);
+		rettuple = SPI_modifytuple(rel, rettuple, chnattrs, chattrs, newvals, NULL);
+		if (rettuple == NULL)
+			/* internal error */
+			elog(ERROR, "autoinc (%s): %d returned by SPI_modifytuple",
+				 relname, SPI_result);
 	}
 
 	pfree(relname);
 	pfree(chattrs);
 	pfree(newvals);
-	pfree(newnulls);
 
 	return PointerGetDatum(rettuple);
 }

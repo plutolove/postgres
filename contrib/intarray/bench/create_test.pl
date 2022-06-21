@@ -3,8 +3,6 @@
 # contrib/intarray/bench/create_test.pl
 
 use strict;
-use warnings;
-
 print <<EOT;
 create table message (
 	mid	int not null,
@@ -17,8 +15,8 @@ create table message_section_map (
 
 EOT
 
-open(my $msg, '>', "message.tmp")             || die;
-open(my $map, '>', "message_section_map.tmp") || die;
+open(MSG, ">message.tmp")             || die;
+open(MAP, ">message_section_map.tmp") || die;
 
 srand(1);
 
@@ -44,16 +42,16 @@ foreach my $i (1 .. 200000)
 	}
 	if ($#sect < 0 || rand() < 0.1)
 	{
-		print $msg "$i\t\\N\n";
+		print MSG "$i\t\\N\n";
 	}
 	else
 	{
-		print $msg "$i\t{" . join(',', @sect) . "}\n";
-		map { print $map "$i\t$_\n" } @sect;
+		print MSG "$i\t{" . join(',', @sect) . "}\n";
+		map { print MAP "$i\t$_\n" } @sect;
 	}
 }
-close $map;
-close $msg;
+close MAP;
+close MSG;
 
 copytable('message');
 copytable('message_section_map');
@@ -81,9 +79,8 @@ sub copytable
 	my $t = shift;
 
 	print "COPY $t from stdin;\n";
-	open(my $fff, '<', "$t.tmp") || die;
-	while (<$fff>) { print; }
-	close $fff;
+	open(FFF, "$t.tmp") || die;
+	while (<FFF>) { print; }
+	close FFF;
 	print "\\.\n";
-	return;
 }

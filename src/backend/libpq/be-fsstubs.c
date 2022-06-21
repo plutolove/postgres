@@ -3,7 +3,7 @@
  * be-fsstubs.c
  *	  Builtin functions for open/close/read/write operations on large objects
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -51,6 +51,11 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
+/*
+ * compatibility flag for permission checks
+ */
+bool		lo_compat_privileges;
+
 /* define this to enable debug logging */
 /* #define FSDB 1 */
 /* chunk size for lo_import/lo_export transfers */
@@ -62,7 +67,7 @@
  * A non-null entry is a pointer to a LargeObjectDesc allocated in the
  * LO private memory context "fscxt".  The cookies array itself is also
  * dynamically allocated in that context.  Its current allocated size is
- * cookies_size entries, of which any unused entries will be NULL.
+ * cookies_len entries, of which any unused entries will be NULL.
  */
 static LargeObjectDesc **cookies = NULL;
 static int	cookies_size = 0;
@@ -74,7 +79,9 @@ static MemoryContext fscxt = NULL;
 		if (fscxt == NULL) \
 			fscxt = AllocSetContextCreate(TopMemoryContext, \
 										  "Filesystem", \
-										  ALLOCSET_DEFAULT_SIZES); \
+										  ALLOCSET_DEFAULT_MINSIZE, \
+										  ALLOCSET_DEFAULT_INITSIZE, \
+										  ALLOCSET_DEFAULT_MAXSIZE); \
 	} while (0)
 
 
@@ -88,14 +95,14 @@ static Oid	lo_import_internal(text *filename, Oid lobjOid);
  *****************************************************************************/
 
 Datum
-be_lo_open(PG_FUNCTION_ARGS)
+lo_open(PG_FUNCTION_ARGS)
 {
 	Oid			lobjId = PG_GETARG_OID(0);
 	int32		mode = PG_GETARG_INT32(1);
 	LargeObjectDesc *lobjDesc;
 	int			fd;
 
-#ifdef FSDB
+#if FSDB
 	elog(DEBUG4, "lo_open(%u,%d)", lobjId, mode);
 #endif
 
@@ -103,13 +110,21 @@ be_lo_open(PG_FUNCTION_ARGS)
 
 	lobjDesc = inv_open(lobjId, mode, fscxt);
 
+	if (lobjDesc == NULL)
+	{							/* lookup failed */
+#if FSDB
+		elog(DEBUG4, "could not open large object %u", lobjId);
+#endif
+		PG_RETURN_INT32(-1);
+	}
+
 	fd = newLOfd(lobjDesc);
 
 	PG_RETURN_INT32(fd);
 }
 
 Datum
-be_lo_close(PG_FUNCTION_ARGS)
+lo_close(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 
@@ -118,7 +133,7 @@ be_lo_close(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
 
-#ifdef FSDB
+#if FSDB
 	elog(DEBUG4, "lo_close(%d)", fd);
 #endif
 
@@ -150,16 +165,22 @@ lo_read(int fd, char *buf, int len)
 				 errmsg("invalid large-object descriptor: %d", fd)));
 	lobj = cookies[fd];
 
-	/*
-	 * Check state.  inv_read() would throw an error anyway, but we want the
-	 * error to be about the FD's state not the underlying privilege; it might
-	 * be that the privilege exists but user forgot to ask for read mode.
-	 */
-	if ((lobj->flags & IFS_RDLOCK) == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("large object descriptor %d was not opened for reading",
-						fd)));
+	/* We don't bother to check IFS_RDLOCK, since it's always set */
+
+	/* Permission checks --- first time through only */
+	if ((lobj->flags & IFS_RD_PERM_OK) == 0)
+	{
+		if (!lo_compat_privileges &&
+			pg_largeobject_aclcheck_snapshot(lobj->id,
+											 GetUserId(),
+											 ACL_SELECT,
+											 lobj->snapshot) != ACLCHECK_OK)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("permission denied for large object %u",
+							lobj->id)));
+		lobj->flags |= IFS_RD_PERM_OK;
+	}
 
 	status = inv_read(lobj, buf, len);
 
@@ -178,12 +199,26 @@ lo_write(int fd, const char *buf, int len)
 				 errmsg("invalid large-object descriptor: %d", fd)));
 	lobj = cookies[fd];
 
-	/* see comment in lo_read() */
 	if ((lobj->flags & IFS_WRLOCK) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("large object descriptor %d was not opened for writing",
-						fd)));
+			  errmsg("large object descriptor %d was not opened for writing",
+					 fd)));
+
+	/* Permission checks --- first time through only */
+	if ((lobj->flags & IFS_WR_PERM_OK) == 0)
+	{
+		if (!lo_compat_privileges &&
+			pg_largeobject_aclcheck_snapshot(lobj->id,
+											 GetUserId(),
+											 ACL_UPDATE,
+											 lobj->snapshot) != ACLCHECK_OK)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("permission denied for large object %u",
+							lobj->id)));
+		lobj->flags |= IFS_WR_PERM_OK;
+	}
 
 	status = inv_write(lobj, buf, len);
 
@@ -191,7 +226,7 @@ lo_write(int fd, const char *buf, int len)
 }
 
 Datum
-be_lo_lseek(PG_FUNCTION_ARGS)
+lo_lseek(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int32		offset = PG_GETARG_INT32(1);
@@ -209,14 +244,14 @@ be_lo_lseek(PG_FUNCTION_ARGS)
 	if (status != (int32) status)
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("lo_lseek result out of range for large-object descriptor %d",
-						fd)));
+		errmsg("lo_lseek result out of range for large-object descriptor %d",
+			   fd)));
 
 	PG_RETURN_INT32((int32) status);
 }
 
 Datum
-be_lo_lseek64(PG_FUNCTION_ARGS)
+lo_lseek64(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int64		offset = PG_GETARG_INT64(1);
@@ -234,7 +269,7 @@ be_lo_lseek64(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lo_creat(PG_FUNCTION_ARGS)
+lo_creat(PG_FUNCTION_ARGS)
 {
 	Oid			lobjId;
 
@@ -250,7 +285,7 @@ be_lo_creat(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lo_create(PG_FUNCTION_ARGS)
+lo_create(PG_FUNCTION_ARGS)
 {
 	Oid			lobjId = PG_GETARG_OID(0);
 
@@ -266,7 +301,7 @@ be_lo_create(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lo_tell(PG_FUNCTION_ARGS)
+lo_tell(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int64		offset;
@@ -282,14 +317,14 @@ be_lo_tell(PG_FUNCTION_ARGS)
 	if (offset != (int32) offset)
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("lo_tell result out of range for large-object descriptor %d",
-						fd)));
+		 errmsg("lo_tell result out of range for large-object descriptor %d",
+				fd)));
 
 	PG_RETURN_INT32((int32) offset);
 }
 
 Datum
-be_lo_tell64(PG_FUNCTION_ARGS)
+lo_tell64(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int64		offset;
@@ -305,15 +340,11 @@ be_lo_tell64(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lo_unlink(PG_FUNCTION_ARGS)
+lo_unlink(PG_FUNCTION_ARGS)
 {
 	Oid			lobjId = PG_GETARG_OID(0);
 
-	/*
-	 * Must be owner of the large object.  It would be cleaner to check this
-	 * in inv_drop(), but we want to throw the error before not after closing
-	 * relevant FDs.
-	 */
+	/* Must be owner of the largeobject */
 	if (!lo_compat_privileges &&
 		!pg_largeobject_ownercheck(lobjId, GetUserId()))
 		ereport(ERROR,
@@ -349,7 +380,7 @@ be_lo_unlink(PG_FUNCTION_ARGS)
  *****************************************************************************/
 
 Datum
-be_loread(PG_FUNCTION_ARGS)
+loread(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int32		len = PG_GETARG_INT32(1);
@@ -367,15 +398,15 @@ be_loread(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lowrite(PG_FUNCTION_ARGS)
+lowrite(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
-	bytea	   *wbuf = PG_GETARG_BYTEA_PP(1);
+	bytea	   *wbuf = PG_GETARG_BYTEA_P(1);
 	int			bytestowrite;
 	int			totalwritten;
 
-	bytestowrite = VARSIZE_ANY_EXHDR(wbuf);
-	totalwritten = lo_write(fd, VARDATA_ANY(wbuf), bytestowrite);
+	bytestowrite = VARSIZE(wbuf) - VARHDRSZ;
+	totalwritten = lo_write(fd, VARDATA(wbuf), bytestowrite);
 	PG_RETURN_INT32(totalwritten);
 }
 
@@ -388,7 +419,7 @@ be_lowrite(PG_FUNCTION_ARGS)
  *	  imports a file as an (inversion) large object.
  */
 Datum
-be_lo_import(PG_FUNCTION_ARGS)
+lo_import(PG_FUNCTION_ARGS)
 {
 	text	   *filename = PG_GETARG_TEXT_PP(0);
 
@@ -400,7 +431,7 @@ be_lo_import(PG_FUNCTION_ARGS)
  *	  imports a file as an (inversion) large object specifying oid.
  */
 Datum
-be_lo_import_with_oid(PG_FUNCTION_ARGS)
+lo_import_with_oid(PG_FUNCTION_ARGS)
 {
 	text	   *filename = PG_GETARG_TEXT_PP(0);
 	Oid			oid = PG_GETARG_OID(1);
@@ -419,13 +450,21 @@ lo_import_internal(text *filename, Oid lobjOid)
 	LargeObjectDesc *lobj;
 	Oid			oid;
 
+#ifndef ALLOW_DANGEROUS_LO_FUNCTIONS
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to use server-side lo_import()"),
+				 errhint("Anyone can use the client-side lo_import() provided by libpq.")));
+#endif
+
 	CreateFSContext();
 
 	/*
 	 * open the file to be read in
 	 */
 	text_to_cstring_buffer(filename, fnamebuf, sizeof(fnamebuf));
-	fd = OpenTransientFile(fnamebuf, O_RDONLY | PG_BINARY);
+	fd = OpenTransientFile(fnamebuf, O_RDONLY | PG_BINARY, S_IRWXU);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -455,12 +494,7 @@ lo_import_internal(text *filename, Oid lobjOid)
 						fnamebuf)));
 
 	inv_close(lobj);
-
-	if (CloseTransientFile(fd) != 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m",
-						fnamebuf)));
+	CloseTransientFile(fd);
 
 	return oid;
 }
@@ -470,7 +504,7 @@ lo_import_internal(text *filename, Oid lobjOid)
  *	  exports an (inversion) large object.
  */
 Datum
-be_lo_export(PG_FUNCTION_ARGS)
+lo_export(PG_FUNCTION_ARGS)
 {
 	Oid			lobjId = PG_GETARG_OID(0);
 	text	   *filename = PG_GETARG_TEXT_PP(1);
@@ -481,6 +515,14 @@ be_lo_export(PG_FUNCTION_ARGS)
 	char		fnamebuf[MAXPGPATH];
 	LargeObjectDesc *lobj;
 	mode_t		oumask;
+
+#ifndef ALLOW_DANGEROUS_LO_FUNCTIONS
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to use server-side lo_export()"),
+				 errhint("Anyone can use the client-side lo_export() provided by libpq.")));
+#endif
 
 	CreateFSContext();
 
@@ -498,16 +540,9 @@ be_lo_export(PG_FUNCTION_ARGS)
 	 */
 	text_to_cstring_buffer(filename, fnamebuf, sizeof(fnamebuf));
 	oumask = umask(S_IWGRP | S_IWOTH);
-	PG_TRY();
-	{
-		fd = OpenTransientFilePerm(fnamebuf, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY,
-								   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-	}
-	PG_FINALLY();
-	{
-		umask(oumask);
-	}
-	PG_END_TRY();
+	fd = OpenTransientFile(fnamebuf, O_CREAT | O_WRONLY | O_TRUNC | PG_BINARY,
+						   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+	umask(oumask);
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -527,12 +562,7 @@ be_lo_export(PG_FUNCTION_ARGS)
 							fnamebuf)));
 	}
 
-	if (CloseTransientFile(fd) != 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m",
-						fnamebuf)));
-
+	CloseTransientFile(fd);
 	inv_close(lobj);
 
 	PG_RETURN_INT32(1);
@@ -553,18 +583,32 @@ lo_truncate_internal(int32 fd, int64 len)
 				 errmsg("invalid large-object descriptor: %d", fd)));
 	lobj = cookies[fd];
 
-	/* see comment in lo_read() */
 	if ((lobj->flags & IFS_WRLOCK) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("large object descriptor %d was not opened for writing",
-						fd)));
+			  errmsg("large object descriptor %d was not opened for writing",
+					 fd)));
+
+	/* Permission checks --- first time through only */
+	if ((lobj->flags & IFS_WR_PERM_OK) == 0)
+	{
+		if (!lo_compat_privileges &&
+			pg_largeobject_aclcheck_snapshot(lobj->id,
+											 GetUserId(),
+											 ACL_UPDATE,
+											 lobj->snapshot) != ACLCHECK_OK)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("permission denied for large object %u",
+							lobj->id)));
+		lobj->flags |= IFS_WR_PERM_OK;
+	}
 
 	inv_truncate(lobj, len);
 }
 
 Datum
-be_lo_truncate(PG_FUNCTION_ARGS)
+lo_truncate(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int32		len = PG_GETARG_INT32(1);
@@ -574,7 +618,7 @@ be_lo_truncate(PG_FUNCTION_ARGS)
 }
 
 Datum
-be_lo_truncate64(PG_FUNCTION_ARGS)
+lo_truncate64(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 	int64		len = PG_GETARG_INT64(1);
@@ -724,7 +768,7 @@ lo_get_fragment_internal(Oid loOid, int64 offset, int32 nbytes)
 	LargeObjectDesc *loDesc;
 	int64		loSize;
 	int64		result_length;
-	int			total_read PG_USED_FOR_ASSERTS_ONLY;
+	int total_read PG_USED_FOR_ASSERTS_ONLY;
 	bytea	   *result = NULL;
 
 	/*
@@ -735,6 +779,17 @@ lo_get_fragment_internal(Oid loOid, int64 offset, int32 nbytes)
 
 	loDesc = inv_open(loOid, INV_READ, fscxt);
 
+	/* Permission check */
+	if (!lo_compat_privileges &&
+		pg_largeobject_aclcheck_snapshot(loDesc->id,
+										 GetUserId(),
+										 ACL_SELECT,
+										 loDesc->snapshot) != ACLCHECK_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("permission denied for large object %u",
+						loDesc->id)));
+
 	/*
 	 * Compute number of bytes we'll actually read, accommodating nbytes == -1
 	 * and reads beyond the end of the LO.
@@ -743,7 +798,7 @@ lo_get_fragment_internal(Oid loOid, int64 offset, int32 nbytes)
 	if (loSize > offset)
 	{
 		if (nbytes >= 0 && nbytes <= loSize - offset)
-			result_length = nbytes; /* request is wholly inside LO */
+			result_length = nbytes;		/* request is wholly inside LO */
 		else
 			result_length = loSize - offset;	/* adjust to end of LO */
 	}
@@ -775,7 +830,7 @@ lo_get_fragment_internal(Oid loOid, int64 offset, int32 nbytes)
  * Read entire LO
  */
 Datum
-be_lo_get(PG_FUNCTION_ARGS)
+lo_get(PG_FUNCTION_ARGS)
 {
 	Oid			loOid = PG_GETARG_OID(0);
 	bytea	   *result;
@@ -789,7 +844,7 @@ be_lo_get(PG_FUNCTION_ARGS)
  * Read range within LO
  */
 Datum
-be_lo_get_fragment(PG_FUNCTION_ARGS)
+lo_get_fragment(PG_FUNCTION_ARGS)
 {
 	Oid			loOid = PG_GETARG_OID(0);
 	int64		offset = PG_GETARG_INT64(1);
@@ -810,12 +865,12 @@ be_lo_get_fragment(PG_FUNCTION_ARGS)
  * Create LO with initial contents given by a bytea argument
  */
 Datum
-be_lo_from_bytea(PG_FUNCTION_ARGS)
+lo_from_bytea(PG_FUNCTION_ARGS)
 {
 	Oid			loOid = PG_GETARG_OID(0);
 	bytea	   *str = PG_GETARG_BYTEA_PP(1);
 	LargeObjectDesc *loDesc;
-	int			written PG_USED_FOR_ASSERTS_ONLY;
+	int written PG_USED_FOR_ASSERTS_ONLY;
 
 	CreateFSContext();
 
@@ -832,29 +887,17 @@ be_lo_from_bytea(PG_FUNCTION_ARGS)
  * Update range within LO
  */
 Datum
-be_lo_put(PG_FUNCTION_ARGS)
+lo_put(PG_FUNCTION_ARGS)
 {
 	Oid			loOid = PG_GETARG_OID(0);
 	int64		offset = PG_GETARG_INT64(1);
 	bytea	   *str = PG_GETARG_BYTEA_PP(2);
 	LargeObjectDesc *loDesc;
-	int			written PG_USED_FOR_ASSERTS_ONLY;
+	int written PG_USED_FOR_ASSERTS_ONLY;
 
 	CreateFSContext();
 
 	loDesc = inv_open(loOid, INV_WRITE, fscxt);
-
-	/* Permission check */
-	if (!lo_compat_privileges &&
-		pg_largeobject_aclcheck_snapshot(loDesc->id,
-										 GetUserId(),
-										 ACL_UPDATE,
-										 loDesc->snapshot) != ACLCHECK_OK)
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("permission denied for large object %u",
-						loDesc->id)));
-
 	inv_seek(loDesc, offset, SEEK_SET);
 	written = inv_write(loDesc, VARDATA_ANY(str), VARSIZE_ANY_EXHDR(str));
 	Assert(written == VARSIZE_ANY_EXHDR(str));

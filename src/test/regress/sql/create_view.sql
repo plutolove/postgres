@@ -24,18 +24,6 @@ COMMENT ON VIEW noview IS 'no view';
 COMMENT ON VIEW toyemp IS 'is a view';
 COMMENT ON VIEW toyemp IS NULL;
 
--- These views are left around mainly to exercise special cases in pg_dump.
-
-CREATE TABLE view_base_table (key int PRIMARY KEY, data varchar(20));
-
-CREATE VIEW key_dependent_view AS
-   SELECT * FROM view_base_table GROUP BY key;
-
-ALTER TABLE view_base_table DROP CONSTRAINT view_base_table_pkey;  -- fails
-
-CREATE VIEW key_dependent_view_no_cols AS
-   SELECT FROM view_base_table GROUP BY key HAVING length(data) > 0;
-
 --
 -- CREATE OR REPLACE VIEW
 --
@@ -101,7 +89,7 @@ CREATE VIEW temp_view_test.v2 AS SELECT * FROM base_table;
 -- should fail
 CREATE VIEW temp_view_test.v3_temp AS SELECT * FROM temp_table;
 -- should fail
-CREATE SCHEMA test_view_schema
+CREATE SCHEMA test_schema
     CREATE TEMP VIEW testview AS SELECT 1;
 
 -- joins: if any of the join relations are temporary, the view
@@ -236,27 +224,6 @@ SELECT relname, relkind, reloptions FROM pg_class
                      'mysecview3'::regclass, 'mysecview4'::regclass)
        ORDER BY relname;
 
--- Check that unknown literals are converted to "text" in CREATE VIEW,
--- so that we don't end up with unknown-type columns.
-
-CREATE VIEW unspecified_types AS
-  SELECT 42 as i, 42.5 as num, 'foo' as u, 'foo'::unknown as u2, null as n;
-\d+ unspecified_types
-SELECT * FROM unspecified_types;
-
--- This test checks that proper typmods are assigned in a multi-row VALUES
-
-CREATE VIEW tt1 AS
-  SELECT * FROM (
-    VALUES
-       ('abc'::varchar(3), '0123456789', 42, 'abcd'::varchar(4)),
-       ('0123456789', 'abc'::varchar(3), 42.12, 'abc'::varchar(4))
-  ) vv(a,b,c,d);
-\d+ tt1
-SELECT * FROM tt1;
-SELECT a::varchar(3) FROM tt1;
-DROP VIEW tt1;
-
 -- Test view decompilation in the face of relation renaming conflicts
 
 CREATE TABLE tt1 (f1 int, f2 int, f3 text);
@@ -318,15 +285,6 @@ ALTER TABLE tmp1 RENAME TO tx1;
 \d+ aliased_view_2
 \d+ aliased_view_3
 \d+ aliased_view_4
-
--- Test aliasing of joins
-
-create view view_of_joins as
-select * from
-  (select * from (tbl1 cross join tbl2) same) ss,
-  (tbl3 cross join tbl4) same;
-
-\d+ view_of_joins
 
 -- Test view decompilation in the face of column addition/deletion/renaming
 
@@ -390,12 +348,6 @@ alter table tt5 add column cc int;
 select pg_get_viewdef('vv1', true);
 alter table tt5 drop column c;
 select pg_get_viewdef('vv1', true);
-
-create view v4 as select * from v1;
-alter view v1 rename column a to x;
-select pg_get_viewdef('v1', true);
-select pg_get_viewdef('v4', true);
-
 
 -- Unnamed FULL JOIN USING is lots of fun too
 
@@ -484,11 +436,11 @@ alter table tt11 add column z int;
 select pg_get_viewdef('vv6', true);
 
 --
--- Check cases involving dropped/altered columns in a function's rowtype result
+-- Check some cases involving dropped columns in a function's rowtype result
 --
 
 create table tt14t (f1 text, f2 text, f3 text, f4 text);
-insert into tt14t values('foo', 'bar', 'baz', '42');
+insert into tt14t values('foo', 'bar', 'baz', 'quux');
 
 alter table tt14t drop column f2;
 
@@ -510,31 +462,12 @@ create view tt14v as select t.* from tt14f() t;
 select pg_get_viewdef('tt14v', true);
 select * from tt14v;
 
-begin;
-
 -- this perhaps should be rejected, but it isn't:
 alter table tt14t drop column f3;
 
--- f3 is still in the view ...
+-- f3 is still in the view but will read as nulls
 select pg_get_viewdef('tt14v', true);
--- but will fail at execution
-select f1, f4 from tt14v;
 select * from tt14v;
-
-rollback;
-
-begin;
-
--- this perhaps should be rejected, but it isn't:
-alter table tt14t alter column f4 type integer using f4::integer;
-
--- f4 is still in the view ...
-select pg_get_viewdef('tt14v', true);
--- but will fail at execution
-select f1, f3 from tt14v;
-select * from tt14v;
-
-rollback;
 
 -- check display of whole-row variables in some corner cases
 
@@ -574,74 +507,7 @@ select 'foo'::text = any(array['abc','def','foo']::text[]) c1,
        'foo'::text = any((select array['abc','def','foo']::text[])::text[]) c2;
 select pg_get_viewdef('tt19v', true);
 
--- check display of assorted RTE_FUNCTION expressions
-
-create view tt20v as
-select * from
-  coalesce(1,2) as c,
-  collation for ('x'::text) col,
-  current_date as d,
-  localtimestamp(3) as t,
-  cast(1+2 as int4) as i4,
-  cast(1+2 as int8) as i8;
-select pg_get_viewdef('tt20v', true);
-
--- corner cases with empty join conditions
-
-create view tt21v as
-select * from tt5 natural inner join tt6;
-select pg_get_viewdef('tt21v', true);
-
-create view tt22v as
-select * from tt5 natural left join tt6;
-select pg_get_viewdef('tt22v', true);
-
--- check handling of views with immediately-renamed columns
-
-create view tt23v (col_a, col_b) as
-select q1 as other_name1, q2 as other_name2 from int8_tbl
-union
-select 42, 43;
-
-select pg_get_viewdef('tt23v', true);
-select pg_get_ruledef(oid, true) from pg_rewrite
-  where ev_class = 'tt23v'::regclass and ev_type = '1';
-
--- test extraction of FieldSelect field names (get_name_for_var_field)
-
-create view tt24v as
-with cte as materialized (select r from (values(1,2),(3,4)) r)
-select (r).column2 as col_a, (rr).column2 as col_b from
-  cte join (select rr from (values(1,7),(3,8)) rr limit 2) ss
-  on (r).column1 = (rr).column1;
-select pg_get_viewdef('tt24v', true);
-create view tt25v as
-with cte as materialized (select pg_get_keywords() k)
-select (k).word from cte;
-select pg_get_viewdef('tt25v', true);
--- also check cases seen only in EXPLAIN
-explain (verbose, costs off)
-select * from tt24v;
-explain (verbose, costs off)
-select (r).column2 from (select r from (values(1,2),(3,4)) r limit 1) ss;
-
--- test pretty-print parenthesization rules, and SubLink deparsing
-
-create view tt26v as
-select x + y + z as c1,
-       (x * y) + z as c2,
-       x + (y * z) as c3,
-       (x + y) * z as c4,
-       x * (y + z) as c5,
-       x + (y + z) as c6,
-       x + (y # z) as c7,
-       (x > y) AND (y > z OR x > z) as c8,
-       (x > y) OR (y > z AND NOT (x > z)) as c9,
-       (x,y) <> ALL (values(1,2),(3,4)) as c10,
-       (x,y) <= ANY (values(1,2),(3,4)) as c11
-from (values(1,2,3)) v(x,y,z);
-select pg_get_viewdef('tt26v', true);
-
 -- clean up all the random objects we made above
+set client_min_messages = warning;
 DROP SCHEMA temp_view_test CASCADE;
 DROP SCHEMA testviewschm2 CASCADE;

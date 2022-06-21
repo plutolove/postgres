@@ -3,7 +3,7 @@
  * print.c
  *	  various print routines (used mostly for debugging)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,9 +21,8 @@
 
 #include "access/printtup.h"
 #include "lib/stringinfo.h"
-#include "nodes/nodeFuncs.h"
-#include "nodes/pathnodes.h"
 #include "nodes/print.h"
+#include "optimizer/clauses.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
@@ -280,24 +279,12 @@ print_rt(const List *rtable)
 				printf("%d\t%s\t[rangefunction]",
 					   i, rte->eref->aliasname);
 				break;
-			case RTE_TABLEFUNC:
-				printf("%d\t%s\t[table function]",
-					   i, rte->eref->aliasname);
-				break;
 			case RTE_VALUES:
 				printf("%d\t%s\t[values list]",
 					   i, rte->eref->aliasname);
 				break;
 			case RTE_CTE:
 				printf("%d\t%s\t[cte]",
-					   i, rte->eref->aliasname);
-				break;
-			case RTE_NAMEDTUPLESTORE:
-				printf("%d\t%s\t[tuplestore]",
-					   i, rte->eref->aliasname);
-				break;
-			case RTE_RESULT:
-				printf("%d\t%s\t[result]",
 					   i, rte->eref->aliasname);
 				break;
 			default:
@@ -410,7 +397,7 @@ print_expr(const Node *expr, const List *rtable)
 		foreach(l, e->args)
 		{
 			print_expr(lfirst(l), rtable);
-			if (lnext(e->args, l))
+			if (lnext(l))
 				printf(",");
 		}
 		printf(")");
@@ -453,7 +440,7 @@ print_pathkeys(const List *pathkeys, const List *rtable)
 			print_expr((Node *) mem->em_expr, rtable);
 		}
 		printf(")");
-		if (lnext(pathkeys, i))
+		if (lnext(i))
 			printf(", ");
 	}
 	printf(")\n");

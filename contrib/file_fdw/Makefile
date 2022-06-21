@@ -4,7 +4,6 @@ MODULES = file_fdw
 
 EXTENSION = file_fdw
 DATA = file_fdw--1.0.sql
-PGFILEDESC = "file_fdw - foreign data wrapper for files"
 
 REGRESS = file_fdw
 

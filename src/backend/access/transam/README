@@ -61,23 +61,23 @@ sequence:
 
      /  StartTransactionCommand;
     /       StartTransaction;
-1) <    ProcessUtility;                 << BEGIN
+1) <        ProcessUtility;             << BEGIN
     \       BeginTransactionBlock;
      \  CommitTransactionCommand;
 
     /   StartTransactionCommand;
-2) /    PortalRunSelect;                << SELECT ...
-   \    CommitTransactionCommand;
+2) /        ProcessQuery;               << SELECT ...
+   \        CommitTransactionCommand;
     \       CommandCounterIncrement;
 
     /   StartTransactionCommand;
-3) /    ProcessQuery;                   << INSERT ...
-   \    CommitTransactionCommand;
+3) /        ProcessQuery;               << INSERT ...
+   \        CommitTransactionCommand;
     \       CommandCounterIncrement;
 
      /  StartTransactionCommand;
     /   ProcessUtility;                 << COMMIT
-4) <        EndTransactionBlock;
+4) <            EndTransactionBlock;
     \   CommitTransactionCommand;
      \      CommitTransaction;
 
@@ -177,13 +177,13 @@ subtransaction level with the same name.  So it's a completely new
 subtransaction as far as the internals are concerned.
 
 Other subsystems are allowed to start "internal" subtransactions, which are
-handled by BeginInternalSubTransaction.  This is to allow implementing
+handled by BeginInternalSubtransaction.  This is to allow implementing
 exception handling, e.g. in PL/pgSQL.  ReleaseCurrentSubTransaction and
 RollbackAndReleaseCurrentSubTransaction allows the subsystem to close said
 subtransactions.  The main difference between this and the savepoint/release
 path is that we execute the complete state transition immediately in each
 subroutine, rather than deferring some work until CommitTransactionCommand.
-Another difference is that BeginInternalSubTransaction is allowed when no
+Another difference is that BeginInternalSubtransaction is allowed when no
 explicit transaction block has been established, while DefineSavepoint is not.
 
 
@@ -252,9 +252,6 @@ implementation of this is that GetSnapshotData takes the ProcArrayLock in
 shared mode (so that multiple backends can take snapshots in parallel),
 but ProcArrayEndTransaction must take the ProcArrayLock in exclusive mode
 while clearing MyPgXact->xid at transaction end (either commit or abort).
-(To reduce context switching, when multiple transactions commit nearly
-simultaneously, we have one backend take ProcArrayLock and clear the XIDs
-of multiple processes at once.)
 
 ProcArrayEndTransaction also holds the lock while advancing the shared
 latestCompletedXid variable.  This allows GetSnapshotData to use
@@ -331,17 +328,17 @@ of the xid fields is atomic, so assuming it for xmin as well is no extra
 risk.
 
 
-pg_xact and pg_subtrans
+pg_clog and pg_subtrans
 -----------------------
 
-pg_xact and pg_subtrans are permanent (on-disk) storage of transaction related
+pg_clog and pg_subtrans are permanent (on-disk) storage of transaction related
 information.  There is a limited number of pages of each kept in memory, so
 in many cases there is no need to actually read from disk.  However, if
 there's a long running transaction or a backend sitting idle with an open
 transaction, it may be necessary to be able to read and write this information
 from disk.  They also allow information to be permanent across server restarts.
 
-pg_xact records the commit status for each transaction that has been assigned
+pg_clog records the commit status for each transaction that has been assigned
 an XID.  A transaction can be in progress, committed, aborted, or
 "sub-committed".  This last state means that it's a subtransaction that's no
 longer running, but its parent has not updated its state yet.  It is not
@@ -381,9 +378,9 @@ each transaction we keep a "cache" of Xids that are known to be part of the
 transaction tree, so we can skip looking at pg_subtrans unless we know the
 cache has been overflowed.  See storage/ipc/procarray.c for the gory details.
 
-slru.c is the supporting mechanism for both pg_xact and pg_subtrans.  It
+slru.c is the supporting mechanism for both pg_clog and pg_subtrans.  It
 implements the LRU policy for in-memory buffer pages.  The high-level routines
-for pg_xact are implemented in transam.c, while the low-level functions are in
+for pg_clog are implemented in transam.c, while the low-level functions are in
 clog.c.  pg_subtrans is contained completely in subtrans.c.
 
 
@@ -443,170 +440,130 @@ happen before the WAL record is inserted; see notes in SyncOneBuffer().)
 Note that marking a buffer dirty with MarkBufferDirty() should only
 happen iff you write a WAL record; see Writing Hints below.
 
-5. If the relation requires WAL-logging, build a WAL record using
-XLogBeginInsert and XLogRegister* functions, and insert it.  (See
-"Constructing a WAL record" below).  Then update the page's LSN using the
-returned XLOG location.  For instance,
+5. If the relation requires WAL-logging, build a WAL log record and pass it
+to XLogInsert(); then update the page's LSN using the returned XLOG
+location.  For instance,
 
-		XLogBeginInsert();
-		XLogRegisterBuffer(...)
-		XLogRegisterData(...)
-		recptr = XLogInsert(rmgr_id, info);
+		recptr = XLogInsert(rmgr_id, info, rdata);
 
 		PageSetLSN(dp, recptr);
+		// Note that we no longer do PageSetTLI() from 9.3 onwards
+		// since that field on a page has now changed its meaning.
 
 6. END_CRIT_SECTION()
 
 7. Unlock and unpin the buffer(s).
 
-Complex changes (such as a multilevel index insertion) normally need to be
-described by a series of atomic-action WAL records.  The intermediate states
-must be self-consistent, so that if the replay is interrupted between any
-two actions, the system is fully functional.  In btree indexes, for example,
-a page split requires a new page to be allocated, and an insertion of a new
-key in the parent btree level, but for locking reasons this has to be
-reflected by two separate WAL records.  Replaying the first record, to
-allocate the new page and move tuples to it, sets a flag on the page to
-indicate that the key has not been inserted to the parent yet.  Replaying the
-second record clears the flag.  This intermediate state is never seen by
-other backends during normal operation, because the lock on the child page
-is held across the two actions, but will be seen if the operation is
-interrupted before writing the second WAL record.  The search algorithm works
-with the intermediate state as normal, but if an insertion encounters a page
-with the incomplete-split flag set, it will finish the interrupted split by
-inserting the key to the parent, before proceeding.
+XLogInsert's "rdata" argument is an array of pointer/size items identifying
+chunks of data to be written in the XLOG record, plus optional shared-buffer
+IDs for chunks that are in shared buffers rather than temporary variables.
+The "rdata" array must mention (at least once) each of the shared buffers
+being modified, unless the action is such that the WAL replay routine can
+reconstruct the entire page contents.  XLogInsert includes the logic that
+tests to see whether a shared buffer has been modified since the last
+checkpoint.  If not, the entire page contents are logged rather than just the
+portion(s) pointed to by "rdata".
 
+Because XLogInsert drops the rdata components associated with buffers it
+chooses to log in full, the WAL replay routines normally need to test to see
+which buffers were handled that way --- otherwise they may be misled about
+what the XLOG record actually contains.  XLOG records that describe multi-page
+changes therefore require some care to design: you must be certain that you
+know what data is indicated by each "BKP" bit.  An example of the trickiness
+is that in a HEAP_UPDATE record, BKP(0) normally is associated with the source
+page and BKP(1) is associated with the destination page --- but if these are
+the same page, only BKP(0) would have been set.
 
-Constructing a WAL record
--------------------------
+For this reason as well as the risk of deadlocking on buffer locks, it's best
+to design WAL records so that they reflect small atomic actions involving just
+one or a few pages.  The current XLOG infrastructure cannot handle WAL records
+involving references to more than four shared buffers, anyway.
 
-A WAL record consists of a header common to all WAL record types,
-record-specific data, and information about the data blocks modified.  Each
-modified data block is identified by an ID number, and can optionally have
-more record-specific data associated with the block.  If XLogInsert decides
-that a full-page image of a block needs to be taken, the data associated
-with that block is not included.
+In the case where the WAL record contains enough information to re-generate
+the entire contents of a page, do *not* show that page's buffer ID in the
+rdata array, even if some of the rdata items point into the buffer.  This is
+because you don't want XLogInsert to log the whole page contents.  The
+standard replay-routine pattern for this case is
 
-The API for constructing a WAL record consists of five functions:
-XLogBeginInsert, XLogRegisterBuffer, XLogRegisterData, XLogRegisterBufData,
-and XLogInsert.  First, call XLogBeginInsert().  Then register all the buffers
-modified, and data needed to replay the changes, using XLogRegister*
-functions.  Finally, insert the constructed record to the WAL by calling
-XLogInsert().
+	buffer = XLogReadBuffer(rnode, blkno, true);
+	Assert(BufferIsValid(buffer));
+	page = (Page) BufferGetPage(buffer);
 
-	XLogBeginInsert();
+	... initialize the page ...
 
-	/* register buffers modified as part of this WAL-logged action */
-	XLogRegisterBuffer(0, lbuffer, REGBUF_STANDARD);
-	XLogRegisterBuffer(1, rbuffer, REGBUF_STANDARD);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(buffer);
+	UnlockReleaseBuffer(buffer);
 
-	/* register data that is always included in the WAL record */
-	XLogRegisterData(&xlrec, SizeOfFictionalAction);
+In the case where the WAL record provides only enough information to
+incrementally update the page, the rdata array *must* mention the buffer
+ID at least once; otherwise there is no defense against torn-page problems.
+The standard replay-routine pattern for this case is
 
-	/*
-	 * register data associated with a buffer. This will not be included
-	 * in the record if a full-page image is taken.
-	 */
-	XLogRegisterBufData(0, tuple->data, tuple->len);
+	if (record->xl_info & XLR_BKP_BLOCK(N))
+	{
+		/* apply the change from the full-page image */
+		(void) RestoreBackupBlock(lsn, record, N, false, false);
+		return;
+	}
 
-	/* more data associated with the buffer */
-	XLogRegisterBufData(0, data2, len2);
+	buffer = XLogReadBuffer(rnode, blkno, false);
+	if (!BufferIsValid(buffer))
+	{
+		/* page has been deleted, so we need do nothing */
+		return;
+	}
+	page = (Page) BufferGetPage(buffer);
 
-	/*
-	 * Ok, all the data and buffers to include in the WAL record have
-	 * been registered. Insert the record.
-	 */
-	recptr = XLogInsert(RM_FOO_ID, XLOG_FOOBAR_DO_STUFF);
+	if (XLByteLE(lsn, PageGetLSN(page)))
+	{
+		/* changes are already applied */
+		UnlockReleaseBuffer(buffer);
+		return;
+	}
 
-Details of the API functions:
+	... apply the change ...
 
-void XLogBeginInsert(void)
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(buffer);
+	UnlockReleaseBuffer(buffer);
 
-    Must be called before XLogRegisterBuffer and XLogRegisterData.
-
-void XLogResetInsertion(void)
-
-    Clear any currently registered data and buffers from the WAL record
-    construction workspace.  This is only needed if you have already called
-    XLogBeginInsert(), but decide to not insert the record after all.
-
-void XLogEnsureRecordSpace(int max_block_id, int ndatas)
-
-    Normally, the WAL record construction buffers have the following limits:
-
-    * highest block ID that can be used is 4 (allowing five block references)
-    * Max 20 chunks of registered data
-
-    These default limits are enough for most record types that change some
-    on-disk structures.  For the odd case that requires more data, or needs to
-    modify more buffers, these limits can be raised by calling
-    XLogEnsureRecordSpace().  XLogEnsureRecordSpace() must be called before
-    XLogBeginInsert(), and outside a critical section.
-
-void XLogRegisterBuffer(uint8 block_id, Buffer buf, uint8 flags);
-
-    XLogRegisterBuffer adds information about a data block to the WAL record.
-    block_id is an arbitrary number used to identify this page reference in
-    the redo routine.  The information needed to re-find the page at redo -
-    relfilenode, fork, and block number - are included in the WAL record.
-
-    XLogInsert will automatically include a full copy of the page contents, if
-    this is the first modification of the buffer since the last checkpoint.
-    It is important to register every buffer modified by the action with
-    XLogRegisterBuffer, to avoid torn-page hazards.
-
-    The flags control when and how the buffer contents are included in the
-    WAL record.  Normally, a full-page image is taken only if the page has not
-    been modified since the last checkpoint, and only if full_page_writes=on
-    or an online backup is in progress.  The REGBUF_FORCE_IMAGE flag can be
-    used to force a full-page image to always be included; that is useful
-    e.g. for an operation that rewrites most of the page, so that tracking the
-    details is not worth it.  For the rare case where it is not necessary to
-    protect from torn pages, REGBUF_NO_IMAGE flag can be used to suppress
-    full page image from being taken.  REGBUF_WILL_INIT also suppresses a full
-    page image, but the redo routine must re-generate the page from scratch,
-    without looking at the old page contents.  Re-initializing the page
-    protects from torn page hazards like a full page image does.
-
-    The REGBUF_STANDARD flag can be specified together with the other flags to
-    indicate that the page follows the standard page layout.  It causes the
-    area between pd_lower and pd_upper to be left out from the image, reducing
-    WAL volume.
-
-    If the REGBUF_KEEP_DATA flag is given, any per-buffer data registered with
-    XLogRegisterBufData() is included in the WAL record even if a full-page
-    image is taken.
-
-void XLogRegisterData(char *data, int len);
-
-    XLogRegisterData is used to include arbitrary data in the WAL record.  If
-    XLogRegisterData() is called multiple times, the data are appended, and
-    will be made available to the redo routine as one contiguous chunk.
-
-void XLogRegisterBufData(uint8 block_id, char *data, int len);
-
-    XLogRegisterBufData is used to include data associated with a particular
-    buffer that was registered earlier with XLogRegisterBuffer().  If
-    XLogRegisterBufData() is called multiple times with the same block ID, the
-    data are appended, and will be made available to the redo routine as one
-    contiguous chunk.
-
-    If a full-page image of the buffer is taken at insertion, the data is not
-    included in the WAL record, unless the REGBUF_KEEP_DATA flag is used.
-
-
-Writing a REDO routine
-----------------------
-
-A REDO routine uses the data and page references included in the WAL record
-to reconstruct the new state of the page.  The record decoding functions
-and macros in xlogreader.c/h can be used to extract the data from the record.
+As noted above, for a multi-page update you need to be able to determine
+which XLR_BKP_BLOCK(N) flag applies to each page.  If a WAL record reflects
+a combination of fully-rewritable and incremental updates, then the rewritable
+pages don't count for the XLR_BKP_BLOCK(N) numbering.  (XLR_BKP_BLOCK(N) is
+associated with the N'th distinct buffer ID seen in the "rdata" array, and
+per the above discussion, fully-rewritable buffers shouldn't be mentioned in
+"rdata".)
 
 When replaying a WAL record that describes changes on multiple pages, you
 must be careful to lock the pages properly to prevent concurrent Hot Standby
 queries from seeing an inconsistent state.  If this requires that two
-or more buffer locks be held concurrently, you must lock the pages in
-appropriate order, and not release the locks until all the changes are done.
+or more buffer locks be held concurrently, the coding pattern shown above
+is too simplistic, since it assumes the routine can exit as soon as it's
+known the current page requires no modification.  Instead, you might have
+something like
+
+	if (record->xl_info & XLR_BKP_BLOCK(0))
+	{
+		/* apply the change from the full-page image */
+		buffer0 = RestoreBackupBlock(lsn, record, 0, false, true);
+	}
+	else
+	{
+		buffer0 = XLogReadBuffer(rnode, blkno, false);
+		if (BufferIsValid(buffer0))
+		{
+			... apply the change if not already done ...
+			MarkBufferDirty(buffer0);
+		}
+	}
+
+	... similarly apply the changes for remaining pages ...
+
+	/* and now we can release the lock on the first page */
+	if (BufferIsValid(buffer0))
+		UnlockReleaseBuffer(buffer0);
 
 Note that we must only use PageSetLSN/PageGetLSN() when we know the action
 is serialised. Only Startup process may modify data blocks during recovery,
@@ -616,6 +573,23 @@ either an exclusive buffer lock or a shared lock plus buffer header lock,
 or be writing the data block directly rather than through shared buffers
 while holding AccessExclusiveLock on the relation.
 
+Due to all these constraints, complex changes (such as a multilevel index
+insertion) normally need to be described by a series of atomic-action WAL
+records. The intermediate states must be self-consistent, so that if the
+replay is interrupted between any two actions, the system is fully
+functional. In btree indexes, for example, a page split requires a new page
+to be allocated, and an insertion of a new key in the parent btree level,
+but for locking reasons this has to be reflected by two separate WAL
+records. Replaying the first record, to allocate the new page and move
+tuples to it, sets a flag on the page to indicate that the key has not been
+inserted to the parent yet. Replaying the second record clears the flag.
+This intermediate state is never seen by other backends during normal
+operation, because the lock on the child page is held across the two
+actions, but will be seen if the operation is interrupted before writing
+the second WAL record. The search algorithm works with the intermediate
+state as normal, but if an insertion encounters a page with the
+incomplete-split flag set, it will finish the interrupted split by
+inserting the key to the parent, before proceeding.
 
 Writing Hints
 -------------
@@ -717,38 +691,6 @@ then restart recovery.  This is part of the reason for not writing a WAL
 entry until we've successfully done the original action.
 
 
-Skipping WAL for New RelFileNode
---------------------------------
-
-Under wal_level=minimal, if a change modifies a relfilenode that ROLLBACK
-would unlink, in-tree access methods write no WAL for that change.  Code that
-writes WAL without calling RelationNeedsWAL() must check for this case.  This
-skipping is mandatory.  If a WAL-writing change preceded a WAL-skipping change
-for the same block, REDO could overwrite the WAL-skipping change.  If a
-WAL-writing change followed a WAL-skipping change for the same block, a
-related problem would arise.  When a WAL record contains no full-page image,
-REDO expects the page to match its contents from just before record insertion.
-A WAL-skipping change may not reach disk at all, violating REDO's expectation
-under full_page_writes=off.  For any access method, CommitTransaction() writes
-and fsyncs affected blocks before recording the commit.
-
-Prefer to do the same in future access methods.  However, two other approaches
-can work.  First, an access method can irreversibly transition a given fork
-from WAL-skipping to WAL-writing by calling FlushRelationBuffers() and
-smgrimmedsync().  Second, an access method can opt to write WAL
-unconditionally for permanent relations.  Under these approaches, the access
-method callbacks must not call functions that react to RelationNeedsWAL().
-
-This applies only to WAL records whose replay would modify bytes stored in the
-new relfilenode.  It does not apply to other records about the relfilenode,
-such as XLOG_SMGR_CREATE.  Because it operates at the level of individual
-relfilenodes, RelationNeedsWAL() can differ for tightly-coupled relations.
-Consider "CREATE TABLE t (); BEGIN; ALTER TABLE t ADD c text; ..." in which
-ALTER TABLE adds a TOAST relation.  The TOAST relation will skip WAL, while
-the table owning it will not.  ALTER TABLE SET TABLESPACE will cause a table
-to skip WAL, but that won't affect its indexes.
-
-
 Asynchronous Commit
 -------------------
 
@@ -768,24 +710,20 @@ non-roll-backable side effects (such as filesystem changes) force sync
 commit to minimize the window in which the filesystem change has been made
 but the transaction isn't guaranteed committed.
 
-The walwriter regularly wakes up (via wal_writer_delay) or is woken up
-(via its latch, which is set by backends committing asynchronously) and
-performs an XLogBackgroundFlush().  This checks the location of the last
-completely filled WAL page.  If that has moved forwards, then we write all
-the changed buffers up to that point, so that under full load we write
-only whole buffers.  If there has been a break in activity and the current
-WAL page is the same as before, then we find out the LSN of the most
-recent asynchronous commit, and write up to that point, if required (i.e.
-if it's in the current WAL page).  If more than wal_writer_delay has
-passed, or more than wal_writer_flush_after blocks have been written, since
-the last flush, WAL is also flushed up to the current location.  This
-arrangement in itself would guarantee that an async commit record reaches
-disk after at most two times wal_writer_delay after the transaction
-completes. However, we also allow XLogFlush to write/flush full buffers
-"flexibly" (ie, not wrapping around at the end of the circular WAL buffer
-area), so as to minimize the number of writes issued under high load when
-multiple WAL pages are filled per walwriter cycle. This makes the worst-case
-delay three wal_writer_delay cycles.
+Every wal_writer_delay milliseconds, the walwriter process performs an
+XLogBackgroundFlush().  This checks the location of the last completely
+filled WAL page.  If that has moved forwards, then we write all the changed
+buffers up to that point, so that under full load we write only whole
+buffers.  If there has been a break in activity and the current WAL page is
+the same as before, then we find out the LSN of the most recent
+asynchronous commit, and flush up to that point, if required (i.e.,
+if it's in the current WAL page).  This arrangement in itself would
+guarantee that an async commit record reaches disk during at worst the
+second walwriter cycle after the transaction completes.  However, we also
+allow XLogFlush to flush full buffers "flexibly" (ie, not wrapping around
+at the end of the circular WAL buffer area), so as to minimize the number
+of writes issued under high load when multiple WAL pages are filled per
+walwriter cycle.  This makes the worst-case delay three walwriter cycles.
 
 There are some other subtle points to consider with asynchronous commits.
 First, for each page of CLOG we must remember the LSN of the latest commit
@@ -852,12 +790,13 @@ Changes to a temp table are not WAL-logged, hence could reach disk in
 advance of T1's commit, but we don't care since temp table contents don't
 survive crashes anyway.
 
-Database writes that skip WAL for new relfilenodes are also safe.  In these
-cases it's entirely possible for the data to reach disk before T1's commit,
-because T1 will fsync it down to disk without any sort of interlock.  However,
-all these paths are designed to write data that no other transaction can see
-until after T1 commits.  The situation is thus not different from ordinary
-WAL-logged updates.
+Database writes made via any of the paths we have introduced to avoid WAL
+overhead for bulk updates are also safe.  In these cases it's entirely
+possible for the data to reach disk before T1's commit, because T1 will
+fsync it down to disk without any sort of interlock, as soon as it finishes
+the bulk update.  However, all these paths are designed to write data that
+no other transaction can see until after T1 commits.  The situation is thus
+not different from ordinary WAL-logged updates.
 
 Transaction Emulation during Recovery
 -------------------------------------
@@ -878,7 +817,7 @@ parent transaction to complete.
 
 Not all transactional behaviour is emulated, for example we do not insert
 a transaction entry into the lock table, nor do we maintain the transaction
-stack in memory. Clog, multixact and commit_ts entries are made normally.
+stack in memory. Clog and multixact entries are made normally.
 Subtrans is maintained during recovery but the details of the transaction
 tree are ignored and all subtransactions reference the top-level TransactionId
 directly. Since commit is atomic this provides correct lock wait behaviour

@@ -36,38 +36,19 @@ select "Argument test #1"(users, fname, lname) from users where lname = 'doe' or
 (3 rows)
 
 -- check module contents
-CREATE FUNCTION module_contents() RETURNS SETOF text AS
+CREATE FUNCTION module_contents() RETURNS text AS
 $$
 contents = list(filter(lambda x: not x.startswith("__"), dir(plpy)))
 contents.sort()
-return contents
+return ", ".join(contents)
 $$ LANGUAGE plpythonu;
 select module_contents();
- module_contents 
------------------
- Error
- Fatal
- SPIError
- commit
- cursor
- debug
- error
- execute
- fatal
- info
- log
- notice
- prepare
- quote_ident
- quote_literal
- quote_nullable
- rollback
- spiexceptions
- subtransaction
- warning
-(20 rows)
+                                                                               module_contents                                                                                
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Error, Fatal, SPIError, cursor, debug, error, execute, fatal, info, log, notice, prepare, quote_ident, quote_literal, quote_nullable, spiexceptions, subtransaction, warning
+(1 row)
 
-CREATE FUNCTION elog_test_basic() RETURNS void
+CREATE FUNCTION elog_test() RETURNS void
 AS $$
 plpy.debug('debug')
 plpy.log('log')
@@ -79,15 +60,21 @@ plpy.notice('notice')
 plpy.warning('warning')
 plpy.error('error')
 $$ LANGUAGE plpythonu;
-SELECT elog_test_basic();
+SELECT elog_test();
 INFO:  info
+CONTEXT:  PL/Python function "elog_test"
 INFO:  37
+CONTEXT:  PL/Python function "elog_test"
 INFO:  ()
+CONTEXT:  PL/Python function "elog_test"
 INFO:  ('info', 37, [1, 2, 3])
+CONTEXT:  PL/Python function "elog_test"
 NOTICE:  notice
+CONTEXT:  PL/Python function "elog_test"
 WARNING:  warning
+CONTEXT:  PL/Python function "elog_test"
 ERROR:  plpy.Error: error
 CONTEXT:  Traceback (most recent call last):
-  PL/Python function "elog_test_basic", line 10, in <module>
+  PL/Python function "elog_test", line 10, in <module>
     plpy.error('error')
-PL/Python function "elog_test_basic"
+PL/Python function "elog_test"

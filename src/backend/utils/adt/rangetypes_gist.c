@@ -3,7 +3,7 @@
  * rangetypes_gist.c
  *	  GiST support for range types.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,11 +15,11 @@
 #include "postgres.h"
 
 #include "access/gist.h"
-#include "access/stratnum.h"
+#include "access/skey.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
-#include "utils/float.h"
-#include "utils/fmgrprotos.h"
 #include "utils/rangetypes.h"
+
 
 /*
  * Range class properties used to segregate different classes of ranges in
@@ -70,7 +70,7 @@ typedef enum
 typedef struct
 {
 	TypeCacheEntry *typcache;	/* typcache for range type */
-	bool		has_subtype_diff;	/* does it have subtype_diff? */
+	bool		has_subtype_diff;		/* does it have subtype_diff? */
 	int			entries_count;	/* total number of entries being split */
 
 	/* Information about currently selected split follows */
@@ -134,37 +134,37 @@ typedef struct
 											 false, -1)))
 
 static RangeType *range_super_union(TypeCacheEntry *typcache, RangeType *r1,
-									RangeType *r2);
+				  RangeType *r2);
 static bool range_gist_consistent_int(TypeCacheEntry *typcache,
-									  StrategyNumber strategy, const RangeType *key,
-									  Datum query);
+						  StrategyNumber strategy, RangeType *key,
+						  Datum query);
 static bool range_gist_consistent_leaf(TypeCacheEntry *typcache,
-									   StrategyNumber strategy, const RangeType *key,
-									   Datum query);
+						   StrategyNumber strategy, RangeType *key,
+						   Datum query);
 static void range_gist_fallback_split(TypeCacheEntry *typcache,
-									  GistEntryVector *entryvec,
-									  GIST_SPLITVEC *v);
+						  GistEntryVector *entryvec,
+						  GIST_SPLITVEC *v);
 static void range_gist_class_split(TypeCacheEntry *typcache,
-								   GistEntryVector *entryvec,
-								   GIST_SPLITVEC *v,
-								   SplitLR *classes_groups);
+					   GistEntryVector *entryvec,
+					   GIST_SPLITVEC *v,
+					   SplitLR *classes_groups);
 static void range_gist_single_sorting_split(TypeCacheEntry *typcache,
-											GistEntryVector *entryvec,
-											GIST_SPLITVEC *v,
-											bool use_upper_bound);
+								GistEntryVector *entryvec,
+								GIST_SPLITVEC *v,
+								bool use_upper_bound);
 static void range_gist_double_sorting_split(TypeCacheEntry *typcache,
-											GistEntryVector *entryvec,
-											GIST_SPLITVEC *v);
+								GistEntryVector *entryvec,
+								GIST_SPLITVEC *v);
 static void range_gist_consider_split(ConsiderSplitContext *context,
-									  RangeBound *right_lower, int min_left_count,
-									  RangeBound *left_upper, int max_left_count);
+						  RangeBound *right_lower, int min_left_count,
+						  RangeBound *left_upper, int max_left_count);
 static int	get_gist_range_class(RangeType *range);
 static int	single_bound_cmp(const void *a, const void *b, void *arg);
 static int	interval_cmp_lower(const void *a, const void *b, void *arg);
 static int	interval_cmp_upper(const void *a, const void *b, void *arg);
 static int	common_entry_cmp(const void *i1, const void *i2);
 static float8 call_subtype_diff(TypeCacheEntry *typcache,
-								Datum val1, Datum val2);
+				  Datum val1, Datum val2);
 
 
 /* GiST query consistency check */
@@ -177,7 +177,7 @@ range_gist_consistent(PG_FUNCTION_ARGS)
 
 	/* Oid subtype = PG_GETARG_OID(3); */
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
-	RangeType  *key = DatumGetRangeTypeP(entry->key);
+	RangeType  *key = DatumGetRangeType(entry->key);
 	TypeCacheEntry *typcache;
 
 	/* All operators served by this function are exact */
@@ -203,24 +203,35 @@ range_gist_union(PG_FUNCTION_ARGS)
 	TypeCacheEntry *typcache;
 	int			i;
 
-	result_range = DatumGetRangeTypeP(ent[0].key);
+	result_range = DatumGetRangeType(ent[0].key);
 
 	typcache = range_get_typcache(fcinfo, RangeTypeGetOid(result_range));
 
 	for (i = 1; i < entryvec->n; i++)
 	{
 		result_range = range_super_union(typcache, result_range,
-										 DatumGetRangeTypeP(ent[i].key));
+										 DatumGetRangeType(ent[i].key));
 	}
 
-	PG_RETURN_RANGE_P(result_range);
+	PG_RETURN_RANGE(result_range);
 }
 
-/*
- * We store ranges as ranges in GiST indexes, so we do not need
- * compress, decompress, or fetch functions.  Note this implies a limit
- * on the size of range values that can be indexed.
- */
+/* compress, decompress are no-ops */
+Datum
+range_gist_compress(PG_FUNCTION_ARGS)
+{
+	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+
+	PG_RETURN_POINTER(entry);
+}
+
+Datum
+range_gist_decompress(PG_FUNCTION_ARGS)
+{
+	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+
+	PG_RETURN_POINTER(entry);
+}
 
 /*
  * GiST page split penalty function.
@@ -238,8 +249,8 @@ range_gist_penalty(PG_FUNCTION_ARGS)
 	GISTENTRY  *origentry = (GISTENTRY *) PG_GETARG_POINTER(0);
 	GISTENTRY  *newentry = (GISTENTRY *) PG_GETARG_POINTER(1);
 	float	   *penalty = (float *) PG_GETARG_POINTER(2);
-	RangeType  *orig = DatumGetRangeTypeP(origentry->key);
-	RangeType  *new = DatumGetRangeTypeP(newentry->key);
+	RangeType  *orig = DatumGetRangeType(origentry->key);
+	RangeType  *new = DatumGetRangeType(newentry->key);
 	TypeCacheEntry *typcache;
 	bool		has_subtype_diff;
 	RangeBound	orig_lower,
@@ -507,7 +518,7 @@ range_gist_picksplit(PG_FUNCTION_ARGS)
 	int			total_count;
 
 	/* use first item to look up range type's info */
-	pred_left = DatumGetRangeTypeP(entryvec->vector[FirstOffsetNumber].key);
+	pred_left = DatumGetRangeType(entryvec->vector[FirstOffsetNumber].key);
 	typcache = range_get_typcache(fcinfo, RangeTypeGetOid(pred_left));
 
 	maxoff = entryvec->n - 1;
@@ -521,7 +532,7 @@ range_gist_picksplit(PG_FUNCTION_ARGS)
 	memset(count_in_classes, 0, sizeof(count_in_classes));
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[i].key);
 
 		count_in_classes[get_gist_range_class(range)]++;
 	}
@@ -651,8 +662,8 @@ range_gist_picksplit(PG_FUNCTION_ARGS)
 Datum
 range_gist_same(PG_FUNCTION_ARGS)
 {
-	RangeType  *r1 = PG_GETARG_RANGE_P(0);
-	RangeType  *r2 = PG_GETARG_RANGE_P(1);
+	RangeType  *r1 = PG_GETARG_RANGE(0);
+	RangeType  *r2 = PG_GETARG_RANGE(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
 	/*
@@ -763,44 +774,44 @@ range_super_union(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
  */
 static bool
 range_gist_consistent_int(TypeCacheEntry *typcache, StrategyNumber strategy,
-						  const RangeType *key, Datum query)
+						  RangeType *key, Datum query)
 {
 	switch (strategy)
 	{
 		case RANGESTRAT_BEFORE:
-			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeType(query)))
 				return false;
 			return (!range_overright_internal(typcache, key,
-											  DatumGetRangeTypeP(query)));
+											  DatumGetRangeType(query)));
 		case RANGESTRAT_OVERLEFT:
-			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeType(query)))
 				return false;
 			return (!range_after_internal(typcache, key,
-										  DatumGetRangeTypeP(query)));
+										  DatumGetRangeType(query)));
 		case RANGESTRAT_OVERLAPS:
 			return range_overlaps_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_OVERRIGHT:
-			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeType(query)))
 				return false;
 			return (!range_before_internal(typcache, key,
-										   DatumGetRangeTypeP(query)));
+										   DatumGetRangeType(query)));
 		case RANGESTRAT_AFTER:
-			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeType(query)))
 				return false;
 			return (!range_overleft_internal(typcache, key,
-											 DatumGetRangeTypeP(query)));
+											 DatumGetRangeType(query)));
 		case RANGESTRAT_ADJACENT:
-			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(key) || RangeIsEmpty(DatumGetRangeType(query)))
 				return false;
 			if (range_adjacent_internal(typcache, key,
-										DatumGetRangeTypeP(query)))
+										DatumGetRangeType(query)))
 				return true;
 			return range_overlaps_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINS:
 			return range_contains_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINED_BY:
 
 			/*
@@ -811,7 +822,7 @@ range_gist_consistent_int(TypeCacheEntry *typcache, StrategyNumber strategy,
 			if (RangeIsOrContainsEmpty(key))
 				return true;
 			return range_overlaps_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINS_ELEM:
 			return range_contains_elem_internal(typcache, key, query);
 		case RANGESTRAT_EQ:
@@ -820,10 +831,10 @@ range_gist_consistent_int(TypeCacheEntry *typcache, StrategyNumber strategy,
 			 * If query is empty, descend only if the key is or contains any
 			 * empty ranges.  Otherwise, descend if key contains query.
 			 */
-			if (RangeIsEmpty(DatumGetRangeTypeP(query)))
+			if (RangeIsEmpty(DatumGetRangeType(query)))
 				return RangeIsOrContainsEmpty(key);
 			return range_contains_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		default:
 			elog(ERROR, "unrecognized range strategy: %d", strategy);
 			return false;		/* keep compiler quiet */
@@ -835,38 +846,38 @@ range_gist_consistent_int(TypeCacheEntry *typcache, StrategyNumber strategy,
  */
 static bool
 range_gist_consistent_leaf(TypeCacheEntry *typcache, StrategyNumber strategy,
-						   const RangeType *key, Datum query)
+						   RangeType *key, Datum query)
 {
 	switch (strategy)
 	{
 		case RANGESTRAT_BEFORE:
 			return range_before_internal(typcache, key,
-										 DatumGetRangeTypeP(query));
+										 DatumGetRangeType(query));
 		case RANGESTRAT_OVERLEFT:
 			return range_overleft_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_OVERLAPS:
 			return range_overlaps_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_OVERRIGHT:
 			return range_overright_internal(typcache, key,
-											DatumGetRangeTypeP(query));
+											DatumGetRangeType(query));
 		case RANGESTRAT_AFTER:
 			return range_after_internal(typcache, key,
-										DatumGetRangeTypeP(query));
+										DatumGetRangeType(query));
 		case RANGESTRAT_ADJACENT:
 			return range_adjacent_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINS:
 			return range_contains_internal(typcache, key,
-										   DatumGetRangeTypeP(query));
+										   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINED_BY:
 			return range_contained_by_internal(typcache, key,
-											   DatumGetRangeTypeP(query));
+											   DatumGetRangeType(query));
 		case RANGESTRAT_CONTAINS_ELEM:
 			return range_contains_elem_internal(typcache, key, query);
 		case RANGESTRAT_EQ:
-			return range_eq_internal(typcache, key, DatumGetRangeTypeP(query));
+			return range_eq_internal(typcache, key, DatumGetRangeType(query));
 		default:
 			elog(ERROR, "unrecognized range strategy: %d", strategy);
 			return false;		/* keep compiler quiet */
@@ -896,7 +907,7 @@ range_gist_fallback_split(TypeCacheEntry *typcache,
 	v->spl_nright = 0;
 	for (i = FirstOffsetNumber; i <= maxoff; i++)
 	{
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[i].key);
 
 		if (i < split_idx)
 			PLACE_LEFT(range, i);
@@ -904,8 +915,8 @@ range_gist_fallback_split(TypeCacheEntry *typcache,
 			PLACE_RIGHT(range, i);
 	}
 
-	v->spl_ldatum = RangeTypePGetDatum(left_range);
-	v->spl_rdatum = RangeTypePGetDatum(right_range);
+	v->spl_ldatum = RangeTypeGetDatum(left_range);
+	v->spl_rdatum = RangeTypeGetDatum(right_range);
 }
 
 /*
@@ -932,7 +943,7 @@ range_gist_class_split(TypeCacheEntry *typcache,
 	v->spl_nright = 0;
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[i].key);
 		int			class;
 
 		/* Get class of range */
@@ -948,8 +959,8 @@ range_gist_class_split(TypeCacheEntry *typcache,
 		}
 	}
 
-	v->spl_ldatum = RangeTypePGetDatum(left_range);
-	v->spl_rdatum = RangeTypePGetDatum(right_range);
+	v->spl_ldatum = RangeTypeGetDatum(left_range);
+	v->spl_rdatum = RangeTypeGetDatum(right_range);
 }
 
 /*
@@ -981,7 +992,7 @@ range_gist_single_sorting_split(TypeCacheEntry *typcache,
 	 */
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[i].key);
 		RangeBound	bound2;
 		bool		empty;
 
@@ -1007,7 +1018,7 @@ range_gist_single_sorting_split(TypeCacheEntry *typcache,
 	for (i = 0; i < maxoff; i++)
 	{
 		int			idx = sortItems[i].index;
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[idx].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[idx].key);
 
 		if (i < split_idx)
 			PLACE_LEFT(range, idx);
@@ -1015,8 +1026,8 @@ range_gist_single_sorting_split(TypeCacheEntry *typcache,
 			PLACE_RIGHT(range, idx);
 	}
 
-	v->spl_ldatum = RangeTypePGetDatum(left_range);
-	v->spl_rdatum = RangeTypePGetDatum(right_range);
+	v->spl_ldatum = RangeTypeGetDatum(left_range);
+	v->spl_rdatum = RangeTypeGetDatum(right_range);
 }
 
 /*
@@ -1083,7 +1094,7 @@ range_gist_double_sorting_split(TypeCacheEntry *typcache,
 	/* Fill arrays of bounds */
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
-		RangeType  *range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		RangeType  *range = DatumGetRangeType(entryvec->vector[i].key);
 		bool		empty;
 
 		range_deserialize(typcache, range,
@@ -1258,7 +1269,7 @@ range_gist_double_sorting_split(TypeCacheEntry *typcache,
 		/*
 		 * Get upper and lower bounds along selected axis.
 		 */
-		range = DatumGetRangeTypeP(entryvec->vector[i].key);
+		range = DatumGetRangeType(entryvec->vector[i].key);
 
 		range_deserialize(typcache, range, &lower, &upper, &empty);
 
@@ -1328,7 +1339,7 @@ range_gist_double_sorting_split(TypeCacheEntry *typcache,
 		{
 			int			idx = common_entries[i].index;
 
-			range = DatumGetRangeTypeP(entryvec->vector[idx].key);
+			range = DatumGetRangeType(entryvec->vector[idx].key);
 
 			/*
 			 * Check if we have to place this entry in either group to achieve

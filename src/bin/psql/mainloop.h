@@ -1,17 +1,15 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  *
  * src/bin/psql/mainloop.h
  */
 #ifndef MAINLOOP_H
 #define MAINLOOP_H
 
-#include "fe_utils/psqlscan.h"
+#include "postgres_fe.h"
 
-extern const PsqlScanCallbacks psqlscan_callbacks;
+int			MainLoop(FILE *source);
 
-extern int	MainLoop(FILE *source);
-
-#endif							/* MAINLOOP_H */
+#endif   /* MAINLOOP_H */

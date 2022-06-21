@@ -9,22 +9,18 @@
 
 package SimpleTee;
 use strict;
-use warnings;
 
-sub TIEHANDLE
-{
+sub TIEHANDLE {
 	my $self = shift;
-	return bless \@_, $self;
+	bless \@_, $self;
 }
 
-sub PRINT
-{
+sub PRINT {
 	my $self = shift;
-	my $ok   = 1;
-	for my $fh (@$self)
-	{
+	my $ok = 1;
+	for my $fh (@$self) {
 		print $fh @_ or $ok = 0;
-		$fh->flush   or $ok = 0;
+		$fh->flush or $ok = 0;
 	}
 	return $ok;
 }

@@ -655,14 +655,6 @@ INSERT INTO fract_only VALUES (8, '0.00017');
 SELECT * FROM fract_only;
 DROP TABLE fract_only;
 
--- Check inf/nan conversion behavior
-SELECT 'NaN'::float8::numeric;
-SELECT 'Infinity'::float8::numeric;
-SELECT '-Infinity'::float8::numeric;
-SELECT 'NaN'::float4::numeric;
-SELECT 'Infinity'::float4::numeric;
-SELECT '-Infinity'::float4::numeric;
-
 -- Simple check that ceil(), floor(), and round() work correctly
 CREATE TABLE ceil_floor_round (a numeric);
 INSERT INTO ceil_floor_round VALUES ('-5.5');
@@ -674,16 +666,6 @@ INSERT INTO ceil_floor_round VALUES ('0.0000001');
 INSERT INTO ceil_floor_round VALUES ('-0.000001');
 SELECT a, ceil(a), ceiling(a), floor(a), round(a) FROM ceil_floor_round;
 DROP TABLE ceil_floor_round;
-
--- Check rounding, it should round ties away from zero.
-SELECT i as pow,
-	round((-2.5 * 10 ^ i)::numeric, -i),
-	round((-1.5 * 10 ^ i)::numeric, -i),
-	round((-0.5 * 10 ^ i)::numeric, -i),
-	round((0.5 * 10 ^ i)::numeric, -i),
-	round((1.5 * 10 ^ i)::numeric, -i),
-	round((2.5 * 10 ^ i)::numeric, -i)
-FROM generate_series(-5,5) AS t(i);
 
 -- Testing for width_bucket(). For convenience, we test both the
 -- numeric and float8 versions of the function in this file.
@@ -786,21 +768,8 @@ SELECT '' AS to_char_24, to_char('100'::numeric, 'FM999.9');
 SELECT '' AS to_char_25, to_char('100'::numeric, 'FM999.');
 SELECT '' AS to_char_26, to_char('100'::numeric, 'FM999');
 
--- Check parsing of literal text in a format string
-SELECT '' AS to_char_27, to_char('100'::numeric, 'foo999');
-SELECT '' AS to_char_28, to_char('100'::numeric, 'f\oo999');
-SELECT '' AS to_char_29, to_char('100'::numeric, 'f\\oo999');
-SELECT '' AS to_char_30, to_char('100'::numeric, 'f\"oo999');
-SELECT '' AS to_char_31, to_char('100'::numeric, 'f\\"oo999');
-SELECT '' AS to_char_32, to_char('100'::numeric, 'f"ool"999');
-SELECT '' AS to_char_33, to_char('100'::numeric, 'f"\ool"999');
-SELECT '' AS to_char_34, to_char('100'::numeric, 'f"\\ool"999');
-SELECT '' AS to_char_35, to_char('100'::numeric, 'f"ool\"999');
-SELECT '' AS to_char_36, to_char('100'::numeric, 'f"ool\\"999');
-
 -- TO_NUMBER()
 --
-SET lc_numeric = 'C';
 SELECT '' AS to_number_1,  to_number('-34,338,492', '99G999G999');
 SELECT '' AS to_number_2,  to_number('-34,338,492.654,878', '99G999G999D999G999');
 SELECT '' AS to_number_3,  to_number('<564646.654564>', '999999.999999PR');
@@ -814,16 +783,6 @@ SELECT '' AS to_number_10, to_number('0', '99.99');
 SELECT '' AS to_number_11, to_number('.-01', 'S99.99');
 SELECT '' AS to_number_12, to_number('.01-', '99.99S');
 SELECT '' AS to_number_13, to_number(' . 0 1-', ' 9 9 . 9 9 S');
-SELECT '' AS to_number_14, to_number('34,50','999,99');
-SELECT '' AS to_number_15, to_number('123,000','999G');
-SELECT '' AS to_number_16, to_number('123456','999G999');
-SELECT '' AS to_number_17, to_number('$1234.56','L9,999.99');
-SELECT '' AS to_number_18, to_number('$1234.56','L99,999.99');
-SELECT '' AS to_number_19, to_number('$1,234.56','L99,999.99');
-SELECT '' AS to_number_20, to_number('1234.56','L99,999.99');
-SELECT '' AS to_number_21, to_number('1,234.56','L99,999.99');
-SELECT '' AS to_number_22, to_number('42nd', '99th');
-RESET lc_numeric;
 
 --
 -- Input syntax
@@ -883,19 +842,6 @@ select div(12345678901234567890, 123);
 select div(12345678901234567890, 123) * 123 + 12345678901234567890 % 123;
 
 --
--- Test some corner cases for square root
---
-
-select sqrt(1.000000000000003::numeric);
-select sqrt(1.000000000000004::numeric);
-select sqrt(96627521408608.56340355805::numeric);
-select sqrt(96627521408608.56340355806::numeric);
-select sqrt(515549506212297735.073688290367::numeric);
-select sqrt(515549506212297735.073688290368::numeric);
-select sqrt(8015491789940783531003294973900306::numeric);
-select sqrt(8015491789940783531003294973900307::numeric);
-
---
 -- Test code path for raising to integer powers
 --
 
@@ -903,212 +849,3 @@ select 10.0 ^ -2147483648 as rounds_to_zero;
 select 10.0 ^ -2147483647 as rounds_to_zero;
 select 10.0 ^ 2147483647 as overflows;
 select 117743296169.0 ^ 1000000000 as overflows;
-
--- cases that used to return inaccurate results
-select 3.789 ^ 21;
-select 3.789 ^ 35;
-select 1.2 ^ 345;
-select 0.12 ^ (-20);
-select 1.000000000123 ^ (-2147483648);
-
--- cases that used to error out
-select 0.12 ^ (-25);
-select 0.5678 ^ (-85);
-
---
--- Tests for raising to non-integer powers
---
-
--- special cases
-select 0.0 ^ 0.0;
-select (-12.34) ^ 0.0;
-select 12.34 ^ 0.0;
-select 0.0 ^ 12.34;
-
--- NaNs
-select 'NaN'::numeric ^ 'NaN'::numeric;
-select 'NaN'::numeric ^ 0;
-select 'NaN'::numeric ^ 1;
-select 0 ^ 'NaN'::numeric;
-select 1 ^ 'NaN'::numeric;
-
--- invalid inputs
-select 0.0 ^ (-12.34);
-select (-12.34) ^ 1.2;
-
--- cases that used to generate inaccurate results
-select 32.1 ^ 9.8;
-select 32.1 ^ (-9.8);
-select 12.3 ^ 45.6;
-select 12.3 ^ (-45.6);
-
--- big test
-select 1.234 ^ 5678;
-
---
--- Tests for EXP()
---
-
--- special cases
-select exp(0.0);
-select exp(1.0);
-select exp(1.0::numeric(71,70));
-
--- cases that used to generate inaccurate results
-select exp(32.999);
-select exp(-32.999);
-select exp(123.456);
-select exp(-123.456);
-
--- big test
-select exp(1234.5678);
-
---
--- Tests for generate_series
---
-select * from generate_series(0.0::numeric, 4.0::numeric);
-select * from generate_series(0.1::numeric, 4.0::numeric, 1.3::numeric);
-select * from generate_series(4.0::numeric, -1.5::numeric, -2.2::numeric);
--- Trigger errors
-select * from generate_series(-100::numeric, 100::numeric, 0::numeric);
-select * from generate_series(-100::numeric, 100::numeric, 'nan'::numeric);
-select * from generate_series('nan'::numeric, 100::numeric, 10::numeric);
-select * from generate_series(0::numeric, 'nan'::numeric, 10::numeric);
--- Checks maximum, output is truncated
-select (i / (10::numeric ^ 131071))::numeric(1,0)
-	from generate_series(6 * (10::numeric ^ 131071),
-			     9 * (10::numeric ^ 131071),
-			     10::numeric ^ 131071) as a(i);
--- Check usage with variables
-select * from generate_series(1::numeric, 3::numeric) i, generate_series(i,3) j;
-select * from generate_series(1::numeric, 3::numeric) i, generate_series(1,i) j;
-select * from generate_series(1::numeric, 3::numeric) i, generate_series(1,5,i) j;
-
---
--- Tests for LN()
---
-
--- Invalid inputs
-select ln(-12.34);
-select ln(0.0);
-
--- Some random tests
-select ln(1.2345678e-28);
-select ln(0.0456789);
-select ln(0.349873948359354029493948309745709580730482050975);
-select ln(0.99949452);
-select ln(1.00049687395);
-select ln(1234.567890123456789);
-select ln(5.80397490724e5);
-select ln(9.342536355e34);
-
---
--- Tests for LOG() (base 10)
---
-
--- invalid inputs
-select log(-12.34);
-select log(0.0);
-
--- some random tests
-select log(1.234567e-89);
-select log(3.4634998359873254962349856073435545);
-select log(9.999999999999999999);
-select log(10.00000000000000000);
-select log(10.00000000000000001);
-select log(590489.45235237);
-
---
--- Tests for LOG() (arbitrary base)
---
-
--- invalid inputs
-select log(-12.34, 56.78);
-select log(-12.34, -56.78);
-select log(12.34, -56.78);
-select log(0.0, 12.34);
-select log(12.34, 0.0);
-select log(1.0, 12.34);
-
--- some random tests
-select log(1.23e-89, 6.4689e45);
-select log(0.99923, 4.58934e34);
-select log(1.000016, 8.452010e18);
-select log(3.1954752e47, 9.4792021e-73);
-
---
--- Tests for scale()
---
-
-select scale(numeric 'NaN');
-select scale(NULL::numeric);
-select scale(1.12);
-select scale(0);
-select scale(0.00);
-select scale(1.12345);
-select scale(110123.12475871856128);
-select scale(-1123.12471856128);
-select scale(-13.000000000000000);
-
---
--- Tests for min_scale()
---
-
-select min_scale(numeric 'NaN') is NULL; -- should be true
-select min_scale(0);                     -- no digits
-select min_scale(0.00);                  -- no digits again
-select min_scale(1.0);                   -- no scale
-select min_scale(1.1);                   -- scale 1
-select min_scale(1.12);                  -- scale 2
-select min_scale(1.123);                 -- scale 3
-select min_scale(1.1234);                -- scale 4, filled digit
-select min_scale(1.12345);               -- scale 5, 2 NDIGITS
-select min_scale(1.1000);                -- 1 pos in NDIGITS
-select min_scale(1e100);                 -- very big number
-
---
--- Tests for trim_scale()
---
-
-select trim_scale(numeric 'NaN');
-select trim_scale(1.120);
-select trim_scale(0);
-select trim_scale(0.00);
-select trim_scale(1.1234500);
-select trim_scale(110123.12475871856128000);
-select trim_scale(-1123.124718561280000000);
-select trim_scale(-13.00000000000000000000);
-select trim_scale(1e100);
-
---
--- Tests for SUM()
---
-
--- cases that need carry propagation
-SELECT SUM(9999::numeric) FROM generate_series(1, 100000);
-SELECT SUM((-9999)::numeric) FROM generate_series(1, 100000);
-
---
--- Tests for GCD()
---
-SELECT a, b, gcd(a, b), gcd(a, -b), gcd(-b, a), gcd(-b, -a)
-FROM (VALUES (0::numeric, 0::numeric),
-             (0::numeric, numeric 'NaN'),
-             (0::numeric, 46375::numeric),
-             (433125::numeric, 46375::numeric),
-             (43312.5::numeric, 4637.5::numeric),
-             (4331.250::numeric, 463.75000::numeric)) AS v(a, b);
-
---
--- Tests for LCM()
---
-SELECT a,b, lcm(a, b), lcm(a, -b), lcm(-b, a), lcm(-b, -a)
-FROM (VALUES (0::numeric, 0::numeric),
-             (0::numeric, numeric 'NaN'),
-             (0::numeric, 13272::numeric),
-             (13272::numeric, 13272::numeric),
-             (423282::numeric, 13272::numeric),
-             (42328.2::numeric, 1327.2::numeric),
-             (4232.820::numeric, 132.72000::numeric)) AS v(a, b);
-
-SELECT lcm(9999 * (10::numeric)^131068 + (10::numeric^131068 - 1), 2); -- overflow

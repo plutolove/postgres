@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * noblock.c
- *	  set a file descriptor as blocking or non-blocking
+ *	  set a file descriptor as non-blocking
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,22 +17,11 @@
 #include <fcntl.h>
 
 
-/*
- * Put socket into nonblock mode.
- * Returns true on success, false on failure.
- */
 bool
 pg_set_noblock(pgsocket sock)
 {
 #if !defined(WIN32)
-	int			flags;
-
-	flags = fcntl(sock, F_GETFL);
-	if (flags < 0)
-		return false;
-	if (fcntl(sock, F_SETFL, (flags | O_NONBLOCK)) == -1)
-		return false;
-	return true;
+	return (fcntl(sock, F_SETFL, O_NONBLOCK) != -1);
 #else
 	unsigned long ioctlsocket_ret = 1;
 
@@ -41,10 +30,7 @@ pg_set_noblock(pgsocket sock)
 #endif
 }
 
-/*
- * Put socket into blocking mode.
- * Returns true on success, false on failure.
- */
+
 bool
 pg_set_block(pgsocket sock)
 {
@@ -52,9 +38,7 @@ pg_set_block(pgsocket sock)
 	int			flags;
 
 	flags = fcntl(sock, F_GETFL);
-	if (flags < 0)
-		return false;
-	if (fcntl(sock, F_SETFL, (flags & ~O_NONBLOCK)) == -1)
+	if (flags < 0 || fcntl(sock, F_SETFL, (long) (flags & ~O_NONBLOCK)))
 		return false;
 	return true;
 #else

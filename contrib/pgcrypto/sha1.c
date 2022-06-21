@@ -59,6 +59,16 @@ static uint32 _K[] = {0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6};
 #define BCOUNT	(ctxt->c.b64[0] / 8)
 #define W(n)	(ctxt->m.b32[(n)])
 
+#define PUTBYTE(x) \
+do { \
+	ctxt->m.b8[(COUNT % 64)] = (x);		\
+	COUNT++;				\
+	COUNT %= 64;				\
+	ctxt->c.b64[0] += 8;			\
+	if (COUNT % 64 == 0)			\
+		sha1_step(ctxt);		\
+} while (0)
+
 #define PUTPAD(x) \
 do { \
 	ctxt->m.b8[(COUNT % 64)] = (x);		\
@@ -71,7 +81,7 @@ do { \
 static void sha1_step(struct sha1_ctxt *);
 
 static void
-sha1_step(struct sha1_ctxt *ctxt)
+sha1_step(struct sha1_ctxt * ctxt)
 {
 	uint32		a,
 				b,
@@ -216,7 +226,7 @@ sha1_step(struct sha1_ctxt *ctxt)
 /*------------------------------------------------------------*/
 
 void
-sha1_init(struct sha1_ctxt *ctxt)
+sha1_init(struct sha1_ctxt * ctxt)
 {
 	memset(ctxt, 0, sizeof(struct sha1_ctxt));
 	H(0) = 0x67452301;
@@ -227,7 +237,7 @@ sha1_init(struct sha1_ctxt *ctxt)
 }
 
 void
-sha1_pad(struct sha1_ctxt *ctxt)
+sha1_pad(struct sha1_ctxt * ctxt)
 {
 	size_t		padlen;			/* pad length in bytes */
 	size_t		padstart;
@@ -270,7 +280,7 @@ sha1_pad(struct sha1_ctxt *ctxt)
 }
 
 void
-sha1_loop(struct sha1_ctxt *ctxt, const uint8 *input0, size_t len)
+sha1_loop(struct sha1_ctxt * ctxt, const uint8 *input0, size_t len)
 {
 	const uint8 *input;
 	size_t		gaplen;
@@ -298,7 +308,7 @@ sha1_loop(struct sha1_ctxt *ctxt, const uint8 *input0, size_t len)
 }
 
 void
-sha1_result(struct sha1_ctxt *ctxt, uint8 *digest0)
+sha1_result(struct sha1_ctxt * ctxt, uint8 *digest0)
 {
 	uint8	   *digest;
 

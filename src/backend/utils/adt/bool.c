@@ -3,7 +3,7 @@
  * bool.c
  *	  Functions for the built-in type "bool".
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -150,8 +150,7 @@ boolin(PG_FUNCTION_ARGS)
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-			 errmsg("invalid input syntax for type %s: \"%s\"",
-					"boolean", in_str)));
+		   errmsg("invalid input syntax for type boolean: \"%s\"", in_str)));
 
 	/* not reached */
 	PG_RETURN_BOOL(false);

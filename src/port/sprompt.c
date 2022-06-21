@@ -3,7 +3,7 @@
  * sprompt.c
  *	  simple_prompt() routine
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -12,41 +12,49 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "c.h"
-
-#ifdef HAVE_TERMIOS_H
-#include <termios.h>
-#endif
 
 
 /*
  * simple_prompt
  *
  * Generalized function especially intended for reading in usernames and
- * passwords interactively.  Reads from /dev/tty or stdin/stderr.
+ * password interactively. Reads from /dev/tty or stdin/stderr.
  *
- * prompt:		The prompt to print, or NULL if none (automatically localized)
- * destination: buffer in which to store result
- * destlen:		allocated length of destination
+ * prompt:		The prompt to print
+ * maxlen:		How many characters to accept
  * echo:		Set to false if you want to hide what is entered (for passwords)
  *
- * The input (without trailing newline) is returned in the destination buffer,
- * with a '\0' appended.
+ * Returns a malloc()'ed string with the input (w/o trailing newline).
  */
-void
-simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
+#include "c.h"
+
+#ifdef HAVE_TERMIOS_H
+#include <termios.h>
+#endif
+
+extern char *simple_prompt(const char *prompt, int maxlen, bool echo);
+
+char *
+simple_prompt(const char *prompt, int maxlen, bool echo)
 {
 	int			length;
+	char	   *destination;
 	FILE	   *termin,
 			   *termout;
 
-#if defined(HAVE_TERMIOS_H)
+#ifdef HAVE_TERMIOS_H
 	struct termios t_orig,
 				t;
-#elif defined(WIN32)
+#else
+#ifdef WIN32
 	HANDLE		t = NULL;
-	DWORD		t_orig = 0;
+	LPDWORD		t_orig = NULL;
 #endif
+#endif
+
+	destination = (char *) malloc(maxlen + 1);
+	if (!destination)
+		return NULL;
 
 #ifdef WIN32
 
@@ -64,11 +72,8 @@ simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
 	 *
 	 * XXX fgets() still receives text in the console's input code page.  This
 	 * makes non-ASCII credentials unportable.
-	 *
-	 * Unintuitively, we also open termin in mode "w+", even though we only
-	 * read it; that's needed for SetConsoleMode() to succeed.
 	 */
-	termin = fopen("CONIN$", "w+");
+	termin = fopen("CONIN$", "r");
 	termout = fopen("CONOUT$", "w+");
 #else
 
@@ -100,25 +105,30 @@ simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
 		termout = stderr;
 	}
 
+#ifdef HAVE_TERMIOS_H
 	if (!echo)
 	{
-#if defined(HAVE_TERMIOS_H)
-		/* disable echo via tcgetattr/tcsetattr */
 		tcgetattr(fileno(termin), &t);
 		t_orig = t;
 		t.c_lflag &= ~ECHO;
 		tcsetattr(fileno(termin), TCSAFLUSH, &t);
-#elif defined(WIN32)
-		/* need the file's HANDLE to turn echo off */
-		t = (HANDLE) _get_osfhandle(_fileno(termin));
+	}
+#else
+#ifdef WIN32
+	if (!echo)
+	{
+		/* get a new handle to turn echo off */
+		t_orig = (LPDWORD) malloc(sizeof(DWORD));
+		t = GetStdHandle(STD_INPUT_HANDLE);
 
 		/* save the old configuration first */
-		GetConsoleMode(t, &t_orig);
+		GetConsoleMode(t, t_orig);
 
 		/* set to the new mode */
 		SetConsoleMode(t, ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
-#endif
 	}
+#endif
+#endif
 
 	if (prompt)
 	{
@@ -126,7 +136,7 @@ simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
 		fflush(termout);
 	}
 
-	if (fgets(destination, destlen, termin) == NULL)
+	if (fgets(destination, maxlen + 1, termin) == NULL)
 		destination[0] = '\0';
 
 	length = strlen(destination);
@@ -144,29 +154,35 @@ simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
 		} while (buflen > 0 && buf[buflen - 1] != '\n');
 	}
 
-	/* strip trailing newline, including \r in case we're on Windows */
-	while (length > 0 &&
-		   (destination[length - 1] == '\n' ||
-			destination[length - 1] == '\r'))
-		destination[--length] = '\0';
+	if (length > 0 && destination[length - 1] == '\n')
+		/* remove trailing newline */
+		destination[length - 1] = '\0';
 
+#ifdef HAVE_TERMIOS_H
 	if (!echo)
 	{
-		/* restore previous echo behavior, then echo \n */
-#if defined(HAVE_TERMIOS_H)
 		tcsetattr(fileno(termin), TCSAFLUSH, &t_orig);
 		fputs("\n", termout);
 		fflush(termout);
-#elif defined(WIN32)
-		SetConsoleMode(t, t_orig);
+	}
+#else
+#ifdef WIN32
+	if (!echo)
+	{
+		/* reset to the original console mode */
+		SetConsoleMode(t, *t_orig);
 		fputs("\n", termout);
 		fflush(termout);
-#endif
+		free(t_orig);
 	}
+#endif
+#endif
 
 	if (termin != stdin)
 	{
 		fclose(termin);
 		fclose(termout);
 	}
+
+	return destination;
 }

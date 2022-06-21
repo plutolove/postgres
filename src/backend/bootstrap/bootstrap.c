@@ -4,7 +4,7 @@
  *	  routines to support running postgres in 'bootstrap' mode
  *	bootstrap mode is used to create the initial template database
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,32 +14,25 @@
  */
 #include "postgres.h"
 
+#include <time.h>
 #include <unistd.h>
 #include <signal.h>
 
-#include "access/genam.h"
-#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/tableam.h"
-#include "access/xact.h"
-#include "access/xlog_internal.h"
 #include "bootstrap/bootstrap.h"
 #include "catalog/index.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
-#include "common/link-canary.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "pg_getopt.h"
-#include "pgstat.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
 #include "postmaster/walwriter.h"
 #include "replication/walreceiver.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
-#include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
@@ -49,12 +42,12 @@
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/relmapper.h"
+#include "utils/tqual.h"
 
-uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
+uint32		bootstrap_data_checksum_version = 0;		/* No checksum */
 
 
-#define ALLOC(t, c) \
-	((t *) MemoryContextAllocZero(TopMemoryContext, (unsigned)(c) * sizeof(t)))
+#define ALLOC(t, c)		((t *) calloc((unsigned)(c), sizeof(t)))
 
 static void CheckerModeMain(void);
 static void BootstrapModeMain(void);
@@ -101,55 +94,51 @@ struct typinfo
 };
 
 static const struct typinfo TypInfo[] = {
-	{"bool", BOOLOID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid,
+	{"bool", BOOLOID, 0, 1, true, 'c', 'p', InvalidOid,
 	F_BOOLIN, F_BOOLOUT},
-	{"bytea", BYTEAOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"bytea", BYTEAOID, 0, -1, false, 'i', 'x', InvalidOid,
 	F_BYTEAIN, F_BYTEAOUT},
-	{"char", CHAROID, 0, 1, true, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, InvalidOid,
+	{"char", CHAROID, 0, 1, true, 'c', 'p', InvalidOid,
 	F_CHARIN, F_CHAROUT},
-	{"int2", INT2OID, 0, 2, true, TYPALIGN_SHORT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int2", INT2OID, 0, 2, true, 's', 'p', InvalidOid,
 	F_INT2IN, F_INT2OUT},
-	{"int4", INT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int4", INT4OID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_INT4IN, F_INT4OUT},
-	{"float4", FLOAT4OID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"float4", FLOAT4OID, 0, 4, FLOAT4PASSBYVAL, 'i', 'p', InvalidOid,
 	F_FLOAT4IN, F_FLOAT4OUT},
-	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, TYPALIGN_CHAR, TYPSTORAGE_PLAIN, C_COLLATION_OID,
+	{"name", NAMEOID, CHAROID, NAMEDATALEN, false, 'c', 'p', InvalidOid,
 	F_NAMEIN, F_NAMEOUT},
-	{"regclass", REGCLASSOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"regclass", REGCLASSOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_REGCLASSIN, F_REGCLASSOUT},
-	{"regproc", REGPROCOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"regproc", REGPROCOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_REGPROCIN, F_REGPROCOUT},
-	{"regtype", REGTYPEOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"regtype", REGTYPEOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_REGTYPEIN, F_REGTYPEOUT},
-	{"regrole", REGROLEOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
-	F_REGROLEIN, F_REGROLEOUT},
-	{"regnamespace", REGNAMESPACEOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
-	F_REGNAMESPACEIN, F_REGNAMESPACEOUT},
-	{"text", TEXTOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"text", TEXTOID, 0, -1, false, 'i', 'x', DEFAULT_COLLATION_OID,
 	F_TEXTIN, F_TEXTOUT},
-	{"oid", OIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"oid", OIDOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_OIDIN, F_OIDOUT},
-	{"tid", TIDOID, 0, 6, false, TYPALIGN_SHORT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"tid", TIDOID, 0, 6, false, 's', 'p', InvalidOid,
 	F_TIDIN, F_TIDOUT},
-	{"xid", XIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"xid", XIDOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_XIDIN, F_XIDOUT},
-	{"cid", CIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"cid", CIDOID, 0, 4, true, 'i', 'p', InvalidOid,
 	F_CIDIN, F_CIDOUT},
-	{"pg_node_tree", PGNODETREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"pg_node_tree", PGNODETREEOID, 0, -1, false, 'i', 'x', DEFAULT_COLLATION_OID,
 	F_PG_NODE_TREE_IN, F_PG_NODE_TREE_OUT},
-	{"int2vector", INT2VECTOROID, INT2OID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"int2vector", INT2VECTOROID, INT2OID, -1, false, 'i', 'p', InvalidOid,
 	F_INT2VECTORIN, F_INT2VECTOROUT},
-	{"oidvector", OIDVECTOROID, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"oidvector", OIDVECTOROID, OIDOID, -1, false, 'i', 'p', InvalidOid,
 	F_OIDVECTORIN, F_OIDVECTOROUT},
-	{"_int4", INT4ARRAYOID, INT4OID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_int4", INT4ARRAYOID, INT4OID, -1, false, 'i', 'x', InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_text", 1009, TEXTOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"_text", 1009, TEXTOID, -1, false, 'i', 'x', DEFAULT_COLLATION_OID,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_oid", 1028, OIDOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_oid", 1028, OIDOID, -1, false, 'i', 'x', InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_char", 1002, CHAROID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_char", 1002, CHAROID, -1, false, 'i', 'x', InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT},
-	{"_aclitem", 1034, ACLITEMOID, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, InvalidOid,
+	{"_aclitem", 1034, ACLITEMOID, -1, false, 'i', 'x', InvalidOid,
 	F_ARRAY_IN, F_ARRAY_OUT}
 };
 
@@ -167,7 +156,7 @@ static struct typmap *Ap = NULL;
 static Datum values[MAXATTR];	/* current row's attribute values */
 static bool Nulls[MAXATTR];
 
-static MemoryContext nogc = NULL;	/* special no-gc mem context */
+static MemoryContext nogc = NULL;		/* special no-gc mem context */
 
 /*
  *	At bootstrap time, we first declare all the indices to be built, and
@@ -202,17 +191,25 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	char	   *userDoption = NULL;
 
 	/*
-	 * Initialize process environment (already done if under postmaster, but
-	 * not if standalone).
+	 * initialize globals
 	 */
-	if (!IsUnderPostmaster)
-		InitStandaloneProcess(argv[0]);
+	MyProcPid = getpid();
+
+	MyStartTime = time(NULL);
+
+	/* Compute paths, if we didn't inherit them from postmaster */
+	if (my_exec_path[0] == '\0')
+	{
+		if (find_my_exec(progname, my_exec_path) < 0)
+			elog(FATAL, "%s: could not locate my own executable path",
+				 progname);
+	}
 
 	/*
 	 * process command arguments
 	 */
 
-	/* Set defaults, to be overridden by explicit options below */
+	/* Set defaults, to be overriden by explicit options below */
 	if (!IsUnderPostmaster)
 		InitializeGUCOptions();
 
@@ -226,7 +223,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 	/* If no -x argument, we are a CheckerProcess */
 	MyAuxProcType = CheckerProcess;
 
-	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:X:-:")) != -1)
+	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:-:")) != -1)
 	{
 		switch (flag)
 		{
@@ -234,7 +231,7 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				SetConfigOption("shared_buffers", optarg, PGC_POSTMASTER, PGC_S_ARGV);
 				break;
 			case 'D':
-				userDoption = pstrdup(optarg);
+				userDoption = strdup(optarg);
 				break;
 			case 'd':
 				{
@@ -260,18 +257,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 				break;
 			case 'x':
 				MyAuxProcType = atoi(optarg);
-				break;
-			case 'X':
-				{
-					int			WalSegSz = strtoul(optarg, NULL, 0);
-
-					if (!IsValidWalSegSize(WalSegSz))
-						ereport(ERROR,
-								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-								 errmsg("-X requires a power of two value between 1 MB and 1 GB")));
-					SetConfigOption("wal_segment_size", optarg, PGC_INTERNAL,
-									PGC_S_OVERRIDE);
-				}
 				break;
 			case 'c':
 			case '-':
@@ -314,28 +299,36 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		proc_exit(1);
 	}
 
-	switch (MyAuxProcType)
-	{
-		case StartupProcess:
-			MyBackendType = B_STARTUP;
-			break;
-		case BgWriterProcess:
-			MyBackendType = B_BG_WRITER;
-			break;
-		case CheckpointerProcess:
-			MyBackendType = B_CHECKPOINTER;
-			break;
-		case WalWriterProcess:
-			MyBackendType = B_WAL_WRITER;
-			break;
-		case WalReceiverProcess:
-			MyBackendType = B_WAL_RECEIVER;
-			break;
-		default:
-			MyBackendType = B_INVALID;
-	}
+	/*
+	 * Identify myself via ps
+	 */
 	if (IsUnderPostmaster)
-		init_ps_display(NULL);
+	{
+		const char *statmsg;
+
+		switch (MyAuxProcType)
+		{
+			case StartupProcess:
+				statmsg = "startup process";
+				break;
+			case BgWriterProcess:
+				statmsg = "writer process";
+				break;
+			case CheckpointerProcess:
+				statmsg = "checkpointer process";
+				break;
+			case WalWriterProcess:
+				statmsg = "wal writer process";
+				break;
+			case WalReceiverProcess:
+				statmsg = "wal receiver process";
+				break;
+			default:
+				statmsg = "??? process";
+				break;
+		}
+		init_ps_display(statmsg, "", "", "");
+	}
 
 	/* Acquire configuration parameters, unless inherited from postmaster */
 	if (!IsUnderPostmaster)
@@ -344,15 +337,13 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);
 	}
 
-	/*
-	 * Validate we have been given a reasonable-looking DataDir and change
-	 * into it (if under postmaster, should be done already).
-	 */
+	/* Validate we have been given a reasonable-looking DataDir */
+	Assert(DataDir);
+	ValidatePgVersion(DataDir);
+
+	/* Change into DataDir (if under postmaster, should be done already) */
 	if (!IsUnderPostmaster)
-	{
-		checkDataDir();
 		ChangeToDataDir();
-	}
 
 	/* If standalone, create lockfile for data directory */
 	if (!IsUnderPostmaster)
@@ -398,17 +389,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 		/* finish setting up bufmgr.c */
 		InitBufferPoolBackend();
 
-		/*
-		 * Auxiliary processes don't run transactions, but they may need a
-		 * resource owner anyway to manage buffer pins acquired outside
-		 * transactions (and, perhaps, other things in future).
-		 */
-		CreateAuxProcessResourceOwner();
-
-		/* Initialize backend status information */
-		pgstat_initialize();
-		pgstat_bestart();
-
 		/* register a before-shutdown callback for LWLock cleanup */
 		before_shmem_exit(ShutdownAuxiliaryProcess, 0);
 	}
@@ -426,7 +406,6 @@ AuxiliaryProcessMain(int argc, char *argv[])
 			proc_exit(1);		/* should never return */
 
 		case BootstrapProcess:
-
 			/*
 			 * There was a brief instant during which mode was Normal; this is
 			 * okay.  We need to be in bootstrap mode during BootStrapXLOG for
@@ -498,18 +477,11 @@ BootstrapModeMain(void)
 	Assert(IsBootstrapProcessingMode());
 
 	/*
-	 * To ensure that src/common/link-canary.c is linked into the backend, we
-	 * must call it from somewhere.  Here is as good as anywhere.
-	 */
-	if (pg_link_canary_is_frontend())
-		elog(ERROR, "backend is incorrectly linked to frontend functions");
-
-	/*
 	 * Do backend-like initialization for bootstrap mode
 	 */
 	InitProcess();
 
-	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
+	InitPostgres(NULL, InvalidOid, NULL, NULL);
 
 	/* Initialize stuff for bootstrap-file processing */
 	for (i = 0; i < MAXATTR; i++)
@@ -521,9 +493,7 @@ BootstrapModeMain(void)
 	/*
 	 * Process bootstrap input.
 	 */
-	StartTransactionCommand();
 	boot_yyparse();
-	CommitTransactionCommand();
 
 	/*
 	 * We should now know about all mapped relations, so it's okay to write
@@ -548,17 +518,51 @@ BootstrapModeMain(void)
 static void
 bootstrap_signals(void)
 {
-	Assert(!IsUnderPostmaster);
+	if (IsUnderPostmaster)
+	{
+		/*
+		 * If possible, make this process a group leader, so that the
+		 * postmaster can signal any child processes too.
+		 */
+#ifdef HAVE_SETSID
+		if (setsid() < 0)
+			elog(FATAL, "setsid() failed: %m");
+#endif
 
-	/*
-	 * We don't actually need any non-default signal handling in bootstrap
-	 * mode; "curl up and die" is a sufficient response for all these cases.
-	 * Let's set that handling explicitly, as documentation if nothing else.
-	 */
-	pqsignal(SIGHUP, SIG_DFL);
-	pqsignal(SIGINT, SIG_DFL);
-	pqsignal(SIGTERM, SIG_DFL);
-	pqsignal(SIGQUIT, SIG_DFL);
+		/*
+		 * Properly accept or ignore signals the postmaster might send us
+		 */
+		pqsignal(SIGHUP, SIG_IGN);
+		pqsignal(SIGINT, SIG_IGN);		/* ignore query-cancel */
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGQUIT, quickdie);
+		pqsignal(SIGALRM, SIG_IGN);
+		pqsignal(SIGPIPE, SIG_IGN);
+		pqsignal(SIGUSR1, SIG_IGN);
+		pqsignal(SIGUSR2, SIG_IGN);
+
+		/*
+		 * Reset some signals that are accepted by postmaster but not here
+		 */
+		pqsignal(SIGCHLD, SIG_DFL);
+		pqsignal(SIGTTIN, SIG_DFL);
+		pqsignal(SIGTTOU, SIG_DFL);
+		pqsignal(SIGCONT, SIG_DFL);
+		pqsignal(SIGWINCH, SIG_DFL);
+
+		/*
+		 * Unblock signals (they were blocked when the postmaster forked us)
+		 */
+		PG_SETMASK(&UnBlockSig);
+	}
+	else
+	{
+		/* Set up appropriately for interactive use */
+		pqsignal(SIGHUP, die);
+		pqsignal(SIGINT, die);
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGQUIT, die);
+	}
 }
 
 /*
@@ -572,8 +576,6 @@ static void
 ShutdownAuxiliaryProcess(int code, Datum arg)
 {
 	LWLockReleaseAll();
-	ConditionVariableCancelSleep();
-	pgstat_report_wait_end();
 }
 
 /* ----------------------------------------------------------------
@@ -591,7 +593,7 @@ boot_openrel(char *relname)
 	int			i;
 	struct typmap **app;
 	Relation	rel;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	HeapTuple	tup;
 
 	if (strlen(relname) >= NAMEDATALEN)
@@ -600,28 +602,28 @@ boot_openrel(char *relname)
 	if (Typ == NULL)
 	{
 		/* We can now load the pg_type data */
-		rel = table_open(TypeRelationId, NoLock);
-		scan = table_beginscan_catalog(rel, 0, NULL);
+		rel = heap_open(TypeRelationId, NoLock);
+		scan = heap_beginscan_catalog(rel, 0, NULL);
 		i = 0;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		table_endscan(scan);
+		heap_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = table_beginscan_catalog(rel, 0, NULL);
+		scan = heap_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+			(*app)->am_oid = HeapTupleGetOid(tup);
 			memcpy((char *) &(*app)->am_typ,
 				   (char *) GETSTRUCT(tup),
 				   sizeof((*app)->am_typ));
 			app++;
 		}
-		table_endscan(scan);
-		table_close(rel, NoLock);
+		heap_endscan(scan);
+		heap_close(rel, NoLock);
 	}
 
 	if (boot_reldesc != NULL)
@@ -630,14 +632,14 @@ boot_openrel(char *relname)
 	elog(DEBUG4, "open relation %s, attrsize %d",
 		 relname, (int) ATTRIBUTE_FIXED_PART_SIZE);
 
-	boot_reldesc = table_openrv(makeRangeVar(NULL, relname, -1), NoLock);
-	numattr = RelationGetNumberOfAttributes(boot_reldesc);
+	boot_reldesc = heap_openrv(makeRangeVar(NULL, relname, -1), NoLock);
+	numattr = boot_reldesc->rd_rel->relnatts;
 	for (i = 0; i < numattr; i++)
 	{
 		if (attrtypes[i] == NULL)
 			attrtypes[i] = AllocateAttribute();
 		memmove((char *) attrtypes[i],
-				(char *) TupleDescAttr(boot_reldesc->rd_att, i),
+				(char *) boot_reldesc->rd_att->attrs[i],
 				ATTRIBUTE_FIXED_PART_SIZE);
 
 		{
@@ -676,7 +678,7 @@ closerel(char *name)
 	{
 		elog(DEBUG4, "close relation %s",
 			 RelationGetRelationName(boot_reldesc));
-		table_close(boot_reldesc, NoLock);
+		heap_close(boot_reldesc, NoLock);
 		boot_reldesc = NULL;
 	}
 }
@@ -692,7 +694,7 @@ closerel(char *name)
  * ----------------
  */
 void
-DefineAttr(char *name, char *type, int attnum, int nullness)
+DefineAttr(char *name, char *type, int attnum)
 {
 	Oid			typeoid;
 
@@ -708,7 +710,7 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 
 	namestrcpy(&attrtypes[attnum]->attname, name);
 	elog(DEBUG4, "column %s %s", NameStr(attrtypes[attnum]->attname), type);
-	attrtypes[attnum]->attnum = attnum + 1;
+	attrtypes[attnum]->attnum = attnum + 1;		/* fillatt */
 
 	typeoid = gettype(type);
 
@@ -742,58 +744,35 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 			attrtypes[attnum]->attndims = 0;
 	}
 
-	/*
-	 * If a system catalog column is collation-aware, force it to use C
-	 * collation, so that its behavior is independent of the database's
-	 * collation.  This is essential to allow template0 to be cloned with a
-	 * different database collation.
-	 */
-	if (OidIsValid(attrtypes[attnum]->attcollation))
-		attrtypes[attnum]->attcollation = C_COLLATION_OID;
-
 	attrtypes[attnum]->attstattarget = -1;
 	attrtypes[attnum]->attcacheoff = -1;
 	attrtypes[attnum]->atttypmod = -1;
 	attrtypes[attnum]->attislocal = true;
 
-	if (nullness == BOOTCOL_NULL_FORCE_NOT_NULL)
-	{
-		attrtypes[attnum]->attnotnull = true;
-	}
-	else if (nullness == BOOTCOL_NULL_FORCE_NULL)
-	{
-		attrtypes[attnum]->attnotnull = false;
-	}
-	else
-	{
-		Assert(nullness == BOOTCOL_NULL_AUTO);
-
-		/*
-		 * Mark as "not null" if type is fixed-width and prior columns are
-		 * too.  This corresponds to case where column can be accessed
-		 * directly via C struct declaration.
-		 *
-		 * oidvector and int2vector are also treated as not-nullable, even
-		 * though they are no longer fixed-width.
-		 */
+	/*
+	 * Mark as "not null" if type is fixed-width and prior columns are too.
+	 * This corresponds to case where column can be accessed directly via C
+	 * struct declaration.
+	 *
+	 * oidvector and int2vector are also treated as not-nullable, even though
+	 * they are no longer fixed-width.
+	 */
 #define MARKNOTNULL(att) \
-		((att)->attlen > 0 || \
-		 (att)->atttypid == OIDVECTOROID || \
-		 (att)->atttypid == INT2VECTOROID)
+	((att)->attlen > 0 || \
+	 (att)->atttypid == OIDVECTOROID || \
+	 (att)->atttypid == INT2VECTOROID)
 
-		if (MARKNOTNULL(attrtypes[attnum]))
+	if (MARKNOTNULL(attrtypes[attnum]))
+	{
+		int			i;
+
+		for (i = 0; i < attnum; i++)
 		{
-			int			i;
-
-			/* check earlier attributes */
-			for (i = 0; i < attnum; i++)
-			{
-				if (!attrtypes[i]->attnotnull)
-					break;
-			}
-			if (i == attnum)
-				attrtypes[attnum]->attnotnull = true;
+			if (!MARKNOTNULL(attrtypes[i]))
+				break;
 		}
+		if (i == attnum)
+			attrtypes[attnum]->attnotnull = true;
 	}
 }
 
@@ -806,16 +785,20 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
  * ----------------
  */
 void
-InsertOneTuple(void)
+InsertOneTuple(Oid objectid)
 {
 	HeapTuple	tuple;
 	TupleDesc	tupDesc;
 	int			i;
 
-	elog(DEBUG4, "inserting row with %d columns", numattr);
+	elog(DEBUG4, "inserting row oid %u, %d columns", objectid, numattr);
 
-	tupDesc = CreateTupleDesc(numattr, attrtypes);
+	tupDesc = CreateTupleDesc(numattr,
+							  RelationGetForm(boot_reldesc)->relhasoids,
+							  attrtypes);
 	tuple = heap_form_tuple(tupDesc, values, Nulls);
+	if (objectid != (Oid) 0)
+		HeapTupleSetOid(tuple, objectid);
 	pfree(tupDesc);				/* just free's tupDesc, not the attrtypes */
 
 	simple_heap_insert(boot_reldesc, tuple);
@@ -849,7 +832,7 @@ InsertOneValue(char *value, int i)
 
 	elog(DEBUG4, "inserting column %d value \"%s\"", i, value);
 
-	typoid = TupleDescAttr(boot_reldesc->rd_att, i)->atttypid;
+	typoid = boot_reldesc->rd_att->attrs[i]->atttypid;
 
 	boot_get_type_io_data(typoid,
 						  &typlen, &typbyval, &typalign,
@@ -876,11 +859,6 @@ InsertOneNull(int i)
 {
 	elog(DEBUG4, "inserting column %d NULL", i);
 	Assert(i >= 0 && i < MAXATTR);
-	if (TupleDescAttr(boot_reldesc->rd_att, i)->attnotnull)
-		elog(ERROR,
-			 "NULL value specified for not-null column \"%s\" of relation \"%s\"",
-			 NameStr(TupleDescAttr(boot_reldesc->rd_att, i)->attname),
-			 RelationGetRelationName(boot_reldesc));
 	values[i] = PointerGetDatum(NULL);
 	Nulls[i] = true;
 }
@@ -912,7 +890,7 @@ gettype(char *type)
 {
 	int			i;
 	Relation	rel;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	HeapTuple	tup;
 	struct typmap **app;
 
@@ -935,27 +913,27 @@ gettype(char *type)
 				return i;
 		}
 		elog(DEBUG4, "external type: %s", type);
-		rel = table_open(TypeRelationId, NoLock);
-		scan = table_beginscan_catalog(rel, 0, NULL);
+		rel = heap_open(TypeRelationId, NoLock);
+		scan = heap_beginscan_catalog(rel, 0, NULL);
 		i = 0;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 			++i;
-		table_endscan(scan);
+		heap_endscan(scan);
 		app = Typ = ALLOC(struct typmap *, i + 1);
 		while (i-- > 0)
 			*app++ = ALLOC(struct typmap, 1);
 		*app = NULL;
-		scan = table_beginscan_catalog(rel, 0, NULL);
+		scan = heap_beginscan_catalog(rel, 0, NULL);
 		app = Typ;
 		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
 		{
-			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+			(*app)->am_oid = HeapTupleGetOid(tup);
 			memmove((char *) &(*app++)->am_typ,
 					(char *) GETSTRUCT(tup),
 					sizeof((*app)->am_typ));
 		}
-		table_endscan(scan);
-		table_close(rel, NoLock);
+		heap_endscan(scan);
+		heap_close(rel, NoLock);
 		return gettype(type);
 	}
 	elog(ERROR, "unrecognized type \"%s\"", type);
@@ -1050,9 +1028,44 @@ boot_get_type_io_data(Oid typid,
 static Form_pg_attribute
 AllocateAttribute(void)
 {
-	return (Form_pg_attribute)
-		MemoryContextAllocZero(TopMemoryContext, ATTRIBUTE_FIXED_PART_SIZE);
+	Form_pg_attribute attribute = (Form_pg_attribute) malloc(ATTRIBUTE_FIXED_PART_SIZE);
+
+	if (!PointerIsValid(attribute))
+		elog(FATAL, "out of memory");
+	MemSet(attribute, 0, ATTRIBUTE_FIXED_PART_SIZE);
+
+	return attribute;
 }
+
+/*
+ *		MapArrayTypeName
+ *
+ * Given a type name, produce the corresponding array type name by prepending
+ * '_' and truncating as needed to fit in NAMEDATALEN-1 bytes.  This is only
+ * used in bootstrap mode, so we can get away with assuming that the input is
+ * ASCII and we don't need multibyte-aware truncation.
+ *
+ * The given string normally ends with '[]' or '[digits]'; we discard that.
+ *
+ * The result is a palloc'd string.
+ */
+char *
+MapArrayTypeName(const char *s)
+{
+	int			i,
+				j;
+	char		newStr[NAMEDATALEN];
+
+	newStr[0] = '_';
+	j = 1;
+	for (i = 0; i < NAMEDATALEN - 2 && s[i] != '['; i++, j++)
+		newStr[j] = s[i];
+
+	newStr[j] = '\0';
+
+	return pstrdup(newStr);
+}
+
 
 /*
  *	index_register() -- record an index that has been set up for building
@@ -1082,7 +1095,9 @@ index_register(Oid heap,
 	if (nogc == NULL)
 		nogc = AllocSetContextCreate(NULL,
 									 "BootstrapNoGC",
-									 ALLOCSET_DEFAULT_SIZES);
+									 ALLOCSET_DEFAULT_MINSIZE,
+									 ALLOCSET_DEFAULT_INITSIZE,
+									 ALLOCSET_DEFAULT_MAXSIZE);
 
 	oldcxt = MemoryContextSwitchTo(nogc);
 
@@ -1093,13 +1108,13 @@ index_register(Oid heap,
 
 	memcpy(newind->il_info, indexInfo, sizeof(IndexInfo));
 	/* expressions will likely be null, but may as well copy it */
-	newind->il_info->ii_Expressions =
+	newind->il_info->ii_Expressions = (List *)
 		copyObject(indexInfo->ii_Expressions);
 	newind->il_info->ii_ExpressionsState = NIL;
 	/* predicate will likely be null, but may as well copy it */
-	newind->il_info->ii_Predicate =
+	newind->il_info->ii_Predicate = (List *)
 		copyObject(indexInfo->ii_Predicate);
-	newind->il_info->ii_PredicateState = NULL;
+	newind->il_info->ii_PredicateState = NIL;
 	/* no exclusion constraints at bootstrap time, so no need to copy */
 	Assert(indexInfo->ii_ExclusionOps == NULL);
 	Assert(indexInfo->ii_ExclusionProcs == NULL);
@@ -1124,12 +1139,12 @@ build_indices(void)
 		Relation	ind;
 
 		/* need not bother with locks during bootstrap */
-		heap = table_open(ILHead->il_heap, NoLock);
+		heap = heap_open(ILHead->il_heap, NoLock);
 		ind = index_open(ILHead->il_ind, NoLock);
 
 		index_build(heap, ind, ILHead->il_info, false, false);
 
 		index_close(ind, NoLock);
-		table_close(heap, NoLock);
+		heap_close(heap, NoLock);
 	}
 }

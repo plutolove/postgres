@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------
  *
- * rangetypes_typanalyze.c
+ * ragetypes_typanalyze.c
  *	  Functions for gathering statistics from range columns
  *
  * For a range type column, histograms of lower and upper bounds, and
@@ -13,7 +13,7 @@
  * come from different tuples. In theory, the standard scalar selectivity
  * functions could be used with the combined histogram.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -26,15 +26,14 @@
 
 #include "catalog/pg_operator.h"
 #include "commands/vacuum.h"
-#include "utils/float.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
 
 static int	float8_qsort_cmp(const void *a1, const void *a2);
 static int	range_bound_qsort_cmp(const void *a1, const void *a2, void *arg);
 static void compute_range_stats(VacAttrStats *stats,
-								AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
+		   AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
 
 /*
  * range_typanalyze -- typanalyze function for range columns
@@ -145,7 +144,7 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		total_width += VARSIZE_ANY(DatumGetPointer(value));
 
 		/* Get range and deserialize it for further analysis. */
-		range = DatumGetRangeTypeP(value);
+		range = DatumGetRangeType(value);
 		range_deserialize(typcache, range, &lower, &upper, &empty);
 
 		if (!empty)
@@ -165,9 +164,10 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 				 * For an ordinary range, use subdiff function between upper
 				 * and lower bound values.
 				 */
-				length = DatumGetFloat8(FunctionCall2Coll(&typcache->rng_subdiff_finfo,
-														  typcache->rng_collation,
-														  upper.val, lower.val));
+				length = DatumGetFloat8(FunctionCall2Coll(
+												&typcache->rng_subdiff_finfo,
+													 typcache->rng_collation,
+													  upper.val, lower.val));
 			}
 			else
 			{
@@ -245,10 +245,8 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 
 			for (i = 0; i < num_hist; i++)
 			{
-				bound_hist_values[i] = PointerGetDatum(range_serialize(typcache,
-																	   &lowers[pos],
-																	   &uppers[pos],
-																	   false));
+				bound_hist_values[i] = PointerGetDatum(range_serialize(
+							   typcache, &lowers[pos], &uppers[pos], false));
 				pos += delta;
 				posfrac += deltafrac;
 				if (posfrac >= (num_hist - 1))
@@ -321,12 +319,15 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 			num_hist = 0;
 		}
 		stats->staop[slot_idx] = Float8LessOperator;
-		stats->stacoll[slot_idx] = InvalidOid;
 		stats->stavalues[slot_idx] = length_hist_values;
 		stats->numvalues[slot_idx] = num_hist;
 		stats->statypid[slot_idx] = FLOAT8OID;
 		stats->statyplen[slot_idx] = sizeof(float8);
-		stats->statypbyval[slot_idx] = FLOAT8PASSBYVAL;
+#ifdef USE_FLOAT8_BYVAL
+		stats->statypbyval[slot_idx] = true;
+#else
+		stats->statypbyval[slot_idx] = false;
+#endif
 		stats->statypalign[slot_idx] = 'd';
 
 		/* Store the fraction of empty ranges */
@@ -346,7 +347,7 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		stats->stats_valid = true;
 		stats->stanullfrac = 1.0;
 		stats->stawidth = 0;	/* "unknown" */
-		stats->stadistinct = 0.0;	/* "unknown" */
+		stats->stadistinct = 0.0;		/* "unknown" */
 	}
 
 	/*

@@ -3,7 +3,9 @@
  */
 #include "postgres.h"
 
+
 #include "_int.h"
+
 
 PG_MODULE_MAGIC;
 
@@ -45,9 +47,13 @@ _int_contains(PG_FUNCTION_ARGS)
 Datum
 _int_different(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_BOOL(!DatumGetBool(DirectFunctionCall2(_int_same,
-													 PointerGetDatum(PG_GETARG_POINTER(0)),
-													 PointerGetDatum(PG_GETARG_POINTER(1)))));
+	PG_RETURN_BOOL(!DatumGetBool(
+								 DirectFunctionCall2(
+													 _int_same,
+									   PointerGetDatum(PG_GETARG_POINTER(0)),
+										PointerGetDatum(PG_GETARG_POINTER(1))
+													 )
+								 ));
 }
 
 Datum
@@ -69,19 +75,19 @@ _int_same(PG_FUNCTION_ARGS)
 	da = ARRPTR(a);
 	db = ARRPTR(b);
 
-	result = false;
+	result = FALSE;
 
 	if (na == nb)
 	{
 		SORT(a);
 		SORT(b);
-		result = true;
+		result = TRUE;
 
 		for (n = 0; n < na; n++)
 		{
 			if (da[n] != db[n])
 			{
-				result = false;
+				result = FALSE;
 				break;
 			}
 		}
@@ -105,7 +111,7 @@ _int_overlap(PG_FUNCTION_ARGS)
 	CHECKARRVALID(a);
 	CHECKARRVALID(b);
 	if (ARRISEMPTY(a) || ARRISEMPTY(b))
-		return false;
+		return FALSE;
 
 	SORT(a);
 	SORT(b);
@@ -195,9 +201,9 @@ Datum
 sort(PG_FUNCTION_ARGS)
 {
 	ArrayType  *a = PG_GETARG_ARRAYTYPE_P_COPY(0);
-	text	   *dirstr = (fcinfo->nargs == 2) ? PG_GETARG_TEXT_PP(1) : NULL;
-	int32		dc = (dirstr) ? VARSIZE_ANY_EXHDR(dirstr) : 0;
-	char	   *d = (dirstr) ? VARDATA_ANY(dirstr) : NULL;
+	text	   *dirstr = (fcinfo->nargs == 2) ? PG_GETARG_TEXT_P(1) : NULL;
+	int32		dc = (dirstr) ? VARSIZE(dirstr) - VARHDRSZ : 0;
+	char	   *d = (dirstr) ? VARDATA(dirstr) : NULL;
 	int			dir = -1;
 
 	CHECKARRVALID(a);

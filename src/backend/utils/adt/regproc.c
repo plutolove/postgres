@@ -8,7 +8,7 @@
  * special I/O conversion routines.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,10 +21,12 @@
 
 #include <ctype.h>
 
+#include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
-#include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_ts_config.h"
@@ -33,18 +35,16 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "parser/parse_type.h"
-#include "parser/scansup.h"
-#include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/regproc.h"
 #include "utils/syscache.h"
-#include "utils/varlena.h"
+#include "utils/tqual.h"
 
 static char *format_operator_internal(Oid operator_oid, bool force_qualify);
 static char *format_procedure_internal(Oid procedure_oid, bool force_qualify);
 static void parseNameAndArgTypes(const char *string, bool allowNone,
-								 List **names, int *nargs, Oid *argtypes);
+					 List **names, int *nargs, Oid *argtypes);
 
 
 /*****************************************************************************
@@ -77,18 +77,58 @@ regprocin(PG_FUNCTION_ARGS)
 		strspn(pro_name_or_oid, "0123456789") == strlen(pro_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(pro_name_or_oid)));
+										  CStringGetDatum(pro_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
 
 	/* Else it's a name, possibly schema-qualified */
 
 	/*
-	 * We should never get here in bootstrap mode, as all references should
-	 * have been resolved by genbki.pl.
+	 * In bootstrap mode we assume the given name is not schema-qualified, and
+	 * just search pg_proc for a unique match.  This is needed for
+	 * initializing other system catalogs (pg_namespace may not exist yet, and
+	 * certainly there are no schemas other than pg_catalog).
 	 */
 	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regproc values must be OIDs in bootstrap mode");
+	{
+		int			matches = 0;
+		Relation	hdesc;
+		ScanKeyData skey[1];
+		SysScanDesc sysscan;
+		HeapTuple	tuple;
+
+		ScanKeyInit(&skey[0],
+					Anum_pg_proc_proname,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(pro_name_or_oid));
+
+		hdesc = heap_open(ProcedureRelationId, AccessShareLock);
+		sysscan = systable_beginscan(hdesc, ProcedureNameArgsNspIndexId, true,
+									 NULL, 1, skey);
+
+		while (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
+		{
+			result = (RegProcedure) HeapTupleGetOid(tuple);
+			if (++matches > 1)
+				break;
+		}
+
+		systable_endscan(sysscan);
+		heap_close(hdesc, AccessShareLock);
+
+		if (matches == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_FUNCTION),
+				 errmsg("function \"%s\" does not exist", pro_name_or_oid)));
+
+		else if (matches > 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+					 errmsg("more than one function named \"%s\"",
+							pro_name_or_oid)));
+
+		PG_RETURN_OID(result);
+	}
 
 	/*
 	 * Normal case: parse the name into components and see if it matches any
@@ -120,7 +160,7 @@ regprocin(PG_FUNCTION_ARGS)
 Datum
 to_regproc(PG_FUNCTION_ARGS)
 {
-	char	   *pro_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *pro_name = PG_GETARG_CSTRING(0);
 	List	   *names;
 	FuncCandidateList clist;
 
@@ -248,19 +288,19 @@ regprocedurein(PG_FUNCTION_ARGS)
 		strspn(pro_name_or_oid, "0123456789") == strlen(pro_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(pro_name_or_oid)));
+										  CStringGetDatum(pro_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regprocedure values must be OIDs in bootstrap mode");
 
 	/*
 	 * Else it's a name and arguments.  Parse the name and arguments, look up
 	 * potential matches in the current namespace search list, and scan to see
 	 * which one exactly matches the given argument types.  (There will not be
 	 * more than one match.)
+	 *
+	 * XXX at present, this code will not work in bootstrap mode, hence this
+	 * datatype cannot be used for any system column that needs to receive
+	 * data during bootstrap.
 	 */
 	parseNameAndArgTypes(pro_name_or_oid, false, &names, &nargs, argtypes);
 
@@ -290,7 +330,7 @@ regprocedurein(PG_FUNCTION_ARGS)
 Datum
 to_regprocedure(PG_FUNCTION_ARGS)
 {
-	char	   *pro_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *pro_name = PG_GETARG_CSTRING(0);
 	List	   *names;
 	int			nargs;
 	Oid			argtypes[FUNC_MAX_ARGS];
@@ -357,7 +397,6 @@ format_procedure_internal(Oid procedure_oid, bool force_qualify)
 		StringInfoData buf;
 
 		/* XXX no support here for bootstrap mode */
-		Assert(!IsBootstrapProcessingMode());
 
 		initStringInfo(&buf);
 
@@ -397,41 +436,6 @@ format_procedure_internal(Oid procedure_oid, bool force_qualify)
 	}
 
 	return result;
-}
-
-/*
- * Output an objname/objargs representation for the procedure with the
- * given OID.  If it doesn't exist, an error is thrown.
- *
- * This can be used to feed get_object_address.
- */
-void
-format_procedure_parts(Oid procedure_oid, List **objnames, List **objargs)
-{
-	HeapTuple	proctup;
-	Form_pg_proc procform;
-	int			nargs;
-	int			i;
-
-	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(procedure_oid));
-
-	if (!HeapTupleIsValid(proctup))
-		elog(ERROR, "cache lookup failed for procedure with OID %u", procedure_oid);
-
-	procform = (Form_pg_proc) GETSTRUCT(proctup);
-	nargs = procform->pronargs;
-
-	*objnames = list_make2(get_namespace_name_or_temp(procform->pronamespace),
-						   pstrdup(NameStr(procform->proname)));
-	*objargs = NIL;
-	for (i = 0; i < nargs; i++)
-	{
-		Oid			thisargtype = procform->proargtypes.values[i];
-
-		*objargs = lappend(*objargs, format_type_be_qualified(thisargtype));
-	}
-
-	ReleaseSysCache(proctup);
 }
 
 /*
@@ -498,15 +502,57 @@ regoperin(PG_FUNCTION_ARGS)
 		strspn(opr_name_or_oid, "0123456789") == strlen(opr_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(opr_name_or_oid)));
+										  CStringGetDatum(opr_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
 
 	/* Else it's a name, possibly schema-qualified */
 
-	/* The rest of this wouldn't work in bootstrap mode */
+	/*
+	 * In bootstrap mode we assume the given name is not schema-qualified, and
+	 * just search pg_operator for a unique match.  This is needed for
+	 * initializing other system catalogs (pg_namespace may not exist yet, and
+	 * certainly there are no schemas other than pg_catalog).
+	 */
 	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regoper values must be OIDs in bootstrap mode");
+	{
+		int			matches = 0;
+		Relation	hdesc;
+		ScanKeyData skey[1];
+		SysScanDesc sysscan;
+		HeapTuple	tuple;
+
+		ScanKeyInit(&skey[0],
+					Anum_pg_operator_oprname,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(opr_name_or_oid));
+
+		hdesc = heap_open(OperatorRelationId, AccessShareLock);
+		sysscan = systable_beginscan(hdesc, OperatorNameNspIndexId, true,
+									 NULL, 1, skey);
+
+		while (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
+		{
+			result = HeapTupleGetOid(tuple);
+			if (++matches > 1)
+				break;
+		}
+
+		systable_endscan(sysscan);
+		heap_close(hdesc, AccessShareLock);
+
+		if (matches == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_FUNCTION),
+					 errmsg("operator does not exist: %s", opr_name_or_oid)));
+		else if (matches > 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+					 errmsg("more than one operator named %s",
+							opr_name_or_oid)));
+
+		PG_RETURN_OID(result);
+	}
 
 	/*
 	 * Normal case: parse the name into components and see if it matches any
@@ -538,7 +584,7 @@ regoperin(PG_FUNCTION_ARGS)
 Datum
 to_regoper(PG_FUNCTION_ARGS)
 {
-	char	   *opr_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *opr_name = PG_GETARG_CSTRING(0);
 	List	   *names;
 	FuncCandidateList clist;
 
@@ -671,19 +717,19 @@ regoperatorin(PG_FUNCTION_ARGS)
 		strspn(opr_name_or_oid, "0123456789") == strlen(opr_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(opr_name_or_oid)));
+										  CStringGetDatum(opr_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regoperator values must be OIDs in bootstrap mode");
 
 	/*
 	 * Else it's a name and arguments.  Parse the name and arguments, look up
 	 * potential matches in the current namespace search list, and scan to see
 	 * which one exactly matches the given argument types.  (There will not be
 	 * more than one match.)
+	 *
+	 * XXX at present, this code will not work in bootstrap mode, hence this
+	 * datatype cannot be used for any system column that needs to receive
+	 * data during bootstrap.
 	 */
 	parseNameAndArgTypes(opr_name_or_oid, true, &names, &nargs, argtypes);
 	if (nargs == 1)
@@ -715,7 +761,7 @@ regoperatorin(PG_FUNCTION_ARGS)
 Datum
 to_regoperator(PG_FUNCTION_ARGS)
 {
-	char	   *opr_name_or_oid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *opr_name_or_oid = PG_GETARG_CSTRING(0);
 	Oid			result;
 	List	   *names;
 	int			nargs;
@@ -768,13 +814,13 @@ format_operator_internal(Oid operator_oid, bool force_qualify)
 		StringInfoData buf;
 
 		/* XXX no support here for bootstrap mode */
-		Assert(!IsBootstrapProcessingMode());
 
 		initStringInfo(&buf);
 
 		/*
 		 * Would this oper be found (given the right args) by regoperatorin?
-		 * If not, or if caller explicitly requests it, we need to qualify it.
+		 * If not, or if caller explicitly requests it, we need to qualify
+		 * it.
 		 */
 		if (force_qualify || !OperatorIsVisible(operator_oid))
 		{
@@ -827,31 +873,6 @@ char *
 format_operator_qualified(Oid operator_oid)
 {
 	return format_operator_internal(operator_oid, true);
-}
-
-void
-format_operator_parts(Oid operator_oid, List **objnames, List **objargs)
-{
-	HeapTuple	opertup;
-	Form_pg_operator oprForm;
-
-	opertup = SearchSysCache1(OPEROID, ObjectIdGetDatum(operator_oid));
-	if (!HeapTupleIsValid(opertup))
-		elog(ERROR, "cache lookup failed for operator with OID %u",
-			 operator_oid);
-
-	oprForm = (Form_pg_operator) GETSTRUCT(opertup);
-	*objnames = list_make2(get_namespace_name_or_temp(oprForm->oprnamespace),
-						   pstrdup(NameStr(oprForm->oprname)));
-	*objargs = NIL;
-	if (oprForm->oprleft)
-		*objargs = lappend(*objargs,
-						   format_type_be_qualified(oprForm->oprleft));
-	if (oprForm->oprright)
-		*objargs = lappend(*objargs,
-						   format_type_be_qualified(oprForm->oprright));
-
-	ReleaseSysCache(opertup);
 }
 
 /*
@@ -917,15 +938,48 @@ regclassin(PG_FUNCTION_ARGS)
 		strspn(class_name_or_oid, "0123456789") == strlen(class_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(class_name_or_oid)));
+										CStringGetDatum(class_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
 
 	/* Else it's a name, possibly schema-qualified */
 
-	/* The rest of this wouldn't work in bootstrap mode */
+	/*
+	 * In bootstrap mode we assume the given name is not schema-qualified, and
+	 * just search pg_class for a match.  This is needed for initializing
+	 * other system catalogs (pg_namespace may not exist yet, and certainly
+	 * there are no schemas other than pg_catalog).
+	 */
 	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regclass values must be OIDs in bootstrap mode");
+	{
+		Relation	hdesc;
+		ScanKeyData skey[1];
+		SysScanDesc sysscan;
+		HeapTuple	tuple;
+
+		ScanKeyInit(&skey[0],
+					Anum_pg_class_relname,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(class_name_or_oid));
+
+		hdesc = heap_open(RelationRelationId, AccessShareLock);
+		sysscan = systable_beginscan(hdesc, ClassNameNspIndexId, true,
+									 NULL, 1, skey);
+
+		if (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
+			result = HeapTupleGetOid(tuple);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_TABLE),
+			   errmsg("relation \"%s\" does not exist", class_name_or_oid)));
+
+		/* We assume there can be only one match */
+
+		systable_endscan(sysscan);
+		heap_close(hdesc, AccessShareLock);
+
+		PG_RETURN_OID(result);
+	}
 
 	/*
 	 * Normal case: parse the name into components and see if it matches any
@@ -947,7 +1001,7 @@ regclassin(PG_FUNCTION_ARGS)
 Datum
 to_regclass(PG_FUNCTION_ARGS)
 {
-	char	   *class_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *class_name = PG_GETARG_CSTRING(0);
 	Oid			result;
 	List	   *names;
 
@@ -1045,170 +1099,18 @@ regclasssend(PG_FUNCTION_ARGS)
 
 
 /*
- * regcollationin		- converts "collationname" to collation OID
+ * regtypein		- converts "typename" to type OID
  *
  * We also accept a numeric OID, for symmetry with the output routine.
  *
  * '-' signifies unknown (OID 0).  In all other cases, the input must
- * match an existing pg_collation entry.
- */
-Datum
-regcollationin(PG_FUNCTION_ARGS)
-{
-	char	   *collation_name_or_oid = PG_GETARG_CSTRING(0);
-	Oid			result = InvalidOid;
-	List	   *names;
-
-	/* '-' ? */
-	if (strcmp(collation_name_or_oid, "-") == 0)
-		PG_RETURN_OID(InvalidOid);
-
-	/* Numeric OID? */
-	if (collation_name_or_oid[0] >= '0' &&
-		collation_name_or_oid[0] <= '9' &&
-		strspn(collation_name_or_oid, "0123456789") == strlen(collation_name_or_oid))
-	{
-		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(collation_name_or_oid)));
-		PG_RETURN_OID(result);
-	}
-
-	/* Else it's a name, possibly schema-qualified */
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regcollation values must be OIDs in bootstrap mode");
-
-	/*
-	 * Normal case: parse the name into components and see if it matches any
-	 * pg_collation entries in the current search path.
-	 */
-	names = stringToQualifiedNameList(collation_name_or_oid);
-
-	result = get_collation_oid(names, false);
-
-	PG_RETURN_OID(result);
-}
-
-/*
- * to_regcollation		- converts "collationname" to collation OID
- *
- * If the name is not found, we return NULL.
- */
-Datum
-to_regcollation(PG_FUNCTION_ARGS)
-{
-	char	   *collation_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	Oid			result;
-	List	   *names;
-
-	/*
-	 * Parse the name into components and see if it matches any pg_collation
-	 * entries in the current search path.
-	 */
-	names = stringToQualifiedNameList(collation_name);
-
-	/* We might not even have permissions on this relation; don't lock it. */
-	result = get_collation_oid(names, true);
-
-	if (OidIsValid(result))
-		PG_RETURN_OID(result);
-	else
-		PG_RETURN_NULL();
-}
-
-/*
- * regcollationout		- converts collation OID to "collation_name"
- */
-Datum
-regcollationout(PG_FUNCTION_ARGS)
-{
-	Oid			collationid = PG_GETARG_OID(0);
-	char	   *result;
-	HeapTuple	collationtup;
-
-	if (collationid == InvalidOid)
-	{
-		result = pstrdup("-");
-		PG_RETURN_CSTRING(result);
-	}
-
-	collationtup = SearchSysCache1(COLLOID, ObjectIdGetDatum(collationid));
-
-	if (HeapTupleIsValid(collationtup))
-	{
-		Form_pg_collation collationform = (Form_pg_collation) GETSTRUCT(collationtup);
-		char	   *collationname = NameStr(collationform->collname);
-
-		/*
-		 * In bootstrap mode, skip the fancy namespace stuff and just return
-		 * the collation name.  (This path is only needed for debugging output
-		 * anyway.)
-		 */
-		if (IsBootstrapProcessingMode())
-			result = pstrdup(collationname);
-		else
-		{
-			char	   *nspname;
-
-			/*
-			 * Would this collation be found by regcollationin? If not,
-			 * qualify it.
-			 */
-			if (CollationIsVisible(collationid))
-				nspname = NULL;
-			else
-				nspname = get_namespace_name(collationform->collnamespace);
-
-			result = quote_qualified_identifier(nspname, collationname);
-		}
-
-		ReleaseSysCache(collationtup);
-	}
-	else
-	{
-		/* If OID doesn't match any pg_collation entry, return it numerically */
-		result = (char *) palloc(NAMEDATALEN);
-		snprintf(result, NAMEDATALEN, "%u", collationid);
-	}
-
-	PG_RETURN_CSTRING(result);
-}
-
-/*
- *		regcollationrecv			- converts external binary format to regcollation
- */
-Datum
-regcollationrecv(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidrecv, so share code */
-	return oidrecv(fcinfo);
-}
-
-/*
- *		regcollationsend			- converts regcollation to binary format
- */
-Datum
-regcollationsend(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidsend, so share code */
-	return oidsend(fcinfo);
-}
-
-
-/*
- * regtypein		- converts "typename" to type OID
- *
- * The type name can be specified using the full type syntax recognized by
- * the parser; for example, DOUBLE PRECISION and INTEGER[] will work and be
- * translated to the correct type names.  (We ignore any typmod info
- * generated by the parser, however.)
- *
- * We also accept a numeric OID, for symmetry with the output routine,
- * and for possible use in bootstrap mode.
- *
- * '-' signifies unknown (OID 0).  In all other cases, the input must
  * match an existing pg_type entry.
+ *
+ * In bootstrap mode the name must just equal some existing name in pg_type.
+ * In normal mode the type name can be specified using the full type syntax
+ * recognized by the parser; for example, DOUBLE PRECISION and INTEGER[] will
+ * work and be translated to the correct type names.  (We ignore any typmod
+ * info generated by the parser, however.)
  */
 Datum
 regtypein(PG_FUNCTION_ARGS)
@@ -1227,15 +1129,48 @@ regtypein(PG_FUNCTION_ARGS)
 		strspn(typ_name_or_oid, "0123456789") == strlen(typ_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(typ_name_or_oid)));
+										  CStringGetDatum(typ_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
 
 	/* Else it's a type name, possibly schema-qualified or decorated */
 
-	/* The rest of this wouldn't work in bootstrap mode */
+	/*
+	 * In bootstrap mode we assume the given name is not schema-qualified, and
+	 * just search pg_type for a match.  This is needed for initializing other
+	 * system catalogs (pg_namespace may not exist yet, and certainly there
+	 * are no schemas other than pg_catalog).
+	 */
 	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regtype values must be OIDs in bootstrap mode");
+	{
+		Relation	hdesc;
+		ScanKeyData skey[1];
+		SysScanDesc sysscan;
+		HeapTuple	tuple;
+
+		ScanKeyInit(&skey[0],
+					Anum_pg_type_typname,
+					BTEqualStrategyNumber, F_NAMEEQ,
+					CStringGetDatum(typ_name_or_oid));
+
+		hdesc = heap_open(TypeRelationId, AccessShareLock);
+		sysscan = systable_beginscan(hdesc, TypeNameNspIndexId, true,
+									 NULL, 1, skey);
+
+		if (HeapTupleIsValid(tuple = systable_getnext(sysscan)))
+			result = HeapTupleGetOid(tuple);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("type \"%s\" does not exist", typ_name_or_oid)));
+
+		/* We assume there can be only one match */
+
+		systable_endscan(sysscan);
+		heap_close(hdesc, AccessShareLock);
+
+		PG_RETURN_OID(result);
+	}
 
 	/*
 	 * Normal case: invoke the full parser to deal with special cases such as
@@ -1254,7 +1189,7 @@ regtypein(PG_FUNCTION_ARGS)
 Datum
 to_regtype(PG_FUNCTION_ARGS)
 {
-	char	   *typ_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	char	   *typ_name = PG_GETARG_CSTRING(0);
 	Oid			result;
 	int32		typmod;
 
@@ -1345,6 +1280,9 @@ regtypesend(PG_FUNCTION_ARGS)
  *
  * '-' signifies unknown (OID 0).  In all other cases, the input must
  * match an existing pg_ts_config entry.
+ *
+ * This function is not needed in bootstrap mode, so we don't worry about
+ * making it work then.
  */
 Datum
 regconfigin(PG_FUNCTION_ARGS)
@@ -1363,13 +1301,9 @@ regconfigin(PG_FUNCTION_ARGS)
 		strspn(cfg_name_or_oid, "0123456789") == strlen(cfg_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(cfg_name_or_oid)));
+										  CStringGetDatum(cfg_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regconfig values must be OIDs in bootstrap mode");
 
 	/*
 	 * Normal case: parse the name into components and see if it matches any
@@ -1456,6 +1390,9 @@ regconfigsend(PG_FUNCTION_ARGS)
  *
  * '-' signifies unknown (OID 0).  In all other cases, the input must
  * match an existing pg_ts_dict entry.
+ *
+ * This function is not needed in bootstrap mode, so we don't worry about
+ * making it work then.
  */
 Datum
 regdictionaryin(PG_FUNCTION_ARGS)
@@ -1474,13 +1411,9 @@ regdictionaryin(PG_FUNCTION_ARGS)
 		strspn(dict_name_or_oid, "0123456789") == strlen(dict_name_or_oid))
 	{
 		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(dict_name_or_oid)));
+										 CStringGetDatum(dict_name_or_oid)));
 		PG_RETURN_OID(result);
 	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regdictionary values must be OIDs in bootstrap mode");
 
 	/*
 	 * Normal case: parse the name into components and see if it matches any
@@ -1560,255 +1493,6 @@ regdictionarysend(PG_FUNCTION_ARGS)
 	return oidsend(fcinfo);
 }
 
-/*
- * regrolein	- converts "rolename" to role OID
- *
- * We also accept a numeric OID, for symmetry with the output routine.
- *
- * '-' signifies unknown (OID 0).  In all other cases, the input must
- * match an existing pg_authid entry.
- */
-Datum
-regrolein(PG_FUNCTION_ARGS)
-{
-	char	   *role_name_or_oid = PG_GETARG_CSTRING(0);
-	Oid			result;
-	List	   *names;
-
-	/* '-' ? */
-	if (strcmp(role_name_or_oid, "-") == 0)
-		PG_RETURN_OID(InvalidOid);
-
-	/* Numeric OID? */
-	if (role_name_or_oid[0] >= '0' &&
-		role_name_or_oid[0] <= '9' &&
-		strspn(role_name_or_oid, "0123456789") == strlen(role_name_or_oid))
-	{
-		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(role_name_or_oid)));
-		PG_RETURN_OID(result);
-	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regrole values must be OIDs in bootstrap mode");
-
-	/* Normal case: see if the name matches any pg_authid entry. */
-	names = stringToQualifiedNameList(role_name_or_oid);
-
-	if (list_length(names) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_NAME),
-				 errmsg("invalid name syntax")));
-
-	result = get_role_oid(strVal(linitial(names)), false);
-
-	PG_RETURN_OID(result);
-}
-
-/*
- * to_regrole		- converts "rolename" to role OID
- *
- * If the name is not found, we return NULL.
- */
-Datum
-to_regrole(PG_FUNCTION_ARGS)
-{
-	char	   *role_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	Oid			result;
-	List	   *names;
-
-	names = stringToQualifiedNameList(role_name);
-
-	if (list_length(names) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_NAME),
-				 errmsg("invalid name syntax")));
-
-	result = get_role_oid(strVal(linitial(names)), true);
-
-	if (OidIsValid(result))
-		PG_RETURN_OID(result);
-	else
-		PG_RETURN_NULL();
-}
-
-/*
- * regroleout		- converts role OID to "role_name"
- */
-Datum
-regroleout(PG_FUNCTION_ARGS)
-{
-	Oid			roleoid = PG_GETARG_OID(0);
-	char	   *result;
-
-	if (roleoid == InvalidOid)
-	{
-		result = pstrdup("-");
-		PG_RETURN_CSTRING(result);
-	}
-
-	result = GetUserNameFromId(roleoid, true);
-
-	if (result)
-	{
-		/* pstrdup is not really necessary, but it avoids a compiler warning */
-		result = pstrdup(quote_identifier(result));
-	}
-	else
-	{
-		/* If OID doesn't match any role, return it numerically */
-		result = (char *) palloc(NAMEDATALEN);
-		snprintf(result, NAMEDATALEN, "%u", roleoid);
-	}
-
-	PG_RETURN_CSTRING(result);
-}
-
-/*
- *		regrolerecv - converts external binary format to regrole
- */
-Datum
-regrolerecv(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidrecv, so share code */
-	return oidrecv(fcinfo);
-}
-
-/*
- *		regrolesend - converts regrole to binary format
- */
-Datum
-regrolesend(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidsend, so share code */
-	return oidsend(fcinfo);
-}
-
-/*
- * regnamespacein		- converts "nspname" to namespace OID
- *
- * We also accept a numeric OID, for symmetry with the output routine.
- *
- * '-' signifies unknown (OID 0).  In all other cases, the input must
- * match an existing pg_namespace entry.
- */
-Datum
-regnamespacein(PG_FUNCTION_ARGS)
-{
-	char	   *nsp_name_or_oid = PG_GETARG_CSTRING(0);
-	Oid			result;
-	List	   *names;
-
-	/* '-' ? */
-	if (strcmp(nsp_name_or_oid, "-") == 0)
-		PG_RETURN_OID(InvalidOid);
-
-	/* Numeric OID? */
-	if (nsp_name_or_oid[0] >= '0' &&
-		nsp_name_or_oid[0] <= '9' &&
-		strspn(nsp_name_or_oid, "0123456789") == strlen(nsp_name_or_oid))
-	{
-		result = DatumGetObjectId(DirectFunctionCall1(oidin,
-													  CStringGetDatum(nsp_name_or_oid)));
-		PG_RETURN_OID(result);
-	}
-
-	/* The rest of this wouldn't work in bootstrap mode */
-	if (IsBootstrapProcessingMode())
-		elog(ERROR, "regnamespace values must be OIDs in bootstrap mode");
-
-	/* Normal case: see if the name matches any pg_namespace entry. */
-	names = stringToQualifiedNameList(nsp_name_or_oid);
-
-	if (list_length(names) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_NAME),
-				 errmsg("invalid name syntax")));
-
-	result = get_namespace_oid(strVal(linitial(names)), false);
-
-	PG_RETURN_OID(result);
-}
-
-/*
- * to_regnamespace		- converts "nspname" to namespace OID
- *
- * If the name is not found, we return NULL.
- */
-Datum
-to_regnamespace(PG_FUNCTION_ARGS)
-{
-	char	   *nsp_name = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	Oid			result;
-	List	   *names;
-
-	names = stringToQualifiedNameList(nsp_name);
-
-	if (list_length(names) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_NAME),
-				 errmsg("invalid name syntax")));
-
-	result = get_namespace_oid(strVal(linitial(names)), true);
-
-	if (OidIsValid(result))
-		PG_RETURN_OID(result);
-	else
-		PG_RETURN_NULL();
-}
-
-/*
- * regnamespaceout		- converts namespace OID to "nsp_name"
- */
-Datum
-regnamespaceout(PG_FUNCTION_ARGS)
-{
-	Oid			nspid = PG_GETARG_OID(0);
-	char	   *result;
-
-	if (nspid == InvalidOid)
-	{
-		result = pstrdup("-");
-		PG_RETURN_CSTRING(result);
-	}
-
-	result = get_namespace_name(nspid);
-
-	if (result)
-	{
-		/* pstrdup is not really necessary, but it avoids a compiler warning */
-		result = pstrdup(quote_identifier(result));
-	}
-	else
-	{
-		/* If OID doesn't match any namespace, return it numerically */
-		result = (char *) palloc(NAMEDATALEN);
-		snprintf(result, NAMEDATALEN, "%u", nspid);
-	}
-
-	PG_RETURN_CSTRING(result);
-}
-
-/*
- *		regnamespacerecv	- converts external binary format to regnamespace
- */
-Datum
-regnamespacerecv(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidrecv, so share code */
-	return oidrecv(fcinfo);
-}
-
-/*
- *		regnamespacesend		- converts regnamespace to binary format
- */
-Datum
-regnamespacesend(PG_FUNCTION_ARGS)
-{
-	/* Exactly the same as oidsend, so share code */
-	return oidsend(fcinfo);
-}
 
 /*
  * text_regclass: convert text to regclass
@@ -1820,7 +1504,7 @@ regnamespacesend(PG_FUNCTION_ARGS)
 Datum
 text_regclass(PG_FUNCTION_ARGS)
 {
-	text	   *relname = PG_GETARG_TEXT_PP(0);
+	text	   *relname = PG_GETARG_TEXT_P(0);
 	Oid			result;
 	RangeVar   *rv;
 
@@ -1881,7 +1565,7 @@ stringToQualifiedNameList(const char *string)
  * the argtypes array should be of size FUNC_MAX_ARGS).  The function or
  * operator name is returned to *names as a List of Strings.
  *
- * If allowNone is true, accept "NONE" and return it as InvalidOid (this is
+ * If allowNone is TRUE, accept "NONE" and return it as InvalidOid (this is
  * for unary operators).
  */
 static void
@@ -1923,7 +1607,7 @@ parseNameAndArgTypes(const char *string, bool allowNone, List **names,
 	ptr2 = ptr + strlen(ptr);
 	while (--ptr2 > ptr)
 	{
-		if (!scanner_isspace(*ptr2))
+		if (!isspace((unsigned char) *ptr2))
 			break;
 	}
 	if (*ptr2 != ')')
@@ -1940,7 +1624,7 @@ parseNameAndArgTypes(const char *string, bool allowNone, List **names,
 	for (;;)
 	{
 		/* allow leading whitespace */
-		while (scanner_isspace(*ptr))
+		while (isspace((unsigned char) *ptr))
 			ptr++;
 		if (*ptr == '\0')
 		{
@@ -1996,7 +1680,7 @@ parseNameAndArgTypes(const char *string, bool allowNone, List **names,
 		/* Lop off trailing whitespace */
 		while (--ptr2 >= typename)
 		{
-			if (!scanner_isspace(*ptr2))
+			if (!isspace((unsigned char) *ptr2))
 				break;
 			*ptr2 = '\0';
 		}

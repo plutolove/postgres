@@ -25,11 +25,6 @@ UPDATE xpto SET toasted_col1 = (SELECT string_agg(g.i::text, '') FROM generate_s
 
 UPDATE xpto SET rand1 = 123.456 WHERE id = 1;
 
--- updating external via INSERT ... ON CONFLICT DO UPDATE
-INSERT INTO xpto(id, toasted_col2) VALUES (2, 'toasted2-upsert')
-ON CONFLICT (id)
-DO UPDATE SET toasted_col2 = EXCLUDED.toasted_col2 || xpto.toasted_col2;
-
 DELETE FROM xpto WHERE id = 1;
 
 DROP TABLE IF EXISTS toasted_key;
@@ -279,13 +274,7 @@ ALTER TABLE toasted_several ALTER COLUMN toasted_key SET STORAGE EXTERNAL;
 ALTER TABLE toasted_several ALTER COLUMN toasted_col1 SET STORAGE EXTERNAL;
 ALTER TABLE toasted_several ALTER COLUMN toasted_col2 SET STORAGE EXTERNAL;
 
--- Change the storage of the index back to EXTENDED, separately from
--- the table.  This is currently not doable via DDL, but it is
--- supported internally.
-UPDATE pg_attribute SET attstorage = 'x' WHERE attrelid = 'toasted_several_pkey'::regclass AND attname = 'toasted_key';
-
-INSERT INTO toasted_several(toasted_key) VALUES(repeat('9876543210', 10000));
-SELECT pg_column_size(toasted_key) > 2^16 FROM toasted_several;
+INSERT INTO toasted_several(toasted_key) VALUES(repeat('9876543210', 2000));
 
 SELECT regexp_replace(data, '^(.{100}).*(.{100})$', '\1..\2') FROM pg_logical_slot_peek_changes('regression_slot', NULL, NULL, 'include-xids', '0', 'skip-empty-xacts', '1');
 

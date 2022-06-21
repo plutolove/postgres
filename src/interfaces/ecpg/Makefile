@@ -26,5 +26,5 @@ install-ecpglib-recurse: install-pgtypeslib-recurse
 clean distclean maintainer-clean:
 	$(MAKE) -C test clean
 
-check checktcp installcheck:
+check checktcp installcheck: all
 	$(MAKE) -C test $@

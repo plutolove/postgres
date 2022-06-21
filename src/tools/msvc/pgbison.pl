@@ -3,13 +3,11 @@
 # src/tools/msvc/pgbison.pl
 
 use strict;
-use warnings;
-
 use File::Basename;
 
 # assume we are in the postgres source root
 
-do './src/tools/msvc/buildenv.pl' if -e 'src/tools/msvc/buildenv.pl';
+require 'src/tools/msvc/buildenv.pl' if -e 'src/tools/msvc/buildenv.pl';
 
 my ($bisonver) = `bison -V`;    # grab first line
 $bisonver = (split(/\s+/, $bisonver))[3];    # grab version number
@@ -40,14 +38,12 @@ $output =~ s/gram\.c$/pl_gram.c/ if $input =~ /src.pl.plpgsql.src.gram\.y$/;
 
 my $makefile = dirname($input) . "/Makefile";
 my ($mf, $make);
-open($mf, '<', $makefile);
+open($mf, $makefile);
 local $/ = undef;
 $make = <$mf>;
 close($mf);
 my $basetarg = basename($output);
 my $headerflag = ($make =~ /^$basetarg:\s+BISONFLAGS\b.*-d/m ? '-d' : '');
 
-my $nodep = $bisonver ge '3.0' ? "-Wno-deprecated" : "";
-
-system("bison $nodep $headerflag $input -o $output");
+system("bison $headerflag $input -o $output");
 exit $? >> 8;

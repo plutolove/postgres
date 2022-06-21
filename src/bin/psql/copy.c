@@ -1,11 +1,12 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  *
  * src/bin/psql/copy.c
  */
 #include "postgres_fe.h"
+#include "copy.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -15,14 +16,15 @@
 #include <io.h>					/* I think */
 #endif
 
-#include "common.h"
-#include "common/logging.h"
-#include "copy.h"
 #include "libpq-fe.h"
 #include "pqexpbuffer.h"
-#include "prompt.h"
+#include "dumputils.h"
+
 #include "settings.h"
+#include "common.h"
+#include "prompt.h"
 #include "stringutils.h"
+
 
 /*
  * parse_slash_copy
@@ -30,12 +32,10 @@
  *
  * The documented syntax is:
  *	\copy tablename [(columnlist)] from|to filename [options]
- *	\copy ( query stmt ) to filename [options]
+ *	\copy ( select stmt ) to filename [options]
  *
  * where 'filename' can be one of the following:
  *	'<file path>' | PROGRAM '<command>' | stdin | stdout | pstdout | pstdout
- * and 'query' can be one of the following:
- *	SELECT | UPDATE | INSERT | DELETE
  *
  * An undocumented fact is that you can still write BINARY before the
  * tablename; this is a hangover from the pre-7.3 syntax.  The options
@@ -62,7 +62,7 @@ struct copy_options
 
 
 static void
-free_copy_options(struct copy_options *ptr)
+free_copy_options(struct copy_options * ptr)
 {
 	if (!ptr)
 		return;
@@ -95,13 +95,13 @@ parse_slash_copy(const char *args)
 
 	if (!args)
 	{
-		pg_log_error("\\copy: arguments required");
+		psql_error("\\copy: arguments required\n");
 		return NULL;
 	}
 
 	result = pg_malloc0(sizeof(struct copy_options));
 
-	result->before_tofrom = pg_strdup("");	/* initialize for appending */
+	result->before_tofrom = pg_strdup("");		/* initialize for appending */
 
 	token = strtokx(args, whitespace, ".,()", "\"",
 					0, false, false, pset.encoding);
@@ -118,7 +118,7 @@ parse_slash_copy(const char *args)
 			goto error;
 	}
 
-	/* Handle COPY (query) case */
+	/* Handle COPY (SELECT) case */
 	if (token[0] == '(')
 	{
 		int			parens = 1;
@@ -250,9 +250,9 @@ parse_slash_copy(const char *args)
 
 error:
 	if (token)
-		pg_log_error("\\copy: parse error at \"%s\"", token);
+		psql_error("\\copy: parse error at \"%s\"\n", token);
 	else
-		pg_log_error("\\copy: parse error at end of line");
+		psql_error("\\copy: parse error at end of line\n");
 	free_copy_options(result);
 
 	return NULL;
@@ -310,7 +310,9 @@ do_copy(const char *args)
 				fflush(stdout);
 				fflush(stderr);
 				errno = 0;
-				disable_sigpipe_trap();
+#ifndef WIN32
+				pqsignal(SIGPIPE, SIG_IGN);
+#endif
 				copystream = popen(options->file, PG_BINARY_W);
 			}
 			else
@@ -325,11 +327,11 @@ do_copy(const char *args)
 	if (!copystream)
 	{
 		if (options->program)
-			pg_log_error("could not execute command \"%s\": %m",
-						 options->file);
+			psql_error("could not execute command \"%s\": %s\n",
+					   options->file, strerror(errno));
 		else
-			pg_log_error("%s: %m",
-						 options->file);
+			psql_error("%s: %s\n",
+					   options->file, strerror(errno));
 		free_copy_options(options);
 		return false;
 	}
@@ -341,12 +343,12 @@ do_copy(const char *args)
 
 		/* make sure the specified file is not a directory */
 		if ((result = fstat(fileno(copystream), &st)) < 0)
-			pg_log_error("could not stat file \"%s\": %m",
-						 options->file);
+			psql_error("could not stat file \"%s\": %s\n",
+					   options->file, strerror(errno));
 
 		if (result == 0 && S_ISDIR(st.st_mode))
-			pg_log_error("%s: cannot copy from/to a directory",
-						 options->file);
+			psql_error("%s: cannot copy from/to a directory\n",
+					   options->file);
 
 		if (result < 0 || S_ISDIR(st.st_mode))
 		{
@@ -382,25 +384,28 @@ do_copy(const char *args)
 			if (pclose_rc != 0)
 			{
 				if (pclose_rc < 0)
-					pg_log_error("could not close pipe to external command: %m");
+					psql_error("could not close pipe to external command: %s\n",
+							   strerror(errno));
 				else
 				{
 					char	   *reason = wait_result_to_str(pclose_rc);
 
-					pg_log_error("%s: %s", options->file,
-								 reason ? reason : "");
+					psql_error("%s: %s\n", options->file,
+							   reason ? reason : "");
 					if (reason)
 						free(reason);
 				}
 				success = false;
 			}
-			restore_sigpipe_trap();
+#ifndef WIN32
+			pqsignal(SIGPIPE, SIG_DFL);
+#endif
 		}
 		else
 		{
 			if (fclose(copystream) != 0)
 			{
-				pg_log_error("%s: %m", options->file);
+				psql_error("%s: %s\n", options->file, strerror(errno));
 				success = false;
 			}
 		}
@@ -423,10 +428,7 @@ do_copy(const char *args)
  *
  * conn should be a database connection that you just issued COPY TO on
  * and got back a PGRES_COPY_OUT result.
- *
  * copystream is the file stream for the data to go to.
- * copystream can be NULL to eat the data without writing it anywhere.
- *
  * The final status for the COPY is returned into *res (but note
  * we already reported the error, if it's not a success result).
  *
@@ -448,9 +450,10 @@ handleCopyOut(PGconn *conn, FILE *copystream, PGresult **res)
 
 		if (buf)
 		{
-			if (OK && copystream && fwrite(buf, 1, ret, copystream) != ret)
+			if (OK && fwrite(buf, 1, ret, copystream) != ret)
 			{
-				pg_log_error("could not write COPY data: %m");
+				psql_error("could not write COPY data: %s\n",
+						   strerror(errno));
 				/* complain only once, keep reading data from server */
 				OK = false;
 			}
@@ -458,15 +461,16 @@ handleCopyOut(PGconn *conn, FILE *copystream, PGresult **res)
 		}
 	}
 
-	if (OK && copystream && fflush(copystream))
+	if (OK && fflush(copystream))
 	{
-		pg_log_error("could not write COPY data: %m");
+		psql_error("could not write COPY data: %s\n",
+				   strerror(errno));
 		OK = false;
 	}
 
 	if (ret == -2)
 	{
-		pg_log_error("COPY data transfer failed: %s", PQerrorMessage(conn));
+		psql_error("COPY data transfer failed: %s", PQerrorMessage(conn));
 		OK = false;
 	}
 
@@ -485,7 +489,7 @@ handleCopyOut(PGconn *conn, FILE *copystream, PGresult **res)
 	*res = PQgetResult(conn);
 	if (PQresultStatus(*res) != PGRES_COMMAND_OK)
 	{
-		pg_log_info("%s", PQerrorMessage(conn));
+		psql_error("%s", PQerrorMessage(conn));
 		OK = false;
 	}
 
@@ -513,8 +517,8 @@ bool
 handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 {
 	bool		OK;
+	const char *prompt;
 	char		buf[COPYBUFSIZ];
-	bool		showprompt;
 
 	/*
 	 * Establish longjmp destination for exiting from wait-for-input. (This is
@@ -536,23 +540,21 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 	/* Prompt if interactive input */
 	if (isatty(fileno(copystream)))
 	{
-		showprompt = true;
 		if (!pset.quiet)
 			puts(_("Enter data to be copied followed by a newline.\n"
-				   "End with a backslash and a period on a line by itself, or an EOF signal."));
+				   "End with a backslash and a period on a line by itself."));
+		prompt = get_prompt(PROMPT_COPY);
 	}
 	else
-		showprompt = false;
+		prompt = NULL;
 
 	OK = true;
 
 	if (isbinary)
 	{
 		/* interactive input probably silly, but give one prompt anyway */
-		if (showprompt)
+		if (prompt)
 		{
-			const char *prompt = get_prompt(PROMPT_COPY, NULL);
-
 			fputs(prompt, stdout);
 			fflush(stdout);
 		}
@@ -587,10 +589,8 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 			bool		firstload;
 			bool		linedone;
 
-			if (showprompt)
+			if (prompt)
 			{
-				const char *prompt = get_prompt(PROMPT_COPY, NULL);
-
 				fputs(prompt, stdout);
 				fflush(stdout);
 			}
@@ -628,7 +628,8 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 					/*
 					 * This code erroneously assumes '\.' on a line alone
 					 * inside a quoted CSV string terminates the \copy.
-					 * https://www.postgresql.org/message-id/E1TdNVQ-0001ju-GO@wrigleys.postgresql.org
+					 * http://www.postgresql.org/message-id/E1TdNVQ-0001ju-GO@w
+					 * rigleys.postgresql.org
 					 */
 					if (strcmp(buf, "\\.\n") == 0 ||
 						strcmp(buf, "\\.\r\n") == 0)
@@ -649,10 +650,7 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 			}
 
 			if (copystream == pset.cur_cmd_source)
-			{
 				pset.lineno++;
-				pset.stmt_lineno++;
-			}
 		}
 	}
 
@@ -670,16 +668,6 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 		OK = false;
 
 copyin_cleanup:
-
-	/*
-	 * Clear the EOF flag on the stream, in case copying ended due to an EOF
-	 * signal.  This allows an interactive TTY session to perform another COPY
-	 * FROM STDIN later.  (In non-STDIN cases, we're about to close the file
-	 * anyway, so it doesn't matter.)  Although we don't ever test the flag
-	 * with feof(), some fread() implementations won't read more data if it's
-	 * set.  This also clears the error flag, but we already checked that.
-	 */
-	clearerr(copystream);
 
 	/*
 	 * Check command status and return to normal libpq state.
@@ -704,7 +692,7 @@ copyin_cleanup:
 	}
 	if (PQresultStatus(*res) != PGRES_COMMAND_OK)
 	{
-		pg_log_info("%s", PQerrorMessage(conn));
+		psql_error("%s", PQerrorMessage(conn));
 		OK = false;
 	}
 

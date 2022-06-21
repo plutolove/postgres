@@ -4,16 +4,16 @@
  *
  * Routines corresponding to procedure objects
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2014, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_namespace.h"
@@ -21,12 +21,13 @@
 #include "catalog/pg_type.h"
 #include "commands/seclabel.h"
 #include "lib/stringinfo.h"
-#include "sepgsql.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
+
+#include "sepgsql.h"
 
 /*
  * sepgsql_proc_post_create
@@ -55,10 +56,10 @@ sepgsql_proc_post_create(Oid functionId)
 	 * Fetch namespace of the new procedure. Because pg_proc entry is not
 	 * visible right now, we need to scan the catalog using SnapshotSelf.
 	 */
-	rel = table_open(ProcedureRelationId, AccessShareLock);
+	rel = heap_open(ProcedureRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey,
-				Anum_pg_proc_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(functionId));
 
@@ -67,7 +68,7 @@ sepgsql_proc_post_create(Oid functionId)
 
 	tuple = systable_getnext(sscan);
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "could not find tuple for function %u", functionId);
+		elog(ERROR, "catalog lookup failed for proc %u", functionId);
 
 	proForm = (Form_pg_proc) GETSTRUCT(tuple);
 
@@ -105,7 +106,7 @@ sepgsql_proc_post_create(Oid functionId)
 	initStringInfo(&audit_name);
 	nsp_name = get_namespace_name(proForm->pronamespace);
 	appendStringInfo(&audit_name, "%s(",
-					 quote_qualified_identifier(nsp_name, NameStr(proForm->proname)));
+			quote_qualified_identifier(nsp_name, NameStr(proForm->proname)));
 	for (i = 0; i < proForm->pronargs; i++)
 	{
 		if (i > 0)
@@ -140,7 +141,7 @@ sepgsql_proc_post_create(Oid functionId)
 	 * Cleanup
 	 */
 	systable_endscan(sscan);
-	table_close(rel, AccessShareLock);
+	heap_close(rel, AccessShareLock);
 
 	pfree(audit_name.data);
 	pfree(tcontext);
@@ -249,10 +250,10 @@ sepgsql_proc_setattr(Oid functionId)
 	/*
 	 * Fetch newer catalog
 	 */
-	rel = table_open(ProcedureRelationId, AccessShareLock);
+	rel = heap_open(ProcedureRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey,
-				Anum_pg_proc_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(functionId));
 
@@ -260,7 +261,7 @@ sepgsql_proc_setattr(Oid functionId)
 							   SnapshotSelf, 1, &skey);
 	newtup = systable_getnext(sscan);
 	if (!HeapTupleIsValid(newtup))
-		elog(ERROR, "could not find tuple for function %u", functionId);
+		elog(ERROR, "catalog lookup failed for function %u", functionId);
 	newform = (Form_pg_proc) GETSTRUCT(newtup);
 
 	/*
@@ -304,7 +305,7 @@ sepgsql_proc_setattr(Oid functionId)
 
 	ReleaseSysCache(oldtup);
 	systable_endscan(sscan);
-	table_close(rel, AccessShareLock);
+	heap_close(rel, AccessShareLock);
 }
 
 /*

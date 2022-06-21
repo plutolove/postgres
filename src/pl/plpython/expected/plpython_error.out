@@ -97,7 +97,7 @@ CREATE FUNCTION invalid_type_caught(a text) RETURNS text
 	q = "SELECT fname FROM users WHERE lname = $1"
 	try:
 		SD["plan"] = plpy.prepare(q, [ "test" ])
-	except plpy.SPIError as ex:
+	except plpy.SPIError, ex:
 		plpy.notice(str(ex))
 		return None
 rv = plpy.execute(SD["plan"], [ a ])
@@ -108,6 +108,7 @@ return None
 	LANGUAGE plpythonu;
 SELECT invalid_type_caught('rick');
 NOTICE:  type "test" does not exist
+CONTEXT:  PL/Python function "invalid_type_caught"
  invalid_type_caught 
 ---------------------
  
@@ -122,7 +123,7 @@ CREATE FUNCTION invalid_type_reraised(a text) RETURNS text
 	q = "SELECT fname FROM users WHERE lname = $1"
 	try:
 		SD["plan"] = plpy.prepare(q, [ "test" ])
-	except plpy.SPIError as ex:
+	except plpy.SPIError, ex:
 		plpy.error(str(ex))
 rv = plpy.execute(SD["plan"], [ a ])
 if len(rv):
@@ -231,6 +232,7 @@ return "you''ve been warned"
 	LANGUAGE plpythonu;
 SELECT nested_warning();
 WARNING:  boom
+CONTEXT:  PL/Python function "nested_warning"
    nested_warning   
 --------------------
  you've been warned
@@ -321,9 +323,9 @@ $$
 from plpy import spiexceptions
 try:
     plpy.execute("insert into specific values (%s)" % (i or "NULL"));
-except spiexceptions.NotNullViolation as e:
+except spiexceptions.NotNullViolation, e:
     plpy.notice("Violated the NOT NULL constraint, sqlstate %s" % e.sqlstate)
-except spiexceptions.UniqueViolation as e:
+except spiexceptions.UniqueViolation, e:
     plpy.notice("Violated the UNIQUE constraint, sqlstate %s" % e.sqlstate)
 $$ LANGUAGE plpythonu;
 SELECT specific_exception(2);
@@ -334,6 +336,7 @@ SELECT specific_exception(2);
 
 SELECT specific_exception(NULL);
 NOTICE:  Violated the NOT NULL constraint, sqlstate 23502
+CONTEXT:  PL/Python function "specific_exception"
  specific_exception 
 --------------------
  
@@ -341,6 +344,7 @@ NOTICE:  Violated the NOT NULL constraint, sqlstate 23502
 
 SELECT specific_exception(2);
 NOTICE:  Violated the UNIQUE constraint, sqlstate 23505
+CONTEXT:  PL/Python function "specific_exception"
  specific_exception 
 --------------------
  
@@ -422,26 +426,3 @@ EXCEPTION WHEN SQLSTATE 'SILLY' THEN
 	-- NOOP
 END
 $$ LANGUAGE plpgsql;
-/* test the context stack trace for nested execution levels
- */
-CREATE FUNCTION notice_innerfunc() RETURNS int AS $$
-plpy.execute("DO LANGUAGE plpythonu $x$ plpy.notice('inside DO') $x$")
-return 1
-$$ LANGUAGE plpythonu;
-CREATE FUNCTION notice_outerfunc() RETURNS int AS $$
-plpy.execute("SELECT notice_innerfunc()")
-return 1
-$$ LANGUAGE plpythonu;
-\set SHOW_CONTEXT always
-SELECT notice_outerfunc();
-NOTICE:  inside DO
-CONTEXT:  PL/Python anonymous code block
-SQL statement "DO LANGUAGE plpythonu $x$ plpy.notice('inside DO') $x$"
-PL/Python function "notice_innerfunc"
-SQL statement "SELECT notice_innerfunc()"
-PL/Python function "notice_outerfunc"
- notice_outerfunc 
-------------------
-                1
-(1 row)
-

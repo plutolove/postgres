@@ -31,9 +31,9 @@
 
 #include "postgres.h"
 
+#include "px.h"
 #include "mbuf.h"
 #include "pgp.h"
-#include "px.h"
 
 #define NO_CTX_SIZE		0
 #define ALLOW_CTX_SIZE	1
@@ -132,7 +132,7 @@ pgp_parse_pkt_hdr(PullFilter *src, uint8 *tag, int *len_p, int allow_ctx)
 	int			res;
 	uint8	   *p;
 
-	/* EOF is normal here, thus we don't use GETBYTE */
+	/* EOF is normal here, thus we dont use GETBYTE */
 	res = pullf_read(src, 1, &p);
 	if (res < 0)
 		return res;
@@ -355,7 +355,7 @@ mdc_finish(PGP_Context *ctx, PullFilter *src, int len)
 	if (len != 20)
 		return PXE_PGP_CORRUPT_DATA;
 
-	/* mdc_read should not call px_md_update */
+	/* mdc_read should not call md_update */
 	ctx->in_mdc_pkt = 1;
 
 	/* read data */
@@ -423,7 +423,7 @@ static struct PullFilterOps mdc_filter = {
 /*
  * Combined Pkt reader and MDC hasher.
  *
- * For the case of SYMENCRYPTED_DATA_MDC packet, where
+ * For the case of SYMENCRYPTED_MDC packet, where
  * the data part has 'context length', which means
  * that data packet ends 22 bytes before end of parent
  * packet, which is silly.
@@ -460,7 +460,7 @@ mdcbuf_init(void **priv_p, void *arg, PullFilter *src)
 }
 
 static int
-mdcbuf_finish(struct MDCBufData *st)
+mdcbuf_finish(struct MDCBufData * st)
 {
 	uint8		hash[20];
 	int			res;
@@ -485,7 +485,7 @@ mdcbuf_finish(struct MDCBufData *st)
 }
 
 static void
-mdcbuf_load_data(struct MDCBufData *st, uint8 *src, int len)
+mdcbuf_load_data(struct MDCBufData * st, uint8 *src, int len)
 {
 	uint8	   *dst = st->pos + st->avail;
 
@@ -495,14 +495,14 @@ mdcbuf_load_data(struct MDCBufData *st, uint8 *src, int len)
 }
 
 static void
-mdcbuf_load_mdc(struct MDCBufData *st, uint8 *src, int len)
+mdcbuf_load_mdc(struct MDCBufData * st, uint8 *src, int len)
 {
 	memmove(st->mdc_buf + st->mdc_avail, src, len);
 	st->mdc_avail += len;
 }
 
 static int
-mdcbuf_refill(struct MDCBufData *st, PullFilter *src)
+mdcbuf_refill(struct MDCBufData * st, PullFilter *src)
 {
 	uint8	   *data;
 	int			res;
@@ -643,7 +643,6 @@ parse_symenc_sesskey(PGP_Context *ctx, PullFilter *src)
 	if (res < 0)
 		return res;
 	ctx->s2k_mode = ctx->s2k.mode;
-	ctx->s2k_count = s2k_decode_count(ctx->s2k.iter);
 	ctx->s2k_digest_algo = ctx->s2k.digest_algo;
 
 	/*
@@ -811,8 +810,8 @@ parse_literal_data(PGP_Context *ctx, MBuf *dst, PullFilter *pkt)
 }
 
 /* process_data_packets and parse_compressed_data call each other */
-static int	process_data_packets(PGP_Context *ctx, MBuf *dst,
-								 PullFilter *src, int allow_compr, int need_mdc);
+static int process_data_packets(PGP_Context *ctx, MBuf *dst,
+					 PullFilter *src, int allow_compr, int need_mdc);
 
 static int
 parse_compressed_data(PGP_Context *ctx, MBuf *dst, PullFilter *pkt)
@@ -894,10 +893,7 @@ process_data_packets(PGP_Context *ctx, MBuf *dst, PullFilter *src,
 			break;
 		}
 
-		/*
-		 * Context length inside SYMENCRYPTED_DATA_MDC packet needs special
-		 * handling.
-		 */
+		/* context length inside SYMENC_MDC needs special handling */
 		if (need_mdc && res == PKT_CONTEXT)
 			res = pullf_create(&pkt, &mdcbuf_filter, ctx, src);
 		else
@@ -1068,7 +1064,7 @@ pgp_skip_packet(PullFilter *pkt)
 
 	while (res > 0)
 		res = pullf_read(pkt, 32 * 1024, &tmp);
-	return res;
+	return res < 0 ? res : 0;
 }
 
 /*
@@ -1077,16 +1073,19 @@ pgp_skip_packet(PullFilter *pkt)
 int
 pgp_expect_packet_end(PullFilter *pkt)
 {
-	int			res;
+	int			res = 1;
 	uint8	   *tmp;
 
-	res = pullf_read(pkt, 32 * 1024, &tmp);
-	if (res > 0)
+	while (res > 0)
 	{
-		px_debug("pgp_expect_packet_end: got data");
-		return PXE_PGP_CORRUPT_DATA;
+		res = pullf_read(pkt, 32 * 1024, &tmp);
+		if (res > 0)
+		{
+			px_debug("pgp_expect_packet_end: got data");
+			return PXE_PGP_CORRUPT_DATA;
+		}
 	}
-	return res;
+	return res < 0 ? res : 0;
 }
 
 int

@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
- * thread_test.c
+ * test_thread_funcs.c
  *		libc thread test program
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	src/test/thread/thread_test.c
@@ -22,9 +22,19 @@
 
 #if !defined(IN_CONFIGURE) && !defined(WIN32)
 #include "postgres.h"
+#else
+/* From src/include/c.h" */
+#ifndef bool
+typedef char bool;
+#endif
 
-/* we want to know what the native strerror does, not pg_strerror */
-#undef strerror
+#ifndef true
+#define true	((bool) 1)
+#endif
+
+#ifndef false
+#define false	((bool) 0)
+#endif
 #endif
 
 #include <stdio.h>
@@ -83,23 +93,23 @@ static volatile int errno2_set = 0;
 #ifndef HAVE_STRERROR_R
 static char *strerror_p1;
 static char *strerror_p2;
-static int	strerror_threadsafe = 0;
+static bool strerror_threadsafe = false;
 #endif
 
 #if !defined(WIN32) && !defined(HAVE_GETPWUID_R)
 static struct passwd *passwd_p1;
 static struct passwd *passwd_p2;
-static int	getpwuid_threadsafe = 0;
+static bool getpwuid_threadsafe = false;
 #endif
 
 #if !defined(HAVE_GETADDRINFO) && !defined(HAVE_GETHOSTBYNAME_R)
 static struct hostent *hostent_p1;
 static struct hostent *hostent_p2;
 static char myhostname[MAXHOSTNAMELEN];
-static int	gethostbyname_threadsafe = 0;
+static bool gethostbyname_threadsafe = false;
 #endif
 
-static int	platform_is_threadsafe = 1;
+static bool platform_is_threadsafe = true;
 
 int
 main(int argc, char *argv[])
@@ -177,17 +187,17 @@ main(int argc, char *argv[])
 
 #ifndef HAVE_STRERROR_R
 	if (strerror_p1 != strerror_p2)
-		strerror_threadsafe = 1;
+		strerror_threadsafe = true;
 #endif
 
 #if !defined(WIN32) && !defined(HAVE_GETPWUID_R)
 	if (passwd_p1 != passwd_p2)
-		getpwuid_threadsafe = 1;
+		getpwuid_threadsafe = true;
 #endif
 
 #if !defined(HAVE_GETADDRINFO) && !defined(HAVE_GETHOSTBYNAME_R)
 	if (hostent_p1 != hostent_p2)
-		gethostbyname_threadsafe = 1;
+		gethostbyname_threadsafe = true;
 #endif
 
 	/* close down threads */
@@ -200,7 +210,7 @@ main(int argc, char *argv[])
 	/* report results */
 
 #ifdef HAVE_STRERROR_R
-	printf("Your system has strerror_r(); it does not need strerror().\n");
+	printf("Your system has sterror_r();  it does not need strerror().\n");
 #else
 	printf("Your system uses strerror() which is ");
 	if (strerror_threadsafe)
@@ -208,7 +218,7 @@ main(int argc, char *argv[])
 	else
 	{
 		printf("not thread-safe. **\n");
-		platform_is_threadsafe = 0;
+		platform_is_threadsafe = false;
 	}
 #endif
 
@@ -223,7 +233,7 @@ main(int argc, char *argv[])
 	else
 	{
 		printf("not thread-safe. **\n");
-		platform_is_threadsafe = 0;
+		platform_is_threadsafe = false;
 	}
 #endif
 
@@ -239,7 +249,7 @@ main(int argc, char *argv[])
 	else
 	{
 		printf("not thread-safe. **\n");
-		platform_is_threadsafe = 0;
+		platform_is_threadsafe = false;
 	}
 #endif
 
@@ -456,4 +466,4 @@ func_call_2(void)
 	pthread_mutex_unlock(&init_mutex);
 }
 
-#endif							/* !ENABLE_THREAD_SAFETY && !IN_CONFIGURE */
+#endif   /* !ENABLE_THREAD_SAFETY && !IN_CONFIGURE */

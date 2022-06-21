@@ -53,7 +53,7 @@ WHERE (p1.typtype = 'c' AND p1.typrelid = 0) OR
 -- Look for types that should have an array type according to their typtype,
 -- but don't.  We exclude composites here because we have not bothered to
 -- make array types corresponding to the system catalogs' rowtypes.
--- NOTE: as of v10, this check finds pg_node_tree, pg_ndistinct, smgr.
+-- NOTE: as of 9.1, this check finds pg_node_tree, smgr, and unknown.
 
 SELECT p1.oid, p1.typname
 FROM pg_type as p1
@@ -104,32 +104,6 @@ WHERE p1.typinput = p2.oid AND NOT
       p2.proargtypes[1] = 'oid'::regtype AND
       p2.proargtypes[2] = 'int4'::regtype));
 
--- Check for type of the variadic array parameter's elements.
--- provariadic should be ANYOID if the type of the last element is ANYOID,
--- ANYELEMENTOID if the type of the last element is ANYARRAYOID,
--- ANYCOMPATIBLEOID if the type of the last element is ANYCOMPATIBLEARRAYOID,
--- and otherwise the element type corresponding to the array type.
-
-SELECT oid::regprocedure, provariadic::regtype, proargtypes::regtype[]
-FROM pg_proc
-WHERE provariadic != 0
-AND case proargtypes[array_length(proargtypes, 1)-1]
-	WHEN '"any"'::regtype THEN '"any"'::regtype
-	WHEN 'anyarray'::regtype THEN 'anyelement'::regtype
-	WHEN 'anycompatiblearray'::regtype THEN 'anycompatible'::regtype
-	ELSE (SELECT t.oid
-		  FROM pg_type t
-		  WHERE t.typarray = proargtypes[array_length(proargtypes, 1)-1])
-	END  != provariadic;
-
--- Check that all and only those functions with a variadic type have
--- a variadic argument.
-SELECT oid::regprocedure, proargmodes, provariadic
-FROM pg_proc
-WHERE (proargmodes IS NOT NULL AND 'v' = any(proargmodes))
-    IS DISTINCT FROM
-    (provariadic != 0);
-
 -- As of 8.0, this check finds refcursor, which is borrowing
 -- other types' I/O routines
 SELECT p1.oid, p1.typname, p2.oid, p2.proname
@@ -147,11 +121,6 @@ WHERE p1.typinput = p2.oid AND
     (p1.typelem != 0 AND p1.typlen < 0) AND NOT
     (p2.oid = 'array_in'::regproc)
 ORDER BY 1;
-
--- typinput routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typinput = p2.oid AND p2.provolatile NOT IN ('i', 's');
 
 -- Composites, domains, enums, ranges should all use the same input routines
 SELECT DISTINCT typtype, typinput
@@ -176,11 +145,6 @@ SELECT p1.oid, p1.typname, p2.oid, p2.proname
 FROM pg_type AS p1, pg_proc AS p2
 WHERE p1.typoutput = p2.oid AND NOT
     (p2.prorettype = 'cstring'::regtype AND NOT p2.proretset);
-
--- typoutput routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typoutput = p2.oid AND p2.provolatile NOT IN ('i', 's');
 
 -- Composites, enums, ranges should all use the same output routines
 SELECT DISTINCT typtype, typoutput
@@ -229,11 +193,6 @@ FROM pg_type AS p1, pg_proc AS p2, pg_proc AS p3
 WHERE p1.typinput = p2.oid AND p1.typreceive = p3.oid AND
     p2.pronargs != p3.pronargs;
 
--- typreceive routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typreceive = p2.oid AND p2.provolatile NOT IN ('i', 's');
-
 -- Composites, domains, enums, ranges should all use the same receive routines
 SELECT DISTINCT typtype, typreceive
 FROM pg_type AS p1
@@ -258,11 +217,6 @@ FROM pg_type AS p1, pg_proc AS p2
 WHERE p1.typsend = p2.oid AND NOT
     (p2.prorettype = 'bytea'::regtype AND NOT p2.proretset);
 
--- typsend routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typsend = p2.oid AND p2.provolatile NOT IN ('i', 's');
-
 -- Composites, enums, ranges should all use the same send routines
 SELECT DISTINCT typtype, typsend
 FROM pg_type AS p1
@@ -283,11 +237,6 @@ WHERE p1.typmodin = p2.oid AND NOT
      p2.proargtypes[0] = 'cstring[]'::regtype AND
      p2.prorettype = 'int4'::regtype AND NOT p2.proretset);
 
--- typmodin routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typmodin = p2.oid AND p2.provolatile NOT IN ('i', 's');
-
 -- Check for bogus typmodout routines
 
 SELECT p1.oid, p1.typname, p2.oid, p2.proname
@@ -296,11 +245,6 @@ WHERE p1.typmodout = p2.oid AND NOT
     (p2.pronargs = 1 AND
      p2.proargtypes[0] = 'int4'::regtype AND
      p2.prorettype = 'cstring'::regtype AND NOT p2.proretset);
-
--- typmodout routines should not be volatile
-SELECT p1.oid, p1.typname, p2.oid, p2.proname
-FROM pg_type AS p1, pg_proc AS p2
-WHERE p1.typmodout = p2.oid AND p2.provolatile NOT IN ('i', 's');
 
 -- Array types should have same typmodin/out as their element types
 
@@ -331,8 +275,6 @@ WHERE p1.typanalyze = p2.oid AND NOT
     (p2.pronargs = 1 AND
      p2.proargtypes[0] = 'internal'::regtype AND
      p2.prorettype = 'bool'::regtype AND NOT p2.proretset);
-
--- there does not seem to be a reason to care about volatility of typanalyze
 
 -- domains inherit their base type's typanalyze
 
@@ -365,33 +307,14 @@ ORDER BY 1;
 
 SELECT p1.oid, p1.relname
 FROM pg_class as p1
-WHERE relkind NOT IN ('r', 'i', 'S', 't', 'v', 'm', 'c', 'f', 'p') OR
-    relpersistence NOT IN ('p', 'u', 't') OR
-    relreplident NOT IN ('d', 'n', 'f', 'i');
+WHERE p1.relkind NOT IN ('r', 'i', 's', 'S', 'c', 't', 'v', 'f');
 
--- All tables and indexes should have an access method.
+-- Indexes should have an access method, others not.
+
 SELECT p1.oid, p1.relname
 FROM pg_class as p1
-WHERE p1.relkind NOT IN ('S', 'v', 'f', 'c') and
-    p1.relam = 0;
-
--- Conversely, sequences, views, types shouldn't have them
-SELECT p1.oid, p1.relname
-FROM pg_class as p1
-WHERE p1.relkind IN ('S', 'v', 'f', 'c') and
-    p1.relam != 0;
-
--- Indexes should have AMs of type 'i'
-SELECT pc.oid, pc.relname, pa.amname, pa.amtype
-FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
-WHERE pc.relkind IN ('i') and
-    pa.amtype != 'i';
-
--- Tables, matviews etc should have AMs of type 't'
-SELECT pc.oid, pc.relname, pa.amname, pa.amtype
-FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
-WHERE pc.relkind IN ('r', 't', 'm') and
-    pa.amtype != 't';
+WHERE (p1.relkind = 'i' AND p1.relam = 0) OR
+    (p1.relkind != 'i' AND p1.relam != 0);
 
 -- **************** pg_attribute ****************
 

@@ -62,6 +62,15 @@ CREATE FUNCTION equipment_named_ambiguous_2b(hobby text)
    LANGUAGE SQL;
 
 
+CREATE FUNCTION user_relns()
+   RETURNS setof name
+   AS 'select relname
+       from pg_class c, pg_namespace n
+       where relnamespace = n.oid and
+             (nspname !~ ''pg_.*'' and nspname <> ''information_schema'') and
+             relkind <> ''i'' '
+   LANGUAGE SQL;
+
 CREATE FUNCTION pt_in_widget(point, widget)
    RETURNS bool
    AS '@libdir@/regress@DLSUFFIX@'
@@ -69,6 +78,11 @@ CREATE FUNCTION pt_in_widget(point, widget)
 
 CREATE FUNCTION overpaid(emp)
    RETURNS bool
+   AS '@libdir@/regress@DLSUFFIX@'
+   LANGUAGE C STRICT;
+
+CREATE FUNCTION boxarea(box)
+   RETURNS float8
    AS '@libdir@/regress@DLSUFFIX@'
    LANGUAGE C STRICT;
 
@@ -81,6 +95,11 @@ CREATE FUNCTION reverse_name(name)
    RETURNS name
    AS '@libdir@/regress@DLSUFFIX@'
    LANGUAGE C STRICT;
+
+CREATE FUNCTION oldstyle_length(int4, text)
+   RETURNS int4
+   AS '@libdir@/regress@DLSUFFIX@'
+   LANGUAGE C;  -- intentionally not strict
 
 --
 -- Function dynamic loading

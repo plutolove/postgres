@@ -3,7 +3,7 @@
  * tcn.c
  *	  triggered change notification support for PostgreSQL
  *
- * Portions Copyright (c) 2011-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2011-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,14 +16,16 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "executor/spi.h"
 #include "commands/async.h"
 #include "commands/trigger.h"
-#include "executor/spi.h"
 #include "lib/stringinfo.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+
 PG_MODULE_MAGIC;
+
 
 /*
  * Copy from s (for source) to r (for result), wrapping with q (quote)
@@ -73,7 +75,7 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 	if (!CALLED_AS_TRIGGER(fcinfo))
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("triggered_change_notification: must be called as trigger")));
+		errmsg("triggered_change_notification: must be called as trigger")));
 
 	/* and that it's called after the change */
 	if (!TRIGGER_FIRED_AFTER(trigdata->tg_event))
@@ -132,15 +134,15 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 		Form_pg_index index;
 
 		indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
-		if (!HeapTupleIsValid(indexTuple))	/* should not happen */
+		if (!HeapTupleIsValid(indexTuple))		/* should not happen */
 			elog(ERROR, "cache lookup failed for index %u", indexoid);
 		index = (Form_pg_index) GETSTRUCT(indexTuple);
 		/* we're only interested if it is the primary key and valid */
-		if (index->indisprimary && index->indisvalid)
+		if (index->indisprimary && IndexIsValid(index))
 		{
-			int			indnkeyatts = index->indnkeyatts;
+			int			numatts = index->indnatts;
 
-			if (indnkeyatts > 0)
+			if (numatts > 0)
 			{
 				int			i;
 
@@ -150,13 +152,12 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 				appendStringInfoCharMacro(payload, ',');
 				appendStringInfoCharMacro(payload, operation);
 
-				for (i = 0; i < indnkeyatts; i++)
+				for (i = 0; i < numatts; i++)
 				{
 					int			colno = index->indkey.values[i];
-					Form_pg_attribute attr = TupleDescAttr(tupdesc, colno - 1);
 
 					appendStringInfoCharMacro(payload, ',');
-					strcpy_quoted(payload, NameStr(attr->attname), '"');
+					strcpy_quoted(payload, NameStr((tupdesc->attrs[colno - 1])->attname), '"');
 					appendStringInfoCharMacro(payload, '=');
 					strcpy_quoted(payload, SPI_getvalue(trigtuple, tupdesc, colno), '\'');
 				}
@@ -176,5 +177,5 @@ triggered_change_notification(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
 				 errmsg("triggered_change_notification: must be called on a table with a primary key")));
 
-	return PointerGetDatum(NULL);	/* after trigger; value doesn't matter */
+	return PointerGetDatum(NULL);		/* after trigger; value doesn't matter */
 }

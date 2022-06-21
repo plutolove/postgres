@@ -4,7 +4,7 @@
  *	  prototypes for createas.c.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/createas.h
@@ -14,19 +14,16 @@
 #ifndef CREATEAS_H
 #define CREATEAS_H
 
-#include "catalog/objectaddress.h"
 #include "nodes/params.h"
-#include "parser/parse_node.h"
+#include "nodes/parsenodes.h"
 #include "tcop/dest.h"
-#include "utils/queryenvironment.h"
 
 
-extern ObjectAddress ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
-									   ParamListInfo params, QueryEnvironment *queryEnv,
-									   QueryCompletion *qc);
+extern void ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
+				  ParamListInfo params, char *completionTag);
 
 extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
 extern DestReceiver *CreateIntoRelDestReceiver(IntoClause *intoClause);
 
-#endif							/* CREATEAS_H */
+#endif   /* CREATEAS_H */

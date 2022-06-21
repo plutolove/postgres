@@ -3,26 +3,17 @@
  * locales is installed.  It must be run in a database with UTF-8 encoding,
  * because other encodings don't support all the characters used.
  */
-SELECT getdatabaseencoding() <> 'UTF8' OR
-       (SELECT count(*) FROM pg_collation WHERE collname IN ('de_DE', 'en_US', 'sv_SE', 'tr_TR') AND collencoding = pg_char_to_encoding('UTF8')) <> 4 OR
-       version() !~ 'linux-gnu'
-       AS skip_test \gset
-\if :skip_test
-\quit
-\endif
 SET client_encoding TO UTF8;
-CREATE SCHEMA collate_tests;
-SET search_path = collate_tests;
 CREATE TABLE collate_test1 (
     a int,
     b text COLLATE "en_US" NOT NULL
 );
 \d collate_test1
-        Table "collate_tests.collate_test1"
- Column |  Type   | Collation | Nullable | Default 
---------+---------+-----------+----------+---------
- a      | integer |           |          | 
- b      | text    | en_US     | not null | 
+       Table "public.collate_test1"
+ Column |  Type   |       Modifiers        
+--------+---------+------------------------
+ a      | integer | 
+ b      | text    | collate en_US not null
 
 CREATE TABLE collate_test_fail (
     a int,
@@ -49,11 +40,11 @@ CREATE TABLE collate_test_like (
     LIKE collate_test1
 );
 \d collate_test_like
-      Table "collate_tests.collate_test_like"
- Column |  Type   | Collation | Nullable | Default 
---------+---------+-----------+----------+---------
- a      | integer |           |          | 
- b      | text    | en_US     | not null | 
+     Table "public.collate_test_like"
+ Column |  Type   |       Modifiers        
+--------+---------+------------------------
+ a      | integer | 
+ b      | text    | collate en_US not null
 
 CREATE TABLE collate_test2 (
     a int,
@@ -373,38 +364,6 @@ SELECT * FROM collate_test1 WHERE b ~* 'bc';
  4 | ABC
 (4 rows)
 
-CREATE TABLE collate_test6 (
-    a int,
-    b text COLLATE "en_US"
-);
-INSERT INTO collate_test6 VALUES (1, 'abc'), (2, 'ABC'), (3, '123'), (4, 'ab1'),
-                                 (5, 'a1!'), (6, 'a c'), (7, '!.;'), (8, '   '),
-                                 (9, 'äbç'), (10, 'ÄBÇ');
-SELECT b,
-       b ~ '^[[:alpha:]]+$' AS is_alpha,
-       b ~ '^[[:upper:]]+$' AS is_upper,
-       b ~ '^[[:lower:]]+$' AS is_lower,
-       b ~ '^[[:digit:]]+$' AS is_digit,
-       b ~ '^[[:alnum:]]+$' AS is_alnum,
-       b ~ '^[[:graph:]]+$' AS is_graph,
-       b ~ '^[[:print:]]+$' AS is_print,
-       b ~ '^[[:punct:]]+$' AS is_punct,
-       b ~ '^[[:space:]]+$' AS is_space
-FROM collate_test6;
-  b  | is_alpha | is_upper | is_lower | is_digit | is_alnum | is_graph | is_print | is_punct | is_space 
------+----------+----------+----------+----------+----------+----------+----------+----------+----------
- abc | t        | f        | t        | f        | t        | t        | t        | f        | f
- ABC | t        | t        | f        | f        | t        | t        | t        | f        | f
- 123 | f        | f        | f        | t        | t        | t        | t        | f        | f
- ab1 | f        | f        | f        | f        | t        | t        | t        | f        | f
- a1! | f        | f        | f        | f        | f        | t        | t        | f        | f
- a c | f        | f        | f        | f        | f        | f        | t        | f        | f
- !.; | f        | f        | f        | f        | f        | t        | t        | t        | f
-     | f        | f        | f        | f        | f        | f        | t        | f        | t
- äbç | t        | f        | t        | f        | t        | t        | t        | f        | f
- ÄBÇ | t        | t        | f        | f        | t        | t        | t        | f        | f
-(10 rows)
-
 SELECT 'Türkiye' COLLATE "en_US" ~* 'KI' AS "true";
  true 
 ------
@@ -437,18 +396,6 @@ SELECT relname FROM pg_class WHERE relname ~* '^abc';
 
 -- to_char
 SET lc_time TO 'tr_TR';
-SELECT to_char(date '2010-02-01', 'DD TMMON YYYY');
-   to_char   
--------------
- 01 ŞUB 2010
-(1 row)
-
-SELECT to_char(date '2010-02-01', 'DD TMMON YYYY' COLLATE "tr_TR");
-   to_char   
--------------
- 01 ŞUB 2010
-(1 row)
-
 SELECT to_char(date '2010-04-01', 'DD TMMON YYYY');
    to_char   
 -------------
@@ -461,22 +408,6 @@ SELECT to_char(date '2010-04-01', 'DD TMMON YYYY' COLLATE "tr_TR");
  01 NİS 2010
 (1 row)
 
--- to_date
-SELECT to_date('01 ŞUB 2010', 'DD TMMON YYYY');
-  to_date   
-------------
- 02-01-2010
-(1 row)
-
-SELECT to_date('01 Şub 2010', 'DD TMMON YYYY');
-  to_date   
-------------
- 02-01-2010
-(1 row)
-
-SELECT to_date('1234567890ab 2010', 'TMMONTH YYYY'); -- fail
-ERROR:  invalid value "1234567890ab" for "MONTH"
-DETAIL:  The given value did not match any of the allowed values for this field.
 -- backwards parsing
 CREATE VIEW collview1 AS SELECT * FROM collate_test1 WHERE b COLLATE "C" >= 'bbc';
 CREATE VIEW collview2 AS SELECT a, b FROM collate_test1 ORDER BY b COLLATE "C";
@@ -1012,12 +943,12 @@ ERROR:  collations are not supported by type integer
 LINE 1: ...ATE INDEX collate_test1_idx6 ON collate_test1 ((a COLLATE "C...
                                                              ^
 SELECT relname, pg_get_indexdef(oid) FROM pg_class WHERE relname LIKE 'collate_test%_idx%' ORDER BY 1;
-      relname       |                                                  pg_get_indexdef                                                  
---------------------+-------------------------------------------------------------------------------------------------------------------
- collate_test1_idx1 | CREATE INDEX collate_test1_idx1 ON collate_tests.collate_test1 USING btree (b)
- collate_test1_idx2 | CREATE INDEX collate_test1_idx2 ON collate_tests.collate_test1 USING btree (b COLLATE "C")
- collate_test1_idx3 | CREATE INDEX collate_test1_idx3 ON collate_tests.collate_test1 USING btree (b COLLATE "C")
- collate_test1_idx4 | CREATE INDEX collate_test1_idx4 ON collate_tests.collate_test1 USING btree (((b || 'foo'::text)) COLLATE "POSIX")
+      relname       |                                           pg_get_indexdef                                           
+--------------------+-----------------------------------------------------------------------------------------------------
+ collate_test1_idx1 | CREATE INDEX collate_test1_idx1 ON collate_test1 USING btree (b)
+ collate_test1_idx2 | CREATE INDEX collate_test1_idx2 ON collate_test1 USING btree (b COLLATE "C")
+ collate_test1_idx3 | CREATE INDEX collate_test1_idx3 ON collate_test1 USING btree (b COLLATE "C")
+ collate_test1_idx4 | CREATE INDEX collate_test1_idx4 ON collate_test1 USING btree (((b || 'foo'::text)) COLLATE "POSIX")
 (4 rows)
 
 -- schema manipulation commands
@@ -1031,11 +962,7 @@ BEGIN
 END
 $$;
 CREATE COLLATION test0 FROM "C"; -- fail, duplicate name
-ERROR:  collation "test0" already exists
-CREATE COLLATION IF NOT EXISTS test0 FROM "C"; -- ok, skipped
-NOTICE:  collation "test0" already exists, skipping
-CREATE COLLATION IF NOT EXISTS test0 (locale = 'foo'); -- ok, skipped
-NOTICE:  collation "test0" for encoding "UTF8" already exists, skipping
+ERROR:  collation "test0" for encoding "UTF8" already exists
 do $$
 BEGIN
   EXECUTE 'CREATE COLLATION test1 (lc_collate = ' ||
@@ -1062,7 +989,7 @@ SELECT collname FROM pg_collation WHERE collname LIKE 'test%' ORDER BY 1;
 
 ALTER COLLATION test1 RENAME TO test11;
 ALTER COLLATION test0 RENAME TO test11; -- fail
-ERROR:  collation "test11" for encoding "UTF8" already exists in schema "collate_tests"
+ERROR:  collation "test11" for encoding "UTF8" already exists in schema "public"
 ALTER COLLATION test1 RENAME TO test22; -- fail
 ERROR:  collation "test1" for encoding "UTF8" does not exist
 ALTER COLLATION test11 OWNER TO regress_test_role;
@@ -1074,11 +1001,11 @@ SELECT collname, nspname, obj_description(pg_collation.oid, 'pg_collation')
     FROM pg_collation JOIN pg_namespace ON (collnamespace = pg_namespace.oid)
     WHERE collname LIKE 'test%'
     ORDER BY 1;
- collname |    nspname    | obj_description 
-----------+---------------+-----------------
- test0    | collate_tests | US English
- test11   | test_schema   | 
- test5    | collate_tests | 
+ collname |   nspname   | obj_description 
+----------+-------------+-----------------
+ test0    | public      | US English
+ test11   | test_schema | 
+ test5    | public      | 
 (3 rows)
 
 DROP COLLATION test0, test_schema.test11, test5;
@@ -1093,9 +1020,6 @@ SELECT collname FROM pg_collation WHERE collname LIKE 'test%';
 
 DROP SCHEMA test_schema;
 DROP ROLE regress_test_role;
--- ALTER
-ALTER COLLATION "en_US" REFRESH VERSION;
-NOTICE:  version has not changed
 -- dependencies
 CREATE COLLATION test0 FROM "C";
 CREATE TABLE collate_dep_test1 (a int, b text COLLATE test0);
@@ -1106,30 +1030,30 @@ CREATE TABLE collate_dep_test4t (a int, b text);
 CREATE INDEX collate_dep_test4i ON collate_dep_test4t (b COLLATE test0);
 DROP COLLATION test0 RESTRICT; -- fail
 ERROR:  cannot drop collation test0 because other objects depend on it
-DETAIL:  column b of table collate_dep_test1 depends on collation test0
+DETAIL:  table collate_dep_test1 column b depends on collation test0
 type collate_dep_dom1 depends on collation test0
-column y of composite type collate_dep_test2 depends on collation test0
+composite type collate_dep_test2 column y depends on collation test0
 view collate_dep_test3 depends on collation test0
 index collate_dep_test4i depends on collation test0
 HINT:  Use DROP ... CASCADE to drop the dependent objects too.
 DROP COLLATION test0 CASCADE;
 NOTICE:  drop cascades to 5 other objects
-DETAIL:  drop cascades to column b of table collate_dep_test1
+DETAIL:  drop cascades to table collate_dep_test1 column b
 drop cascades to type collate_dep_dom1
-drop cascades to column y of composite type collate_dep_test2
+drop cascades to composite type collate_dep_test2 column y
 drop cascades to view collate_dep_test3
 drop cascades to index collate_dep_test4i
 \d collate_dep_test1
-      Table "collate_tests.collate_dep_test1"
- Column |  Type   | Collation | Nullable | Default 
---------+---------+-----------+----------+---------
- a      | integer |           |          | 
+Table "public.collate_dep_test1"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ a      | integer | 
 
 \d collate_dep_test2
- Composite type "collate_tests.collate_dep_test2"
- Column |  Type   | Collation | Nullable | Default 
---------+---------+-----------+----------+---------
- x      | integer |           |          | 
+Composite type "public.collate_dep_test2"
+ Column |  Type   | Modifiers 
+--------+---------+-----------
+ x      | integer | 
 
 DROP TABLE collate_dep_test1, collate_dep_test4t;
 DROP TYPE collate_dep_test2;
@@ -1150,11 +1074,3 @@ select textrange_en_us('A','Z') @> 'b'::text;
 
 drop type textrange_c;
 drop type textrange_en_us;
--- nondeterministic collations
--- (not supported with libc provider)
-CREATE COLLATION ctest_det (locale = 'en_US.utf8', deterministic = true);
-CREATE COLLATION ctest_nondet (locale = 'en_US.utf8', deterministic = false);
-ERROR:  nondeterministic collations not supported with this provider
--- cleanup
-SET client_min_messages TO warning;
-DROP SCHEMA collate_tests CASCADE;

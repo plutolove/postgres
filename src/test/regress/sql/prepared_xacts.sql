@@ -123,7 +123,8 @@ SELECT gid FROM pg_prepared_xacts;
 
 -- pxtest3 should be locked because of the pending DROP
 begin;
-lock table pxtest3 in access share mode nowait;
+set statement_timeout to 2000;
+SELECT * FROM pxtest3;
 rollback;
 
 -- Disconnect, we will continue testing in a different backend
@@ -134,7 +135,8 @@ SELECT gid FROM pg_prepared_xacts;
 
 -- pxtest3 should still be locked because of the pending DROP
 begin;
-lock table pxtest3 in access share mode nowait;
+set statement_timeout to 2000;
+SELECT * FROM pxtest3;
 rollback;
 
 -- Commit table creation

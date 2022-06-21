@@ -1,9 +1,6 @@
-<!--
-doc/src/sgml/ref/create_conversion.sgml
-PostgreSQL documentation
--->
+<!-- doc/src/sgml/ref/create_conversion.sgml -->
 
-<refentry id="sql-createconversion">
+<refentry id="SQL-CREATECONVERSION">
  <indexterm zone="sql-createconversion">
   <primary>CREATE CONVERSION</primary>
  </indexterm>
@@ -31,15 +28,12 @@ CREATE [ DEFAULT ] CONVERSION <replaceable>name</replaceable>
 
   <para>
    <command>CREATE CONVERSION</command> defines a new conversion between
-   two character set encodings.
-  </para>
-
-  <para>
-   Conversions that are marked <literal>DEFAULT</literal> can be used for
-   automatic encoding conversion between client and server.  To support that
-   usage, two conversions, from encoding A to B <emphasis>and</emphasis>
-   from encoding B to A, must be defined.
-  </para>
+   character set encodings.  Also, conversions that
+   are marked <literal>DEFAULT</> can be used for automatic encoding
+   conversion between
+   client and server. For this purpose, two conversions, from encoding A to
+   B <emphasis>and</emphasis> from encoding B to A, must be defined.
+ </para>
 
   <para>
    To be able to create a conversion, you must have <literal>EXECUTE</literal> privilege
@@ -57,7 +51,7 @@ CREATE [ DEFAULT ] CONVERSION <replaceable>name</replaceable>
 
      <listitem>
       <para>
-       The <literal>DEFAULT</literal> clause indicates that this conversion
+       The <literal>DEFAULT</> clause indicates that this conversion
        is the default for this particular source to destination
        encoding. There should be only one default encoding in a schema
        for the encoding pair.
@@ -129,13 +123,6 @@ conv_proc(
   <title>Notes</title>
 
   <para>
-   Neither the source nor the destination encoding can
-   be <literal>SQL_ASCII</literal>, as the server's behavior for cases
-   involving the <literal>SQL_ASCII</literal> <quote>encoding</quote> is
-   hard-wired.
-  </para>
-
-  <para>
    Use <command>DROP CONVERSION</command> to remove user-defined conversions.
   </para>
 
@@ -150,7 +137,7 @@ conv_proc(
 
   <para>
    To create a conversion from encoding <literal>UTF8</literal> to
-   <literal>LATIN1</literal> using <function>myfunc</function>:
+   <literal>LATIN1</literal> using <function>myfunc</>:
 <programlisting>
 CREATE CONVERSION myconv FOR 'UTF8' TO 'LATIN1' FROM myfunc;
 </programlisting></para>
@@ -174,9 +161,9 @@ CREATE CONVERSION myconv FOR 'UTF8' TO 'LATIN1' FROM myfunc;
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-alterconversion"/></member>
-   <member><xref linkend="sql-createfunction"/></member>
-   <member><xref linkend="sql-dropconversion"/></member>
+   <member><xref linkend="sql-alterconversion"></member>
+   <member><xref linkend="sql-createfunction"></member>
+   <member><xref linkend="sql-dropconversion"></member>
   </simplelist>
  </refsect1>
 

@@ -3,7 +3,7 @@
  * ts_selfuncs.c
  *	  Selectivity estimation functions for text search operators.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -19,7 +19,6 @@
 #include "miscadmin.h"
 #include "nodes/nodes.h"
 #include "tsearch/ts_type.h"
-#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
@@ -48,10 +47,10 @@ typedef struct
 
 static Selectivity tsquerysel(VariableStatData *vardata, Datum constval);
 static Selectivity mcelem_tsquery_selec(TSQuery query,
-										Datum *mcelem, int nmcelem,
-										float4 *numbers, int nnumbers);
+					 Datum *mcelem, int nmcelem,
+					 float4 *numbers, int nnumbers);
 static Selectivity tsquery_opr_selec(QueryItem *item, char *operand,
-									 TextFreq *lookup, int length, float4 minfreq);
+				  TextFreq *lookup, int length, float4 minfreq);
 static int	compare_lexeme_textfreq(const void *e1, const void *e2);
 
 #define tsquery_opr_selec_no_stats(query) \
@@ -163,22 +162,28 @@ tsquerysel(VariableStatData *vardata, Datum constval)
 	if (HeapTupleIsValid(vardata->statsTuple))
 	{
 		Form_pg_statistic stats;
-		AttStatsSlot sslot;
+		Datum	   *values;
+		int			nvalues;
+		float4	   *numbers;
+		int			nnumbers;
 
 		stats = (Form_pg_statistic) GETSTRUCT(vardata->statsTuple);
 
 		/* MCELEM will be an array of TEXT elements for a tsvector column */
-		if (get_attstatsslot(&sslot, vardata->statsTuple,
+		if (get_attstatsslot(vardata->statsTuple,
+							 TEXTOID, -1,
 							 STATISTIC_KIND_MCELEM, InvalidOid,
-							 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+							 NULL,
+							 &values, &nvalues,
+							 &numbers, &nnumbers))
 		{
 			/*
 			 * There is a most-common-elements slot for the tsvector Var, so
 			 * use that.
 			 */
-			selec = mcelem_tsquery_selec(query, sslot.values, sslot.nvalues,
-										 sslot.numbers, sslot.nnumbers);
-			free_attstatsslot(&sslot);
+			selec = mcelem_tsquery_selec(query, values, nvalues,
+										 numbers, nnumbers);
+			free_attstatsslot(TEXTOID, values, nvalues, numbers, nnumbers);
 		}
 		else
 		{
@@ -256,7 +261,7 @@ mcelem_tsquery_selec(TSQuery query, Datum *mcelem, int nmcelem,
 /*
  * Traverse the tsquery in preorder, calculating selectivity as:
  *
- *	 selec(left_oper) * selec(right_oper) in AND & PHRASE nodes,
+ *	 selec(left_oper) * selec(right_oper) in AND nodes,
  *
  *	 selec(left_oper) + selec(right_oper) -
  *		selec(left_oper) * selec(right_oper) in OR nodes,
@@ -395,7 +400,6 @@ tsquery_opr_selec(QueryItem *item, char *operand,
 												lookup, length, minfreq);
 				break;
 
-			case OP_PHRASE:
 			case OP_AND:
 				s1 = tsquery_opr_selec(item + 1, operand,
 									   lookup, length, minfreq);

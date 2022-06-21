@@ -3,9 +3,11 @@
  */
 #include "postgres.h"
 
-#include "_int.h"
 #include "access/gin.h"
-#include "access/stratnum.h"
+#include "access/gist.h"
+#include "access/skey.h"
+
+#include "_int.h"
 
 PG_FUNCTION_INFO_V1(ginint4_queryextract);
 
@@ -92,7 +94,7 @@ ginint4_queryextract(PG_FUNCTION_ARGS)
 			case RTOldContainsStrategyNumber:
 				if (*nentries > 0)
 					*searchMode = GIN_SEARCH_MODE_DEFAULT;
-				else			/* everything contains the empty set */
+				else	/* everything contains the empty set */
 					*searchMode = GIN_SEARCH_MODE_ALL;
 				break;
 			default:
@@ -115,7 +117,7 @@ ginint4_consistent(PG_FUNCTION_ARGS)
 
 	/* Pointer	   *extra_data = (Pointer *) PG_GETARG_POINTER(4); */
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(5);
-	bool		res = false;
+	bool		res = FALSE;
 	int32		i;
 
 	switch (strategy)
@@ -124,25 +126,25 @@ ginint4_consistent(PG_FUNCTION_ARGS)
 			/* result is not lossy */
 			*recheck = false;
 			/* at least one element in check[] is true, so result = true */
-			res = true;
+			res = TRUE;
 			break;
 		case RTContainedByStrategyNumber:
 		case RTOldContainedByStrategyNumber:
 			/* we will need recheck */
 			*recheck = true;
 			/* at least one element in check[] is true, so result = true */
-			res = true;
+			res = TRUE;
 			break;
 		case RTSameStrategyNumber:
 			/* we will need recheck */
 			*recheck = true;
 			/* Must have all elements in check[] true */
-			res = true;
+			res = TRUE;
 			for (i = 0; i < nkeys; i++)
 			{
 				if (!check[i])
 				{
-					res = false;
+					res = FALSE;
 					break;
 				}
 			}
@@ -152,12 +154,12 @@ ginint4_consistent(PG_FUNCTION_ARGS)
 			/* result is not lossy */
 			*recheck = false;
 			/* Must have all elements in check[] true */
-			res = true;
+			res = TRUE;
 			for (i = 0; i < nkeys; i++)
 			{
 				if (!check[i])
 				{
-					res = false;
+					res = FALSE;
 					break;
 				}
 			}

@@ -26,25 +26,21 @@
 
 #include "access/gist_private.h"
 #include "access/hash.h"
-#include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
-#include "access/tableam.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_am_d.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
-#include "utils/varlena.h"
+#include "utils/tqual.h"
+
 
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(pgstattuple);
-PG_FUNCTION_INFO_V1(pgstattuple_v1_5);
 PG_FUNCTION_INFO_V1(pgstattuplebyid);
-PG_FUNCTION_INFO_V1(pgstattuplebyid_v1_5);
 
 /*
  * struct pgstattuple_type
@@ -63,25 +59,25 @@ typedef struct pgstattuple_type
 } pgstattuple_type;
 
 typedef void (*pgstat_page) (pgstattuple_type *, Relation, BlockNumber,
-							 BufferAccessStrategy);
+										 BufferAccessStrategy);
 
 static Datum build_pgstattuple_type(pgstattuple_type *stat,
-									FunctionCallInfo fcinfo);
+					   FunctionCallInfo fcinfo);
 static Datum pgstat_relation(Relation rel, FunctionCallInfo fcinfo);
 static Datum pgstat_heap(Relation rel, FunctionCallInfo fcinfo);
 static void pgstat_btree_page(pgstattuple_type *stat,
-							  Relation rel, BlockNumber blkno,
-							  BufferAccessStrategy bstrategy);
+				  Relation rel, BlockNumber blkno,
+				  BufferAccessStrategy bstrategy);
 static void pgstat_hash_page(pgstattuple_type *stat,
-							 Relation rel, BlockNumber blkno,
-							 BufferAccessStrategy bstrategy);
+				 Relation rel, BlockNumber blkno,
+				 BufferAccessStrategy bstrategy);
 static void pgstat_gist_page(pgstattuple_type *stat,
-							 Relation rel, BlockNumber blkno,
-							 BufferAccessStrategy bstrategy);
+				 Relation rel, BlockNumber blkno,
+				 BufferAccessStrategy bstrategy);
 static Datum pgstat_index(Relation rel, BlockNumber start,
-						  pgstat_page pagefn, FunctionCallInfo fcinfo);
+			 pgstat_page pagefn, FunctionCallInfo fcinfo);
 static void pgstat_index_page(pgstattuple_type *stat, Page page,
-							  OffsetNumber minoff, OffsetNumber maxoff);
+				  OffsetNumber minoff, OffsetNumber maxoff);
 
 /*
  * build_pgstattuple_type -- build a pgstattuple_type tuple
@@ -90,7 +86,7 @@ static Datum
 build_pgstattuple_type(pgstattuple_type *stat, FunctionCallInfo fcinfo)
 {
 #define NCOLUMNS	9
-#define NCHARS		314
+#define NCHARS		32
 
 	HeapTuple	tuple;
 	char	   *values[NCOLUMNS];
@@ -156,24 +152,21 @@ build_pgstattuple_type(pgstattuple_type *stat, FunctionCallInfo fcinfo)
  *
  * C FUNCTION definition
  * pgstattuple(text) returns pgstattuple_type
- *
- * The superuser() check here must be kept as the library might be upgraded
- * without the extension being upgraded, meaning that in pre-1.5 installations
- * these functions could be called by any user.
+ * see pgstattuple.sql for pgstattuple_type
  * ----------
  */
 
 Datum
 pgstattuple(PG_FUNCTION_ARGS)
 {
-	text	   *relname = PG_GETARG_TEXT_PP(0);
+	text	   *relname = PG_GETARG_TEXT_P(0);
 	RangeVar   *relrv;
 	Relation	rel;
 
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use pgstattuple functions")));
+				 (errmsg("must be superuser to use pgstattuple functions"))));
 
 	/* open relation */
 	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
@@ -182,28 +175,6 @@ pgstattuple(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(pgstat_relation(rel, fcinfo));
 }
 
-/*
- * As of pgstattuple version 1.5, we no longer need to check if the user
- * is a superuser because we REVOKE EXECUTE on the function from PUBLIC.
- * Users can then grant access to it based on their policies.
- *
- * Otherwise identical to pgstattuple (above).
- */
-Datum
-pgstattuple_v1_5(PG_FUNCTION_ARGS)
-{
-	text	   *relname = PG_GETARG_TEXT_PP(0);
-	RangeVar   *relrv;
-	Relation	rel;
-
-	/* open relation */
-	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
-	rel = relation_openrv(relrv, AccessShareLock);
-
-	PG_RETURN_DATUM(pgstat_relation(rel, fcinfo));
-}
-
-/* Must keep superuser() check, see above. */
 Datum
 pgstattuplebyid(PG_FUNCTION_ARGS)
 {
@@ -213,20 +184,7 @@ pgstattuplebyid(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use pgstattuple functions")));
-
-	/* open relation */
-	rel = relation_open(relid, AccessShareLock);
-
-	PG_RETURN_DATUM(pgstat_relation(rel, fcinfo));
-}
-
-/* Remove superuser() check for 1.5 version, see above */
-Datum
-pgstattuplebyid_v1_5(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	Relation	rel;
+				 (errmsg("must be superuser to use pgstattuple functions"))));
 
 	/* open relation */
 	rel = relation_open(relid, AccessShareLock);
@@ -277,9 +235,6 @@ pgstat_relation(Relation rel, FunctionCallInfo fcinfo)
 				case SPGIST_AM_OID:
 					err = "spgist index";
 					break;
-				case BRIN_AM_OID:
-					err = "brin index";
-					break;
 				default:
 					err = "unknown index";
 					break;
@@ -293,12 +248,6 @@ pgstat_relation(Relation rel, FunctionCallInfo fcinfo)
 			break;
 		case RELKIND_FOREIGN_TABLE:
 			err = "foreign table";
-			break;
-		case RELKIND_PARTITIONED_TABLE:
-			err = "partitioned table";
-			break;
-		case RELKIND_PARTITIONED_INDEX:
-			err = "partitioned index";
 			break;
 		default:
 			err = "unknown";
@@ -318,8 +267,7 @@ pgstat_relation(Relation rel, FunctionCallInfo fcinfo)
 static Datum
 pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 {
-	TableScanDesc scan;
-	HeapScanDesc hscan;
+	HeapScanDesc scan;
 	HeapTuple	tuple;
 	BlockNumber nblocks;
 	BlockNumber block = 0;		/* next block to count free space in */
@@ -328,18 +276,11 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 	pgstattuple_type stat = {0};
 	SnapshotData SnapshotDirty;
 
-	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("only heap AM is supported")));
-
 	/* Disable syncscan because we assume we scan from block zero upwards */
-	scan = table_beginscan_strat(rel, SnapshotAny, 0, NULL, true, false);
-	hscan = (HeapScanDesc) scan;
-
+	scan = heap_beginscan_strat(rel, SnapshotAny, 0, NULL, true, false);
 	InitDirtySnapshot(SnapshotDirty);
 
-	nblocks = hscan->rs_nblocks;	/* # blocks to be scanned */
+	nblocks = scan->rs_nblocks; /* # blocks to be scanned */
 
 	/* scan the relation */
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
@@ -347,9 +288,9 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 		CHECK_FOR_INTERRUPTS();
 
 		/* must hold a buffer lock to call HeapTupleSatisfiesVisibility */
-		LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_SHARE);
 
-		if (HeapTupleSatisfiesVisibility(tuple, &SnapshotDirty, hscan->rs_cbuf))
+		if (HeapTupleSatisfiesVisibility(tuple, &SnapshotDirty, scan->rs_cbuf))
 		{
 			stat.tuple_len += tuple->t_len;
 			stat.tuple_count++;
@@ -360,7 +301,7 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 			stat.dead_tuple_count++;
 		}
 
-		LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+		LockBuffer(scan->rs_cbuf, BUFFER_LOCK_UNLOCK);
 
 		/*
 		 * To avoid physically reading the table twice, try to do the
@@ -368,14 +309,14 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 		 * heap_getnext may find no tuples on a given page, so we cannot
 		 * simply examine the pages returned by the heap scan.
 		 */
-		tupblock = ItemPointerGetBlockNumber(&tuple->t_self);
+		tupblock = BlockIdGetBlockNumber(&tuple->t_self.ip_blkid);
 
 		while (block <= tupblock)
 		{
 			CHECK_FOR_INTERRUPTS();
 
 			buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
-										RBM_NORMAL, hscan->rs_strategy);
+										RBM_NORMAL, scan->rs_strategy);
 			LockBuffer(buffer, BUFFER_LOCK_SHARE);
 			stat.free_space += PageGetHeapFreeSpace((Page) BufferGetPage(buffer));
 			UnlockReleaseBuffer(buffer);
@@ -388,17 +329,17 @@ pgstat_heap(Relation rel, FunctionCallInfo fcinfo)
 		CHECK_FOR_INTERRUPTS();
 
 		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, block,
-									RBM_NORMAL, hscan->rs_strategy);
+									RBM_NORMAL, scan->rs_strategy);
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 		stat.free_space += PageGetHeapFreeSpace((Page) BufferGetPage(buffer));
 		UnlockReleaseBuffer(buffer);
 		block++;
 	}
 
-	table_endscan(scan);
+	heap_endscan(scan);
 	relation_close(rel, AccessShareLock);
 
-	stat.table_len = (uint64) nblocks * BLCKSZ;
+	stat.table_len = (uint64) nblocks *BLCKSZ;
 
 	return build_pgstattuple_type(&stat, fcinfo);
 }
@@ -428,7 +369,7 @@ pgstat_btree_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
 		BTPageOpaque opaque;
 
 		opaque = (BTPageOpaque) PageGetSpecialPointer(page);
-		if (P_IGNORE(opaque))
+		if (opaque->btpo_flags & (BTP_DELETED | BTP_HALF_DEAD))
 		{
 			/* recyclable page */
 			stat->free_space += BLCKSZ;
@@ -457,6 +398,7 @@ pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
 	Buffer		buf;
 	Page		page;
 
+	_hash_getlock(rel, blkno, HASH_SHARE);
 	buf = _hash_getbuf_with_strategy(rel, blkno, HASH_READ, 0, bstrategy);
 	page = BufferGetPage(buf);
 
@@ -465,7 +407,7 @@ pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
 		HashPageOpaque opaque;
 
 		opaque = (HashPageOpaque) PageGetSpecialPointer(page);
-		switch (opaque->hasho_flag & LH_PAGE_TYPE)
+		switch (opaque->hasho_flag)
 		{
 			case LH_UNUSED_PAGE:
 				stat->free_space += BLCKSZ;
@@ -487,6 +429,7 @@ pgstat_hash_page(pgstattuple_type *stat, Relation rel, BlockNumber blkno,
 	}
 
 	_hash_relbuf(rel, buf);
+	_hash_droplock(rel, blkno, HASH_SHARE);
 }
 
 /*
@@ -543,7 +486,7 @@ pgstat_index(Relation rel, BlockNumber start, pgstat_page pagefn,
 		/* Quit if we've scanned the whole relation */
 		if (blkno >= nblocks)
 		{
-			stat.table_len = (uint64) nblocks * BLCKSZ;
+			stat.table_len = (uint64) nblocks *BLCKSZ;
 
 			break;
 		}

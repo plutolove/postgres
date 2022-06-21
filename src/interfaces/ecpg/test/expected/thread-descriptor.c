@@ -12,7 +12,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <process.h>
-#include <locale.h>
 #else
 #include <pthread.h>
 #endif
@@ -32,13 +31,13 @@
 #define PGDLLIMPORT __declspec (dllimport)
 #else
 #define PGDLLIMPORT
-#endif							/* __CYGWIN__ */
-#endif							/* PGDLLIMPORT */
+#endif   /* __CYGWIN__ */
+#endif   /* PGDLLIMPORT */
 
 #define SQLERRMC_LEN	150
 
 #ifdef __cplusplus
-extern "C"
+extern		"C"
 {
 #endif
 
@@ -91,13 +90,13 @@ struct sqlca_t *ECPGget_sqlca(void);
 
 #endif
 
-#line 16 "descriptor.pgc"
+#line 15 "descriptor.pgc"
 
 /* exec sql whenever sqlerror  sqlprint ; */
-#line 17 "descriptor.pgc"
+#line 16 "descriptor.pgc"
 
 /* exec sql whenever not found  sqlprint ; */
-#line 18 "descriptor.pgc"
+#line 17 "descriptor.pgc"
 
 
 #if defined(ENABLE_THREAD_SAFETY) && defined(WIN32)
@@ -111,16 +110,16 @@ static void* fn(void* arg)
 	for (i = 1; i <= REPEATS; ++i)
 	{
 		ECPGallocate_desc(__LINE__, "mydesc");
-#line 30 "descriptor.pgc"
+#line 29 "descriptor.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();
-#line 30 "descriptor.pgc"
+#line 29 "descriptor.pgc"
 
 		ECPGdeallocate_desc(__LINE__, "mydesc");
-#line 31 "descriptor.pgc"
+#line 30 "descriptor.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();
-#line 31 "descriptor.pgc"
+#line 30 "descriptor.pgc"
 
 	}
 

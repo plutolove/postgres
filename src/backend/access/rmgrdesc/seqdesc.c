@@ -3,7 +3,7 @@
  * seqdesc.c
  *	  rmgr descriptor routines for commands/sequence.c
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,29 +18,19 @@
 
 
 void
-seq_desc(StringInfo buf, XLogReaderState *record)
+seq_desc(StringInfo buf, uint8 xl_info, char *rec)
 {
-	char	   *rec = XLogRecGetData(record);
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = xl_info & ~XLR_INFO_MASK;
 	xl_seq_rec *xlrec = (xl_seq_rec *) rec;
 
 	if (info == XLOG_SEQ_LOG)
-		appendStringInfo(buf, "rel %u/%u/%u",
-						 xlrec->node.spcNode, xlrec->node.dbNode,
-						 xlrec->node.relNode);
-}
-
-const char *
-seq_identify(uint8 info)
-{
-	const char *id = NULL;
-
-	switch (info & ~XLR_INFO_MASK)
+		appendStringInfoString(buf, "log: ");
+	else
 	{
-		case XLOG_SEQ_LOG:
-			id = "LOG";
-			break;
+		appendStringInfoString(buf, "UNKNOWN");
+		return;
 	}
 
-	return id;
+	appendStringInfo(buf, "rel %u/%u/%u",
+			   xlrec->node.spcNode, xlrec->node.dbNode, xlrec->node.relNode);
 }

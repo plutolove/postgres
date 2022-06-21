@@ -4,7 +4,7 @@
  *
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/nodeCtescan.h
@@ -17,7 +17,8 @@
 #include "nodes/execnodes.h"
 
 extern CteScanState *ExecInitCteScan(CteScan *node, EState *estate, int eflags);
+extern TupleTableSlot *ExecCteScan(CteScanState *node);
 extern void ExecEndCteScan(CteScanState *node);
 extern void ExecReScanCteScan(CteScanState *node);
 
-#endif							/* NODECTESCAN_H */
+#endif   /* NODECTESCAN_H */

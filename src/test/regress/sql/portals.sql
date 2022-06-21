@@ -462,40 +462,6 @@ FETCH FROM c1;
 DELETE FROM ucview WHERE CURRENT OF c1; -- fail, views not supported
 ROLLBACK;
 
--- Check WHERE CURRENT OF with an index-only scan
-BEGIN;
-EXPLAIN (costs off)
-DECLARE c1 CURSOR FOR SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
-DECLARE c1 CURSOR FOR SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
-FETCH FROM c1;
-DELETE FROM onek WHERE CURRENT OF c1;
-SELECT stringu1 FROM onek WHERE stringu1 = 'DZAAAA';
-ROLLBACK;
-
--- Check behavior with rewinding to a previous child scan node,
--- as per bug #15395
-BEGIN;
-CREATE TABLE current_check (currentid int, payload text);
-CREATE TABLE current_check_1 () INHERITS (current_check);
-CREATE TABLE current_check_2 () INHERITS (current_check);
-INSERT INTO current_check_1 SELECT i, 'p' || i FROM generate_series(1,9) i;
-INSERT INTO current_check_2 SELECT i, 'P' || i FROM generate_series(10,19) i;
-
-DECLARE c1 SCROLL CURSOR FOR SELECT * FROM current_check;
-
--- This tests the fetch-backwards code path
-FETCH ABSOLUTE 12 FROM c1;
-FETCH ABSOLUTE 8 FROM c1;
-DELETE FROM current_check WHERE CURRENT OF c1 RETURNING *;
-
--- This tests the ExecutorRewind code path
-FETCH ABSOLUTE 13 FROM c1;
-FETCH ABSOLUTE 1 FROM c1;
-DELETE FROM current_check WHERE CURRENT OF c1 RETURNING *;
-
-SELECT * FROM current_check;
-ROLLBACK;
-
 -- Make sure snapshot management works okay, per bug report in
 -- 235395b90909301035v7228ce63q392931f15aa74b31@mail.gmail.com
 BEGIN;
@@ -517,20 +483,4 @@ declare c cursor for select * from int8_tbl limit nochange(3);
 fetch all from c;
 move backward all in c;
 fetch all from c;
-rollback;
-
--- Check handling of non-backwards-scan-capable plans with scroll cursors
-begin;
-explain (costs off) declare c1 cursor for select (select 42) as x;
-explain (costs off) declare c1 scroll cursor for select (select 42) as x;
-declare c1 scroll cursor for select (select 42) as x;
-fetch all in c1;
-fetch backward all in c1;
-rollback;
-begin;
-explain (costs off) declare c2 cursor for select generate_series(1,3) as g;
-explain (costs off) declare c2 scroll cursor for select generate_series(1,3) as g;
-declare c2 scroll cursor for select generate_series(1,3) as g;
-fetch all in c2;
-fetch backward all in c2;
 rollback;

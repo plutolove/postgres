@@ -3,7 +3,7 @@
  * syscache.c
  *	  System cache management routines
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,7 +24,6 @@
 #include "access/sysattr.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_amproc.h"
 #include "catalog/pg_auth_members.h"
@@ -48,25 +47,15 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
-#include "catalog/pg_partitioned_table.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_publication.h"
-#include "catalog/pg_publication_rel.h"
 #include "catalog/pg_range.h"
-#include "catalog/pg_replication_origin.h"
 #include "catalog/pg_rewrite.h"
 #include "catalog/pg_seclabel.h"
-#include "catalog/pg_sequence.h"
 #include "catalog/pg_shdepend.h"
 #include "catalog/pg_shdescription.h"
 #include "catalog/pg_shseclabel.h"
 #include "catalog/pg_statistic.h"
-#include "catalog/pg_statistic_ext.h"
-#include "catalog/pg_statistic_ext_data.h"
-#include "catalog/pg_subscription.h"
-#include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_tablespace.h"
-#include "catalog/pg_transform.h"
 #include "catalog/pg_ts_config.h"
 #include "catalog/pg_ts_config_map.h"
 #include "catalog/pg_ts_dict.h"
@@ -74,10 +63,10 @@
 #include "catalog/pg_ts_template.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
-#include "lib/qunique.h"
-#include "utils/catcache.h"
 #include "utils/rel.h"
+#include "utils/catcache.h"
 #include "utils/syscache.h"
+
 
 /*---------------------------------------------------------------------------
 
@@ -103,8 +92,10 @@
 	adding/deleting caches only requires a recompile.)
 
 	Finally, any place your relation gets heap_insert() or
-	heap_update() calls, use CatalogTupleInsert() or CatalogTupleUpdate()
-	instead, which also update indexes.  The heap_* calls do not do that.
+	heap_update() calls, make sure there is a CatalogUpdateIndexes() or
+	similar call.  The heap_* calls do not update indexes.
+
+	bjm 1999/11/22
 
 *---------------------------------------------------------------------------
 */
@@ -148,7 +139,7 @@ static const struct cachedesc cacheinfo[] = {
 		AmOidIndexId,
 		1,
 		{
-			Anum_pg_am_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -247,7 +238,7 @@ static const struct cachedesc cacheinfo[] = {
 		AuthIdOidIndexId,
 		1,
 		{
-			Anum_pg_authid_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -281,7 +272,7 @@ static const struct cachedesc cacheinfo[] = {
 		OpclassOidIndexId,
 		1,
 		{
-			Anum_pg_opclass_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -303,7 +294,7 @@ static const struct cachedesc cacheinfo[] = {
 		CollationOidIndexId,
 		1,
 		{
-			Anum_pg_collation_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -317,7 +308,7 @@ static const struct cachedesc cacheinfo[] = {
 			Anum_pg_conversion_connamespace,
 			Anum_pg_conversion_conforencoding,
 			Anum_pg_conversion_contoencoding,
-			Anum_pg_conversion_oid
+			ObjectIdAttributeNumber,
 		},
 		8
 	},
@@ -336,7 +327,7 @@ static const struct cachedesc cacheinfo[] = {
 		ConstraintOidIndexId,
 		1,
 		{
-			Anum_pg_constraint_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -347,7 +338,7 @@ static const struct cachedesc cacheinfo[] = {
 		ConversionOidIndexId,
 		1,
 		{
-			Anum_pg_conversion_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -358,7 +349,7 @@ static const struct cachedesc cacheinfo[] = {
 		DatabaseOidIndexId,
 		1,
 		{
-			Anum_pg_database_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -380,7 +371,7 @@ static const struct cachedesc cacheinfo[] = {
 		EnumOidIndexId,
 		1,
 		{
-			Anum_pg_enum_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -413,14 +404,14 @@ static const struct cachedesc cacheinfo[] = {
 		EventTriggerOidIndexId,
 		1,
 		{
-			Anum_pg_event_trigger_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
 		},
 		8
 	},
-	{ForeignDataWrapperRelationId,	/* FOREIGNDATAWRAPPERNAME */
+	{ForeignDataWrapperRelationId,		/* FOREIGNDATAWRAPPERNAME */
 		ForeignDataWrapperNameIndexId,
 		1,
 		{
@@ -431,11 +422,11 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		2
 	},
-	{ForeignDataWrapperRelationId,	/* FOREIGNDATAWRAPPEROID */
+	{ForeignDataWrapperRelationId,		/* FOREIGNDATAWRAPPEROID */
 		ForeignDataWrapperOidIndexId,
 		1,
 		{
-			Anum_pg_foreign_data_wrapper_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -457,7 +448,7 @@ static const struct cachedesc cacheinfo[] = {
 		ForeignServerOidIndexId,
 		1,
 		{
-			Anum_pg_foreign_server_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -501,7 +492,7 @@ static const struct cachedesc cacheinfo[] = {
 		LanguageOidIndexId,
 		1,
 		{
-			Anum_pg_language_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -523,7 +514,7 @@ static const struct cachedesc cacheinfo[] = {
 		NamespaceOidIndexId,
 		1,
 		{
-			Anum_pg_namespace_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -545,7 +536,7 @@ static const struct cachedesc cacheinfo[] = {
 		OperatorOidIndexId,
 		1,
 		{
-			Anum_pg_operator_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -567,23 +558,12 @@ static const struct cachedesc cacheinfo[] = {
 		OpfamilyOidIndexId,
 		1,
 		{
-			Anum_pg_opfamily_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
 		},
 		8
-	},
-	{PartitionedRelationId,		/* PARTRELID */
-		PartitionedRelidIndexId,
-		1,
-		{
-			Anum_pg_partitioned_table_partrelid,
-			0,
-			0,
-			0
-		},
-		32
 	},
 	{ProcedureRelationId,		/* PROCNAMEARGSNSP */
 		ProcedureNameArgsNspIndexId,
@@ -600,56 +580,12 @@ static const struct cachedesc cacheinfo[] = {
 		ProcedureOidIndexId,
 		1,
 		{
-			Anum_pg_proc_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
 		},
 		128
-	},
-	{PublicationRelationId,		/* PUBLICATIONNAME */
-		PublicationNameIndexId,
-		1,
-		{
-			Anum_pg_publication_pubname,
-			0,
-			0,
-			0
-		},
-		8
-	},
-	{PublicationRelationId,		/* PUBLICATIONOID */
-		PublicationObjectIndexId,
-		1,
-		{
-			Anum_pg_publication_oid,
-			0,
-			0,
-			0
-		},
-		8
-	},
-	{PublicationRelRelationId,	/* PUBLICATIONREL */
-		PublicationRelObjectIndexId,
-		1,
-		{
-			Anum_pg_publication_rel_oid,
-			0,
-			0,
-			0
-		},
-		64
-	},
-	{PublicationRelRelationId,	/* PUBLICATIONRELMAP */
-		PublicationRelPrrelidPrpubidIndexId,
-		2,
-		{
-			Anum_pg_publication_rel_prrelid,
-			Anum_pg_publication_rel_prpubid,
-			0,
-			0
-		},
-		64
 	},
 	{RangeRelationId,			/* RANGETYPE */
 		RangeTypidIndexId,
@@ -677,34 +613,12 @@ static const struct cachedesc cacheinfo[] = {
 		ClassOidIndexId,
 		1,
 		{
-			Anum_pg_class_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
 		},
 		128
-	},
-	{ReplicationOriginRelationId,	/* REPLORIGIDENT */
-		ReplicationOriginIdentIndex,
-		1,
-		{
-			Anum_pg_replication_origin_roident,
-			0,
-			0,
-			0
-		},
-		16
-	},
-	{ReplicationOriginRelationId,	/* REPLORIGNAME */
-		ReplicationOriginNameIndex,
-		1,
-		{
-			Anum_pg_replication_origin_roname,
-			0,
-			0,
-			0
-		},
-		16
 	},
 	{RewriteRelationId,			/* RULERELNAME */
 		RewriteRelRulenameIndexId,
@@ -717,50 +631,6 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
-	{SequenceRelationId,		/* SEQRELID */
-		SequenceRelidIndexId,
-		1,
-		{
-			Anum_pg_sequence_seqrelid,
-			0,
-			0,
-			0
-		},
-		32
-	},
-	{StatisticExtDataRelationId,	/* STATEXTDATASTXOID */
-		StatisticExtDataStxoidIndexId,
-		1,
-		{
-			Anum_pg_statistic_ext_data_stxoid,
-			0,
-			0,
-			0
-		},
-		4
-	},
-	{StatisticExtRelationId,	/* STATEXTNAMENSP */
-		StatisticExtNameIndexId,
-		2,
-		{
-			Anum_pg_statistic_ext_stxname,
-			Anum_pg_statistic_ext_stxnamespace,
-			0,
-			0
-		},
-		4
-	},
-	{StatisticExtRelationId,	/* STATEXTOID */
-		StatisticExtOidIndexId,
-		1,
-		{
-			Anum_pg_statistic_ext_oid,
-			0,
-			0,
-			0
-		},
-		4
-	},
 	{StatisticRelationId,		/* STATRELATTINH */
 		StatisticRelidAttnumInhIndexId,
 		3,
@@ -772,71 +642,16 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		128
 	},
-	{SubscriptionRelationId,	/* SUBSCRIPTIONNAME */
-		SubscriptionNameIndexId,
-		2,
-		{
-			Anum_pg_subscription_subdbid,
-			Anum_pg_subscription_subname,
-			0,
-			0
-		},
-		4
-	},
-	{SubscriptionRelationId,	/* SUBSCRIPTIONOID */
-		SubscriptionObjectIndexId,
-		1,
-		{
-			Anum_pg_subscription_oid,
-			0,
-			0,
-			0
-		},
-		4
-	},
-	{SubscriptionRelRelationId, /* SUBSCRIPTIONRELMAP */
-		SubscriptionRelSrrelidSrsubidIndexId,
-		2,
-		{
-			Anum_pg_subscription_rel_srrelid,
-			Anum_pg_subscription_rel_srsubid,
-			0,
-			0
-		},
-		64
-	},
 	{TableSpaceRelationId,		/* TABLESPACEOID */
 		TablespaceOidIndexId,
 		1,
 		{
-			Anum_pg_tablespace_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0,
 		},
 		4
-	},
-	{TransformRelationId,		/* TRFOID */
-		TransformOidIndexId,
-		1,
-		{
-			Anum_pg_transform_oid,
-			0,
-			0,
-			0,
-		},
-		16
-	},
-	{TransformRelationId,		/* TRFTYPELANG */
-		TransformTypeLangIndexId,
-		2,
-		{
-			Anum_pg_transform_trftype,
-			Anum_pg_transform_trflang,
-			0,
-			0,
-		},
-		16
 	},
 	{TSConfigMapRelationId,		/* TSCONFIGMAP */
 		TSConfigMapIndexId,
@@ -864,7 +679,7 @@ static const struct cachedesc cacheinfo[] = {
 		TSConfigOidIndexId,
 		1,
 		{
-			Anum_pg_ts_config_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -886,7 +701,7 @@ static const struct cachedesc cacheinfo[] = {
 		TSDictionaryOidIndexId,
 		1,
 		{
-			Anum_pg_ts_dict_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -908,7 +723,7 @@ static const struct cachedesc cacheinfo[] = {
 		TSParserOidIndexId,
 		1,
 		{
-			Anum_pg_ts_parser_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -930,7 +745,7 @@ static const struct cachedesc cacheinfo[] = {
 		TSTemplateOidIndexId,
 		1,
 		{
-			Anum_pg_ts_template_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -952,7 +767,7 @@ static const struct cachedesc cacheinfo[] = {
 		TypeOidIndexId,
 		1,
 		{
-			Anum_pg_type_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -963,7 +778,7 @@ static const struct cachedesc cacheinfo[] = {
 		UserMappingOidIndexId,
 		1,
 		{
-			Anum_pg_user_mapping_oid,
+			ObjectIdAttributeNumber,
 			0,
 			0,
 			0
@@ -982,6 +797,8 @@ static const struct cachedesc cacheinfo[] = {
 		2
 	}
 };
+
+#define SysCacheSize	((int) lengthof(cacheinfo))
 
 static CatCache *SysCache[SysCacheSize];
 
@@ -1010,9 +827,8 @@ void
 InitCatalogCache(void)
 {
 	int			cacheId;
-
-	StaticAssertStmt(SysCacheSize == (int) lengthof(cacheinfo),
-					 "SysCacheSize does not match syscache.c's array");
+	int			i,
+				j;
 
 	Assert(!CacheInitialized);
 
@@ -1046,15 +862,21 @@ InitCatalogCache(void)
 	/* Sort and de-dup OID arrays, so we can use binary search. */
 	pg_qsort(SysCacheRelationOid, SysCacheRelationOidSize,
 			 sizeof(Oid), oid_compare);
-	SysCacheRelationOidSize =
-		qunique(SysCacheRelationOid, SysCacheRelationOidSize, sizeof(Oid),
-				oid_compare);
+	for (i = 1, j = 0; i < SysCacheRelationOidSize; i++)
+	{
+		if (SysCacheRelationOid[i] != SysCacheRelationOid[j])
+			SysCacheRelationOid[++j] = SysCacheRelationOid[i];
+	}
+	SysCacheRelationOidSize = j + 1;
 
 	pg_qsort(SysCacheSupportingRelOid, SysCacheSupportingRelOidSize,
 			 sizeof(Oid), oid_compare);
-	SysCacheSupportingRelOidSize =
-		qunique(SysCacheSupportingRelOid, SysCacheSupportingRelOidSize,
-				sizeof(Oid), oid_compare);
+	for (i = 1, j = 0; i < SysCacheSupportingRelOidSize; i++)
+	{
+		if (SysCacheSupportingRelOid[i] != SysCacheSupportingRelOid[j])
+			SysCacheSupportingRelOid[++j] = SysCacheSupportingRelOid[i];
+	}
+	SysCacheSupportingRelOidSize = j + 1;
 
 	CacheInitialized = true;
 }
@@ -1106,54 +928,11 @@ SearchSysCache(int cacheId,
 			   Datum key3,
 			   Datum key4)
 {
-	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
-		   PointerIsValid(SysCache[cacheId]));
+	if (cacheId < 0 || cacheId >= SysCacheSize ||
+		!PointerIsValid(SysCache[cacheId]))
+		elog(ERROR, "invalid cache ID: %d", cacheId);
 
 	return SearchCatCache(SysCache[cacheId], key1, key2, key3, key4);
-}
-
-HeapTuple
-SearchSysCache1(int cacheId,
-				Datum key1)
-{
-	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
-		   PointerIsValid(SysCache[cacheId]));
-	Assert(SysCache[cacheId]->cc_nkeys == 1);
-
-	return SearchCatCache1(SysCache[cacheId], key1);
-}
-
-HeapTuple
-SearchSysCache2(int cacheId,
-				Datum key1, Datum key2)
-{
-	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
-		   PointerIsValid(SysCache[cacheId]));
-	Assert(SysCache[cacheId]->cc_nkeys == 2);
-
-	return SearchCatCache2(SysCache[cacheId], key1, key2);
-}
-
-HeapTuple
-SearchSysCache3(int cacheId,
-				Datum key1, Datum key2, Datum key3)
-{
-	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
-		   PointerIsValid(SysCache[cacheId]));
-	Assert(SysCache[cacheId]->cc_nkeys == 3);
-
-	return SearchCatCache3(SysCache[cacheId], key1, key2, key3);
-}
-
-HeapTuple
-SearchSysCache4(int cacheId,
-				Datum key1, Datum key2, Datum key3, Datum key4)
-{
-	Assert(cacheId >= 0 && cacheId < SysCacheSize &&
-		   PointerIsValid(SysCache[cacheId]));
-	Assert(SysCache[cacheId]->cc_nkeys == 4);
-
-	return SearchCatCache4(SysCache[cacheId], key1, key2, key3, key4);
 }
 
 /*
@@ -1217,29 +996,24 @@ SearchSysCacheExists(int cacheId,
 /*
  * GetSysCacheOid
  *
- * A convenience routine that does SearchSysCache and returns the OID in the
- * oidcol column of the found tuple, or InvalidOid if no tuple could be found.
+ * A convenience routine that does SearchSysCache and returns the OID
+ * of the found tuple, or InvalidOid if no tuple could be found.
  * No lock is retained on the syscache entry.
  */
 Oid
 GetSysCacheOid(int cacheId,
-			   AttrNumber oidcol,
 			   Datum key1,
 			   Datum key2,
 			   Datum key3,
 			   Datum key4)
 {
 	HeapTuple	tuple;
-	bool		isNull;
 	Oid			result;
 
 	tuple = SearchSysCache(cacheId, key1, key2, key3, key4);
 	if (!HeapTupleIsValid(tuple))
 		return InvalidOid;
-	result = heap_getattr(tuple, oidcol,
-						  SysCache[cacheId]->cc_tupdesc,
-						  &isNull);
-	Assert(!isNull);			/* columns used as oids should never be NULL */
+	result = HeapTupleGetOid(tuple);
 	ReleaseSysCache(tuple);
 	return result;
 }
@@ -1305,52 +1079,6 @@ SearchSysCacheExistsAttName(Oid relid, const char *attname)
 		return false;
 	ReleaseSysCache(tuple);
 	return true;
-}
-
-
-/*
- * SearchSysCacheAttNum
- *
- * This routine is equivalent to SearchSysCache on the ATTNUM cache,
- * except that it will return NULL if the found attribute is marked
- * attisdropped.  This is convenient for callers that want to act as
- * though dropped attributes don't exist.
- */
-HeapTuple
-SearchSysCacheAttNum(Oid relid, int16 attnum)
-{
-	HeapTuple	tuple;
-
-	tuple = SearchSysCache2(ATTNUM,
-							ObjectIdGetDatum(relid),
-							Int16GetDatum(attnum));
-	if (!HeapTupleIsValid(tuple))
-		return NULL;
-	if (((Form_pg_attribute) GETSTRUCT(tuple))->attisdropped)
-	{
-		ReleaseSysCache(tuple);
-		return NULL;
-	}
-	return tuple;
-}
-
-/*
- * SearchSysCacheCopyAttNum
- *
- * As above, an attisdropped-aware version of SearchSysCacheCopy.
- */
-HeapTuple
-SearchSysCacheCopyAttNum(Oid relid, int16 attnum)
-{
-	HeapTuple	tuple,
-				newtuple;
-
-	tuple = SearchSysCacheAttNum(relid, attnum);
-	if (!HeapTupleIsValid(tuple))
-		return NULL;
-	newtuple = heap_copytuple(tuple);
-	ReleaseSysCache(tuple);
-	return newtuple;
 }
 
 
@@ -1427,35 +1155,14 @@ GetSysCacheHashValue(int cacheId,
  */
 struct catclist *
 SearchSysCacheList(int cacheId, int nkeys,
-				   Datum key1, Datum key2, Datum key3)
+				   Datum key1, Datum key2, Datum key3, Datum key4)
 {
 	if (cacheId < 0 || cacheId >= SysCacheSize ||
 		!PointerIsValid(SysCache[cacheId]))
 		elog(ERROR, "invalid cache ID: %d", cacheId);
 
 	return SearchCatCacheList(SysCache[cacheId], nkeys,
-							  key1, key2, key3);
-}
-
-/*
- * SysCacheInvalidate
- *
- *	Invalidate entries in the specified cache, given a hash value.
- *	See CatCacheInvalidate() for more info.
- *
- *	This routine is only quasi-public: it should only be used by inval.c.
- */
-void
-SysCacheInvalidate(int cacheId, uint32 hashValue)
-{
-	if (cacheId < 0 || cacheId >= SysCacheSize)
-		elog(ERROR, "invalid cache ID: %d", cacheId);
-
-	/* if this cache isn't initialized yet, no need to do anything */
-	if (!PointerIsValid(SysCache[cacheId]))
-		return;
-
-	CatCacheInvalidate(SysCache[cacheId], hashValue);
+							  key1, key2, key3, key4);
 }
 
 /*

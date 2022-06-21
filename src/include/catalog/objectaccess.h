@@ -3,7 +3,7 @@
  *
  *		Object access hooks.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  */
 
@@ -13,7 +13,7 @@
 /*
  * Object access hooks are intended to be called just before or just after
  * performing certain actions on a SQL object.  This is intended as
- * infrastructure for security or logging plugins.
+ * infrastructure for security or logging pluggins.
  *
  * OAT_POST_CREATE should be invoked just after the object is created.
  * Typically, this is done after inserting the primary catalog records and
@@ -37,10 +37,6 @@
  * creation or altering, because OAT_POST_CREATE or OAT_POST_ALTER are
  * sufficient for extensions to track these kind of checks.
  *
- * OAT_TRUNCATE should be invoked just before truncation of objects. This
- * event is equivalent to truncate permission on a relation under the
- * default access control mechanism.
- *
  * Other types may be added in the future.
  */
 typedef enum ObjectAccessType
@@ -49,8 +45,7 @@ typedef enum ObjectAccessType
 	OAT_DROP,
 	OAT_POST_ALTER,
 	OAT_NAMESPACE_SEARCH,
-	OAT_FUNCTION_EXECUTE,
-	OAT_TRUNCATE
+	OAT_FUNCTION_EXECUTE
 } ObjectAccessType;
 
 /*
@@ -123,23 +118,22 @@ typedef struct
 
 /* Plugin provides a hook function matching this signature. */
 typedef void (*object_access_hook_type) (ObjectAccessType access,
-										 Oid classId,
-										 Oid objectId,
-										 int subId,
-										 void *arg);
+													 Oid classId,
+													 Oid objectId,
+													 int subId,
+													 void *arg);
 
 /* Plugin sets this variable to a suitable hook function. */
 extern PGDLLIMPORT object_access_hook_type object_access_hook;
 
 /* Core code uses these functions to call the hook (see macros below). */
 extern void RunObjectPostCreateHook(Oid classId, Oid objectId, int subId,
-									bool is_internal);
+						bool is_internal);
 extern void RunObjectDropHook(Oid classId, Oid objectId, int subId,
-							  int dropflags);
-extern void RunObjectTruncateHook(Oid objectId);
+				  int dropflags);
 extern void RunObjectPostAlterHook(Oid classId, Oid objectId, int subId,
-								   Oid auxiliaryId, bool is_internal);
-extern bool RunNamespaceSearchHook(Oid objectId, bool ereport_on_violation);
+					   Oid auxiliaryId, bool is_internal);
+extern bool RunNamespaceSearchHook(Oid objectId, bool ereport_on_volation);
 extern void RunFunctionExecuteHook(Oid objectId);
 
 /*
@@ -166,12 +160,6 @@ extern void RunFunctionExecuteHook(Oid objectId);
 							  (dropflags));							\
 	} while(0)
 
-#define InvokeObjectTruncateHook(objectId)							\
-	do {															\
-		if (object_access_hook)										\
-			RunObjectTruncateHook(objectId);						\
-	} while(0)
-
 #define InvokeObjectPostAlterHook(classId,objectId,subId)			\
 	InvokeObjectPostAlterHookArg((classId),(objectId),(subId),		\
 								 InvalidOid,false)
@@ -194,4 +182,4 @@ extern void RunFunctionExecuteHook(Oid objectId);
 			RunFunctionExecuteHook(objectId);	\
 	} while(0)
 
-#endif							/* OBJECTACCESS_H */
+#endif   /* OBJECTACCESS_H */

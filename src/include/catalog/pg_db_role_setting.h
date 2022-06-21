@@ -1,26 +1,25 @@
 /*-------------------------------------------------------------------------
  *
  * pg_db_role_setting.h
- *	  definition of the system catalog for per-database/per-user
- *	  configuration settings (pg_db_role_setting)
+ *	definition of configuration settings
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_db_role_setting.h
  *
  * NOTES
- *	  The Catalog.pm module reads this file and derives schema
- *	  information.
+ *		the genbki.pl script reads this file and generates .bki
+ *		information from the DATA() statements.
+ *
+ *		XXX do NOT break up DATA() statements into multiple lines!
+ *			the scripts are not as smart as you might think...
  *
  *-------------------------------------------------------------------------
  */
 #ifndef PG_DB_ROLE_SETTING_H
 #define PG_DB_ROLE_SETTING_H
-
-#include "catalog/genbki.h"
-#include "catalog/pg_db_role_setting_d.h"
 
 #include "utils/guc.h"
 #include "utils/relcache.h"
@@ -31,7 +30,9 @@
  *		typedef struct FormData_pg_db_role_setting
  * ----------------
  */
-CATALOG(pg_db_role_setting,2964,DbRoleSettingRelationId) BKI_SHARED_RELATION
+#define DbRoleSettingRelationId 2964
+
+CATALOG(pg_db_role_setting,2964) BKI_SHARED_RELATION BKI_WITHOUT_OIDS
 {
 	Oid			setdatabase;	/* database */
 	Oid			setrole;		/* role */
@@ -41,7 +42,21 @@ CATALOG(pg_db_role_setting,2964,DbRoleSettingRelationId) BKI_SHARED_RELATION
 #endif
 } FormData_pg_db_role_setting;
 
-typedef FormData_pg_db_role_setting * Form_pg_db_role_setting;
+typedef FormData_pg_db_role_setting *Form_pg_db_role_setting;
+
+/* ----------------
+ *		compiler constants for pg_db_role_setting
+ * ----------------
+ */
+#define Natts_pg_db_role_setting				3
+#define Anum_pg_db_role_setting_setdatabase		1
+#define Anum_pg_db_role_setting_setrole			2
+#define Anum_pg_db_role_setting_setconfig		3
+
+/* ----------------
+ *		initial contents of pg_db_role_setting are NOTHING
+ * ----------------
+ */
 
 /*
  * prototypes for functions in pg_db_role_setting.h
@@ -49,6 +64,6 @@ typedef FormData_pg_db_role_setting * Form_pg_db_role_setting;
 extern void AlterSetting(Oid databaseid, Oid roleid, VariableSetStmt *setstmt);
 extern void DropSetting(Oid databaseid, Oid roleid);
 extern void ApplySetting(Snapshot snapshot, Oid databaseid, Oid roleid,
-						 Relation relsetting, GucSource source);
+			 Relation relsetting, GucSource source);
 
-#endif							/* PG_DB_ROLE_SETTING_H */
+#endif   /* PG_DB_ROLE_SETTING_H */

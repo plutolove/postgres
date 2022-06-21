@@ -3,7 +3,7 @@ doc/src/sgml/ref/abort.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="sql-abort">
+<refentry id="SQL-ABORT">
  <indexterm zone="sql-abort">
   <primary>ABORT</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-ABORT [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
+ABORT [ WORK | TRANSACTION ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -33,7 +33,7 @@ ABORT [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
    all the updates made by the transaction to be discarded.
    This command is identical
    in behavior to the standard <acronym>SQL</acronym> command
-   <xref linkend="sql-rollback"/>,
+   <xref linkend="SQL-ROLLBACK">,
    and is present only for historical reasons.
   </para>
  </refsect1>
@@ -51,18 +51,6 @@ ABORT [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
      </para>
     </listitem>
    </varlistentry>
-
-   <varlistentry>
-    <term><literal>AND CHAIN</literal></term>
-    <listitem>
-     <para>
-      If <literal>AND CHAIN</literal> is specified, a new transaction is
-      immediately started with the same transaction characteristics (see <xref
-      linkend="sql-set-transaction"/>) as the just finished one.  Otherwise,
-      no new transaction is started.
-     </para>
-    </listitem>
-   </varlistentry>
   </variablelist>
  </refsect1>
 
@@ -70,12 +58,12 @@ ABORT [ WORK | TRANSACTION ] [ AND [ NO ] CHAIN ]
   <title>Notes</title>
 
   <para>
-   Use <xref linkend="sql-commit"/> to
+   Use <xref linkend="SQL-COMMIT"> to
    successfully terminate a transaction.
   </para>
 
   <para>
-   Issuing <command>ABORT</command> outside of a transaction block
+   Issuing <command>ABORT</> outside of a transaction block
    emits a warning and otherwise has no effect.
   </para>
  </refsect1>
@@ -104,9 +92,9 @@ ABORT;
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-begin"/></member>
-   <member><xref linkend="sql-commit"/></member>
-   <member><xref linkend="sql-rollback"/></member>
+   <member><xref linkend="sql-begin"></member>
+   <member><xref linkend="sql-commit"></member>
+   <member><xref linkend="sql-rollback"></member>
   </simplelist>
  </refsect1>
 </refentry>

@@ -42,7 +42,7 @@ static void test(void) {
 
 
   ECPGdebug(1, stderr);
-  { ECPGconnect(__LINE__, 0, "ecpg1_regression" , NULL, NULL , NULL, 0); }
+  { ECPGconnect(__LINE__, 0, "regress1" , NULL, NULL , NULL, 0); }
 #line 16 "autoprep.pgc"
 
 
@@ -197,7 +197,7 @@ if (sqlca.sqlcode < 0) sqlprint();}
 
 
   i = 0;
-  while (i < 100)
+  while (1)
   {
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "fetch cur1", ECPGt_EOIT, 
 	ECPGt_int,&(item1),(long)1,(long)1,sizeof(int), 

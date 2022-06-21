@@ -4,7 +4,7 @@
  * specparse.y
  *	  bison grammar for the isolation test file format
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *-------------------------------------------------------------------------
@@ -73,8 +73,8 @@ setup_list:
 			}
 			| setup_list setup
 			{
-				$$.elements = pg_realloc($1.elements,
-										 ($1.nelements + 1) * sizeof(void *));
+				$$.elements = realloc($1.elements,
+									  ($1.nelements + 1) * sizeof(void *));
 				$$.elements[$1.nelements] = $2;
 				$$.nelements = $1.nelements + 1;
 			}
@@ -97,15 +97,15 @@ opt_teardown:
 session_list:
 			session_list session
 			{
-				$$.elements = pg_realloc($1.elements,
-										 ($1.nelements + 1) * sizeof(void *));
+				$$.elements = realloc($1.elements,
+									  ($1.nelements + 1) * sizeof(void *));
 				$$.elements[$1.nelements] = $2;
 				$$.nelements = $1.nelements + 1;
 			}
 			| session
 			{
 				$$.nelements = 1;
-				$$.elements = pg_malloc(sizeof(void *));
+				$$.elements = malloc(sizeof(void *));
 				$$.elements[0] = $1;
 			}
 		;
@@ -113,7 +113,7 @@ session_list:
 session:
 			SESSION string_literal opt_setup step_list opt_teardown
 			{
-				$$ = pg_malloc(sizeof(Session));
+				$$ = malloc(sizeof(Session));
 				$$->name = $2;
 				$$->setupsql = $3;
 				$$->steps = (Step **) $4.elements;
@@ -125,15 +125,15 @@ session:
 step_list:
 			step_list step
 			{
-				$$.elements = pg_realloc($1.elements,
-										 ($1.nelements + 1) * sizeof(void *));
+				$$.elements = realloc($1.elements,
+									  ($1.nelements + 1) * sizeof(void *));
 				$$.elements[$1.nelements] = $2;
 				$$.nelements = $1.nelements + 1;
 			}
 			| step
 			{
 				$$.nelements = 1;
-				$$.elements = pg_malloc(sizeof(void *));
+				$$.elements = malloc(sizeof(void *));
 				$$.elements[0] = $1;
 			}
 		;
@@ -142,10 +142,9 @@ step_list:
 step:
 			STEP string_literal sqlblock
 			{
-				$$ = pg_malloc(sizeof(Step));
+				$$ = malloc(sizeof(Step));
 				$$->name = $2;
 				$$->sql = $3;
-				$$->used = false;
 				$$->errormsg = NULL;
 			}
 		;
@@ -165,15 +164,15 @@ opt_permutation_list:
 permutation_list:
 			permutation_list permutation
 			{
-				$$.elements = pg_realloc($1.elements,
-										 ($1.nelements + 1) * sizeof(void *));
+				$$.elements = realloc($1.elements,
+									  ($1.nelements + 1) * sizeof(void *));
 				$$.elements[$1.nelements] = $2;
 				$$.nelements = $1.nelements + 1;
 			}
 			| permutation
 			{
 				$$.nelements = 1;
-				$$.elements = pg_malloc(sizeof(void *));
+				$$.elements = malloc(sizeof(void *));
 				$$.elements[0] = $1;
 			}
 		;
@@ -182,7 +181,7 @@ permutation_list:
 permutation:
 			PERMUTATION string_literal_list
 			{
-				$$ = pg_malloc(sizeof(Permutation));
+				$$ = malloc(sizeof(Permutation));
 				$$->stepnames = (char **) $2.elements;
 				$$->nsteps = $2.nelements;
 			}
@@ -191,15 +190,15 @@ permutation:
 string_literal_list:
 			string_literal_list string_literal
 			{
-				$$.elements = pg_realloc($1.elements,
-										 ($1.nelements + 1) * sizeof(void *));
+				$$.elements = realloc($1.elements,
+									  ($1.nelements + 1) * sizeof(void *));
 				$$.elements[$1.nelements] = $2;
 				$$.nelements = $1.nelements + 1;
 			}
 			| string_literal
 			{
 				$$.nelements = 1;
-				$$.elements = pg_malloc(sizeof(void *));
+				$$.elements = malloc(sizeof(void *));
 				$$.elements[0] = $1;
 			}
 		;

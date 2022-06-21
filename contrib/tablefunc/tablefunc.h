@@ -10,7 +10,7 @@
  * And contributors:
  * Nabil Sayegh <postgresql@e-trolley.de>
  *
- * Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2014, PostgreSQL Global Development Group
  *
  * Permission to use, copy, modify, and distribute this software and its
  * documentation for any purpose, without fee, and without a written agreement
@@ -36,4 +36,13 @@
 
 #include "fmgr.h"
 
-#endif							/* TABLEFUNC_H */
+/*
+ * External declarations
+ */
+extern Datum normal_rand(PG_FUNCTION_ARGS);
+extern Datum crosstab(PG_FUNCTION_ARGS);
+extern Datum crosstab_hash(PG_FUNCTION_ARGS);
+extern Datum connectby_text(PG_FUNCTION_ARGS);
+extern Datum connectby_text_serial(PG_FUNCTION_ARGS);
+
+#endif   /* TABLEFUNC_H */

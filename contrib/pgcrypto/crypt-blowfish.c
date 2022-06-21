@@ -469,7 +469,7 @@ BF_swap(BF_word *x, int count)
 	tmp3 ^= tmp2; \
 	(R) ^= data.ctx.P[(N) + 1]; \
 	tmp3 += tmp1; \
-	(R) ^= tmp3
+	(R) ^= tmp3;
 #else
 /* Architectures with no complicated addressing modes supported */
 #define BF_INDEX(S, i) \
@@ -490,7 +490,7 @@ BF_swap(BF_word *x, int count)
 	tmp3 ^= tmp2; \
 	(R) ^= data.ctx.P[(N) + 1]; \
 	tmp3 += tmp1; \
-	(R) ^= tmp3
+	(R) ^= tmp3;
 #endif
 
 /*
@@ -516,18 +516,17 @@ BF_swap(BF_word *x, int count)
 	BF_ROUND(R, L, 15); \
 	tmp4 = R; \
 	R = L; \
-	L = tmp4 ^ data.ctx.P[BF_N + 1]
+	L = tmp4 ^ data.ctx.P[BF_N + 1];
 
 #if BF_ASM
 
 extern void _BF_body_r(BF_ctx *ctx);
 
 #define BF_body() \
-	_BF_body_r(&data.ctx)
+	_BF_body_r(&data.ctx);
 #else
 
 #define BF_body() \
-do { \
 	L = R = 0; \
 	ptr = data.ctx.P; \
 	do { \
@@ -543,8 +542,7 @@ do { \
 		BF_ENCRYPT; \
 		*(ptr - 2) = L; \
 		*(ptr - 1) = R; \
-	} while (ptr < &data.ctx.S[3][0xFF]); \
-} while (0)
+	} while (ptr < &data.ctx.S[3][0xFF]);
 #endif
 
 static void
@@ -739,7 +737,7 @@ _crypt_blowfish_rn(const char *key, const char *setting,
 
 	memcpy(output, setting, 7 + 22 - 1);
 	output[7 + 22 - 1] = BF_itoa64[(int)
-								   BF_atoi64[(int) setting[7 + 22 - 1] - 0x20] & 0x30];
+						 BF_atoi64[(int) setting[7 + 22 - 1] - 0x20] & 0x30];
 
 /* This has to be bug-compatible with the original implementation, so
  * only encode 23 of the 24 bytes. :-) */

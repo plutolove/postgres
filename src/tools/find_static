@@ -47,4 +47,4 @@ echo "
 	from 	debug2
 	where	scope = 'T' and func != 'main'
         order by file, func;
-" |psql -X debug
+" |psql debug

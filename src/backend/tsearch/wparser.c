@@ -3,7 +3,7 @@
  * wparser.c
  *		Standard interface to word parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -13,16 +13,14 @@
  */
 #include "postgres.h"
 
+#include "funcapi.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
-#include "common/jsonapi.h"
-#include "funcapi.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_utils.h"
 #include "utils/builtins.h"
-#include "utils/jsonfuncs.h"
-#include "utils/varlena.h"
+
 
 /******sql-level interface******/
 
@@ -31,19 +29,6 @@ typedef struct
 	int			cur;
 	LexDescr   *list;
 } TSTokenTypeStorage;
-
-/* state for ts_headline_json_* */
-typedef struct HeadlineJsonState
-{
-	HeadlineParsedText *prs;
-	TSConfigCacheEntry *cfg;
-	TSParserCacheEntry *prsobj;
-	TSQuery		query;
-	List	   *prsoptions;
-	bool		transformed;
-} HeadlineJsonState;
-
-static text *headline_json_value(void *_state, char *elem_value, int elem_len);
 
 static void
 tt_setup_firstcall(FuncCallContext *funcctx, Oid prsid)
@@ -66,7 +51,7 @@ tt_setup_firstcall(FuncCallContext *funcctx, Oid prsid)
 															 (Datum) 0));
 	funcctx->user_fctx = (void *) st;
 
-	tupdesc = CreateTemplateTupleDesc(3);
+	tupdesc = CreateTemplateTupleDesc(3, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "tokid",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "alias",
@@ -104,6 +89,9 @@ tt_process_call(FuncCallContext *funcctx)
 		st->cur++;
 		return result;
 	}
+	if (st->list)
+		pfree(st->list);
+	pfree(st);
 	return (Datum) 0;
 }
 
@@ -134,7 +122,7 @@ ts_token_type_byname(PG_FUNCTION_ARGS)
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		text	   *prsname = PG_GETARG_TEXT_PP(0);
+		text	   *prsname = PG_GETARG_TEXT_P(0);
 		Oid			prsId;
 
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -183,8 +171,8 @@ prs_setup_firstcall(FuncCallContext *funcctx, Oid prsid, text *txt)
 	st->list = (LexemeEntry *) palloc(sizeof(LexemeEntry) * st->len);
 
 	prsdata = (void *) DatumGetPointer(FunctionCall2(&prs->prsstart,
-													 PointerGetDatum(VARDATA_ANY(txt)),
-													 Int32GetDatum(VARSIZE_ANY_EXHDR(txt))));
+											   PointerGetDatum(VARDATA(txt)),
+									Int32GetDatum(VARSIZE(txt) - VARHDRSZ)));
 
 	while ((type = DatumGetInt32(FunctionCall3(&prs->prstoken,
 											   PointerGetDatum(prsdata),
@@ -209,7 +197,7 @@ prs_setup_firstcall(FuncCallContext *funcctx, Oid prsid, text *txt)
 	st->cur = 0;
 
 	funcctx->user_fctx = (void *) st;
-	tupdesc = CreateTemplateTupleDesc(2);
+	tupdesc = CreateTemplateTupleDesc(2, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "tokid",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "token",
@@ -242,6 +230,12 @@ prs_process_call(FuncCallContext *funcctx)
 		st->cur++;
 		return result;
 	}
+	else
+	{
+		if (st->list)
+			pfree(st->list);
+		pfree(st);
+	}
 	return (Datum) 0;
 }
 
@@ -253,7 +247,7 @@ ts_parse_byid(PG_FUNCTION_ARGS)
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		text	   *txt = PG_GETARG_TEXT_PP(1);
+		text	   *txt = PG_GETARG_TEXT_P(1);
 
 		funcctx = SRF_FIRSTCALL_INIT();
 		prs_setup_firstcall(funcctx, PG_GETARG_OID(0), txt);
@@ -275,8 +269,8 @@ ts_parse_byname(PG_FUNCTION_ARGS)
 
 	if (SRF_IS_FIRSTCALL())
 	{
-		text	   *prsname = PG_GETARG_TEXT_PP(0);
-		text	   *txt = PG_GETARG_TEXT_PP(1);
+		text	   *prsname = PG_GETARG_TEXT_P(0);
+		text	   *txt = PG_GETARG_TEXT_P(1);
 		Oid			prsId;
 
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -294,30 +288,28 @@ ts_parse_byname(PG_FUNCTION_ARGS)
 Datum
 ts_headline_byid_opt(PG_FUNCTION_ARGS)
 {
-	Oid			tsconfig = PG_GETARG_OID(0);
-	text	   *in = PG_GETARG_TEXT_PP(1);
+	text	   *in = PG_GETARG_TEXT_P(1);
 	TSQuery		query = PG_GETARG_TSQUERY(2);
-	text	   *opt = (PG_NARGS() > 3 && PG_GETARG_POINTER(3)) ? PG_GETARG_TEXT_PP(3) : NULL;
+	text	   *opt = (PG_NARGS() > 3 && PG_GETARG_POINTER(3)) ? PG_GETARG_TEXT_P(3) : NULL;
 	HeadlineParsedText prs;
 	List	   *prsoptions;
 	text	   *out;
 	TSConfigCacheEntry *cfg;
 	TSParserCacheEntry *prsobj;
 
-	cfg = lookup_ts_config_cache(tsconfig);
+	cfg = lookup_ts_config_cache(PG_GETARG_OID(0));
 	prsobj = lookup_ts_parser_cache(cfg->prsId);
 
 	if (!OidIsValid(prsobj->headlineOid))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("text search parser does not support headline creation")));
+		   errmsg("text search parser does not support headline creation")));
 
 	memset(&prs, 0, sizeof(HeadlineParsedText));
 	prs.lenwords = 32;
 	prs.words = (HeadlineWordEntry *) palloc(sizeof(HeadlineWordEntry) * prs.lenwords);
 
-	hlparsetext(cfg->cfgId, &prs, query,
-				VARDATA_ANY(in), VARSIZE_ANY_EXHDR(in));
+	hlparsetext(cfg->cfgId, &prs, query, VARDATA(in), VARSIZE(in) - VARHDRSZ);
 
 	if (opt)
 		prsoptions = deserialize_deflist(PointerGetDatum(opt));
@@ -355,7 +347,7 @@ Datum
 ts_headline(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_DATUM(DirectFunctionCall3(ts_headline_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
+								  ObjectIdGetDatum(getTSCurrentConfig(true)),
 										PG_GETARG_DATUM(0),
 										PG_GETARG_DATUM(1)));
 }
@@ -364,186 +356,8 @@ Datum
 ts_headline_opt(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_DATUM(DirectFunctionCall4(ts_headline_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
+								  ObjectIdGetDatum(getTSCurrentConfig(true)),
 										PG_GETARG_DATUM(0),
 										PG_GETARG_DATUM(1),
 										PG_GETARG_DATUM(2)));
-}
-
-Datum
-ts_headline_jsonb_byid_opt(PG_FUNCTION_ARGS)
-{
-	Oid			tsconfig = PG_GETARG_OID(0);
-	Jsonb	   *jb = PG_GETARG_JSONB_P(1);
-	TSQuery		query = PG_GETARG_TSQUERY(2);
-	text	   *opt = (PG_NARGS() > 3 && PG_GETARG_POINTER(3)) ? PG_GETARG_TEXT_P(3) : NULL;
-	Jsonb	   *out;
-	JsonTransformStringValuesAction action = (JsonTransformStringValuesAction) headline_json_value;
-	HeadlineParsedText prs;
-	HeadlineJsonState *state = palloc0(sizeof(HeadlineJsonState));
-
-	memset(&prs, 0, sizeof(HeadlineParsedText));
-	prs.lenwords = 32;
-	prs.words = (HeadlineWordEntry *) palloc(sizeof(HeadlineWordEntry) * prs.lenwords);
-
-	state->prs = &prs;
-	state->cfg = lookup_ts_config_cache(tsconfig);
-	state->prsobj = lookup_ts_parser_cache(state->cfg->prsId);
-	state->query = query;
-	if (opt)
-		state->prsoptions = deserialize_deflist(PointerGetDatum(opt));
-	else
-		state->prsoptions = NIL;
-
-	if (!OidIsValid(state->prsobj->headlineOid))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("text search parser does not support headline creation")));
-
-	out = transform_jsonb_string_values(jb, state, action);
-
-	PG_FREE_IF_COPY(jb, 1);
-	PG_FREE_IF_COPY(query, 2);
-	if (opt)
-		PG_FREE_IF_COPY(opt, 3);
-
-	pfree(prs.words);
-
-	if (state->transformed)
-	{
-		pfree(prs.startsel);
-		pfree(prs.stopsel);
-	}
-
-	PG_RETURN_JSONB_P(out);
-}
-
-Datum
-ts_headline_jsonb(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall3(ts_headline_jsonb_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1)));
-}
-
-Datum
-ts_headline_jsonb_byid(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall3(ts_headline_jsonb_byid_opt,
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1),
-										PG_GETARG_DATUM(2)));
-}
-
-Datum
-ts_headline_jsonb_opt(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall4(ts_headline_jsonb_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1),
-										PG_GETARG_DATUM(2)));
-}
-
-Datum
-ts_headline_json_byid_opt(PG_FUNCTION_ARGS)
-{
-	Oid			tsconfig = PG_GETARG_OID(0);
-	text	   *json = PG_GETARG_TEXT_P(1);
-	TSQuery		query = PG_GETARG_TSQUERY(2);
-	text	   *opt = (PG_NARGS() > 3 && PG_GETARG_POINTER(3)) ? PG_GETARG_TEXT_P(3) : NULL;
-	text	   *out;
-	JsonTransformStringValuesAction action = (JsonTransformStringValuesAction) headline_json_value;
-
-	HeadlineParsedText prs;
-	HeadlineJsonState *state = palloc0(sizeof(HeadlineJsonState));
-
-	memset(&prs, 0, sizeof(HeadlineParsedText));
-	prs.lenwords = 32;
-	prs.words = (HeadlineWordEntry *) palloc(sizeof(HeadlineWordEntry) * prs.lenwords);
-
-	state->prs = &prs;
-	state->cfg = lookup_ts_config_cache(tsconfig);
-	state->prsobj = lookup_ts_parser_cache(state->cfg->prsId);
-	state->query = query;
-	if (opt)
-		state->prsoptions = deserialize_deflist(PointerGetDatum(opt));
-	else
-		state->prsoptions = NIL;
-
-	if (!OidIsValid(state->prsobj->headlineOid))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("text search parser does not support headline creation")));
-
-	out = transform_json_string_values(json, state, action);
-
-	PG_FREE_IF_COPY(json, 1);
-	PG_FREE_IF_COPY(query, 2);
-	if (opt)
-		PG_FREE_IF_COPY(opt, 3);
-	pfree(prs.words);
-
-	if (state->transformed)
-	{
-		pfree(prs.startsel);
-		pfree(prs.stopsel);
-	}
-
-	PG_RETURN_TEXT_P(out);
-}
-
-Datum
-ts_headline_json(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall3(ts_headline_json_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1)));
-}
-
-Datum
-ts_headline_json_byid(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall3(ts_headline_json_byid_opt,
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1),
-										PG_GETARG_DATUM(2)));
-}
-
-Datum
-ts_headline_json_opt(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_DATUM(DirectFunctionCall4(ts_headline_json_byid_opt,
-										ObjectIdGetDatum(getTSCurrentConfig(true)),
-										PG_GETARG_DATUM(0),
-										PG_GETARG_DATUM(1),
-										PG_GETARG_DATUM(2)));
-}
-
-
-/*
- * Return headline in text from, generated from a json(b) element
- */
-static text *
-headline_json_value(void *_state, char *elem_value, int elem_len)
-{
-	HeadlineJsonState *state = (HeadlineJsonState *) _state;
-
-	HeadlineParsedText *prs = state->prs;
-	TSConfigCacheEntry *cfg = state->cfg;
-	TSParserCacheEntry *prsobj = state->prsobj;
-	TSQuery		query = state->query;
-	List	   *prsoptions = state->prsoptions;
-
-	prs->curwords = 0;
-	hlparsetext(cfg->cfgId, prs, query, elem_value, elem_len);
-	FunctionCall3(&(prsobj->prsheadline),
-				  PointerGetDatum(prs),
-				  PointerGetDatum(prsoptions),
-				  PointerGetDatum(query));
-
-	state->transformed = true;
-	return generateHeadline(prs);
 }

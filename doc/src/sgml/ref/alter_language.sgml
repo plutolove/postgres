@@ -3,7 +3,7 @@ doc/src/sgml/ref/alter_language.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="sql-alterlanguage">
+<refentry id="SQL-ALTERLANGUAGE">
  <indexterm zone="sql-alterlanguage">
   <primary>ALTER LANGUAGE</primary>
  </indexterm>
@@ -22,7 +22,7 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <synopsis>
 ALTER [ PROCEDURAL ] LANGUAGE <replaceable>name</replaceable> RENAME TO <replaceable>new_name</replaceable>
-ALTER [ PROCEDURAL ] LANGUAGE <replaceable>name</replaceable> OWNER TO { <replaceable>new_owner</replaceable> | CURRENT_USER | SESSION_USER }
+ALTER [ PROCEDURAL ] LANGUAGE <replaceable>name</replaceable> OWNER TO <replaceable>new_owner</replaceable>
 </synopsis>
  </refsynopsisdiv>
 
@@ -83,8 +83,8 @@ ALTER [ PROCEDURAL ] LANGUAGE <replaceable>name</replaceable> OWNER TO { <replac
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-createlanguage"/></member>
-   <member><xref linkend="sql-droplanguage"/></member>
+   <member><xref linkend="sql-createlanguage"></member>
+   <member><xref linkend="sql-droplanguage"></member>
   </simplelist>
  </refsect1>
 

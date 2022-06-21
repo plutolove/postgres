@@ -11,7 +11,7 @@
  * PG_TRY if necessary.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -35,17 +35,17 @@
 
 static bool validateTzEntry(tzEntry *tzentry);
 static bool splitTzLine(const char *filename, int lineno,
-						char *line, tzEntry *tzentry);
-static int	addToArray(tzEntry **base, int *arraysize, int n,
-					   tzEntry *entry, bool override);
-static int	ParseTzFile(const char *filename, int depth,
-						tzEntry **base, int *arraysize, int n);
+			char *line, tzEntry *tzentry);
+static int addToArray(tzEntry **base, int *arraysize, int n,
+		   tzEntry *entry, bool override);
+static int ParseTzFile(const char *filename, int depth,
+			tzEntry **base, int *arraysize, int n);
 
 
 /*
  * Apply additional validation checks to a tzEntry
  *
- * Returns true if OK, else false
+ * Returns TRUE if OK, else false
  */
 static bool
 validateTzEntry(tzEntry *tzentry)
@@ -53,7 +53,8 @@ validateTzEntry(tzEntry *tzentry)
 	unsigned char *p;
 
 	/*
-	 * Check restrictions imposed by datetktbl storage format (see datetime.c)
+	 * Check restrictions imposed by datetkntbl storage format (see
+	 * datetime.c)
 	 */
 	if (strlen(tzentry->abbrev) > TOKMAXLEN)
 	{
@@ -91,7 +92,7 @@ validateTzEntry(tzEntry *tzentry)
  *	name  zone
  *	name  offset  dst
  *
- * Returns true if OK, else false; data is stored in *tzentry
+ * Returns TRUE if OK, else false; data is stored in *tzentry
  */
 static bool
 splitTzLine(const char *filename, int lineno, char *line, tzEntry *tzentry)
@@ -179,7 +180,7 @@ splitTzLine(const char *filename, int lineno, char *line, tzEntry *tzentry)
  * *arraysize: allocated length of array (changeable if must enlarge array)
  * n: current number of valid elements in array
  * entry: new data to insert
- * override: true if OK to override
+ * override: TRUE if OK to override
  *
  * Returns the new array length (new value for n), or -1 if error
  */
@@ -449,7 +450,9 @@ load_tzoffsets(const char *filename)
 	 */
 	tmpContext = AllocSetContextCreate(CurrentMemoryContext,
 									   "TZParserMemory",
-									   ALLOCSET_SMALL_SIZES);
+									   ALLOCSET_SMALL_MINSIZE,
+									   ALLOCSET_SMALL_INITSIZE,
+									   ALLOCSET_SMALL_MAXSIZE);
 	oldContext = MemoryContextSwitchTo(tmpContext);
 
 	/* Initialize array at a reasonable size */

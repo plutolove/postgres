@@ -3,7 +3,7 @@
  * socket.c
  *	  Microsoft Windows Win32 Socket Functions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/port/win32/socket.c
@@ -213,7 +213,7 @@ pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout)
 	 * Just a workaround of unknown locking problem with writing in UDP socket
 	 * under high load: Client's pgsql backend sleeps infinitely in
 	 * WaitForMultipleObjectsEx, pgstat process sleeps in pgwin32_select().
-	 * So, we will wait with small timeout(0.1 sec) and if socket is still
+	 * So, we will wait with small timeout(0.1 sec) and if sockect is still
 	 * blocked, try WSASend (see comments in pgwin32_select) and wait again.
 	 */
 	if ((what & FD_WRITE) && isUDP)
@@ -298,7 +298,7 @@ pgwin32_socket(int af, int type, int protocol)
 }
 
 int
-pgwin32_bind(SOCKET s, struct sockaddr *addr, int addrlen)
+pgwin32_bind(SOCKET s, struct sockaddr * addr, int addrlen)
 {
 	int			res;
 
@@ -320,7 +320,7 @@ pgwin32_listen(SOCKET s, int backlog)
 }
 
 SOCKET
-pgwin32_accept(SOCKET s, struct sockaddr *addr, int *addrlen)
+pgwin32_accept(SOCKET s, struct sockaddr * addr, int *addrlen)
 {
 	SOCKET		rs;
 
@@ -342,7 +342,7 @@ pgwin32_accept(SOCKET s, struct sockaddr *addr, int *addrlen)
 
 /* No signal delivery during connect. */
 int
-pgwin32_connect(SOCKET s, const struct sockaddr *addr, int addrlen)
+pgwin32_connect(SOCKET s, const struct sockaddr * addr, int addrlen)
 {
 	int			r;
 
@@ -426,7 +426,7 @@ pgwin32_recv(SOCKET s, char *buf, int len, int f)
 		pg_usleep(10000);
 	}
 	ereport(NOTICE,
-			(errmsg_internal("could not read from ready socket (after retries)")));
+	  (errmsg_internal("could not read from ready socket (after retries)")));
 	errno = EWOULDBLOCK;
 	return -1;
 }
@@ -500,7 +500,7 @@ pgwin32_send(SOCKET s, const void *buf, int len, int flags)
  * since it is not used in postgresql!
  */
 int
-pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout)
+pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timeval * timeout)
 {
 	WSAEVENT	events[FD_SETSIZE * 2]; /* worst case is readfds totally
 										 * different from writefds, so
@@ -523,16 +523,11 @@ pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, c
 	FD_ZERO(&outwritefds);
 
 	/*
-	 * Windows does not guarantee to log an FD_WRITE network event indicating
-	 * that more data can be sent unless the previous send() failed with
-	 * WSAEWOULDBLOCK.  While our caller might well have made such a call, we
-	 * cannot assume that here.  Therefore, if waiting for write-ready, force
-	 * the issue by doing a dummy send().  If the dummy send() succeeds,
-	 * assume that the socket is in fact write-ready, and return immediately.
-	 * Also, if it fails with something other than WSAEWOULDBLOCK, return a
-	 * write-ready indication to let our caller deal with the error condition.
+	 * Write FDs are different in the way that it is only flagged by
+	 * WSASelectEvent() if we have tried to write to them first. So try an
+	 * empty write
 	 */
-	if (writefds != NULL)
+	if (writefds)
 	{
 		for (i = 0; i < writefds->fd_count; i++)
 		{
@@ -544,11 +539,20 @@ pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, c
 			buf.len = 0;
 
 			r = WSASend(writefds->fd_array[i], &buf, 1, &sent, 0, NULL, NULL);
-			if (r == 0 || WSAGetLastError() != WSAEWOULDBLOCK)
+			if (r == 0)			/* Completed - means things are fine! */
 				FD_SET(writefds->fd_array[i], &outwritefds);
-		}
 
-		/* If we found any write-ready sockets, just return them immediately */
+			else
+			{					/* Not completed */
+				if (WSAGetLastError() != WSAEWOULDBLOCK)
+
+					/*
+					 * Not completed, and not just "would block", so an error
+					 * occurred
+					 */
+					FD_SET(writefds->fd_array[i], &outwritefds);
+			}
+		}
 		if (outwritefds.fd_count > 0)
 		{
 			memcpy(writefds, &outwritefds, sizeof(fd_set));
@@ -618,7 +622,7 @@ pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, c
 	if (r != WAIT_TIMEOUT && r != WAIT_IO_COMPLETION && r != (WAIT_OBJECT_0 + numevents))
 	{
 		/*
-		 * We scan all events, even those not signaled, in case more than one
+		 * We scan all events, even those not signalled, in case more than one
 		 * event has been tagged but Wait.. can only return one.
 		 */
 		WSANETWORKEVENTS resEvents;
@@ -671,8 +675,7 @@ pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, c
 		return 0;
 	}
 
-	/* Signal-like events. */
-	if (r == WAIT_OBJECT_0 + numevents || r == WAIT_IO_COMPLETION)
+	if (r == WAIT_OBJECT_0 + numevents)
 	{
 		pgwin32_dispatch_queued_signals();
 		errno = EINTR;
@@ -689,4 +692,40 @@ pgwin32_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, c
 	if (writefds)
 		memcpy(writefds, &outwritefds, sizeof(fd_set));
 	return nummatches;
+}
+
+
+/*
+ * Return win32 error string, since strerror can't
+ * handle winsock codes
+ */
+static char wserrbuf[256];
+const char *
+pgwin32_socket_strerror(int err)
+{
+	static HANDLE handleDLL = INVALID_HANDLE_VALUE;
+
+	if (handleDLL == INVALID_HANDLE_VALUE)
+	{
+		handleDLL = LoadLibraryEx("netmsg.dll", NULL, DONT_RESOLVE_DLL_REFERENCES | LOAD_LIBRARY_AS_DATAFILE);
+		if (handleDLL == NULL)
+			ereport(FATAL,
+					(errmsg_internal("could not load netmsg.dll: error code %lu", GetLastError())));
+	}
+
+	ZeroMemory(&wserrbuf, sizeof(wserrbuf));
+	if (FormatMessage(FORMAT_MESSAGE_IGNORE_INSERTS |
+					  FORMAT_MESSAGE_FROM_SYSTEM |
+					  FORMAT_MESSAGE_FROM_HMODULE,
+					  handleDLL,
+					  err,
+					  MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+					  wserrbuf,
+					  sizeof(wserrbuf) - 1,
+					  NULL) == 0)
+	{
+		/* Failed to get id */
+		sprintf(wserrbuf, "unrecognized winsock error %d", err);
+	}
+	return wserrbuf;
 }

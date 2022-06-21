@@ -15,7 +15,7 @@
  * The error constants are taken from the Frambak Bakfram LGSOCKET
  * library guys who in turn took them from the Winsock FAQ.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  */
@@ -32,9 +32,11 @@
 
 #include "win32.h"
 
-/* Declared here to avoid pulling in all includes, which causes name collisions */
+/* Declared here to avoid pulling in all includes, which causes name collissions */
 #ifdef ENABLE_NLS
-extern char *libpq_gettext(const char *msgid) pg_attribute_format_arg(1);
+extern char *
+libpq_gettext(const char *msgid)
+__attribute__((format_arg(1)));
 #else
 #define libpq_gettext(x) (x)
 #endif
@@ -44,7 +46,7 @@ static struct WSErrorEntry
 {
 	DWORD		error;
 	const char *description;
-}			WSErrors[] =
+}	WSErrors[] =
 
 {
 	{
@@ -236,7 +238,7 @@ struct MessageDLL
 	const char *dll_name;
 	void	   *handle;
 	int			loaded;			/* BOOL */
-}			dlls[] =
+}	dlls[] =
 
 {
 	{
@@ -244,6 +246,9 @@ struct MessageDLL
 	},
 	{
 		"winsock.dll", 0, 0
+	},
+	{
+		"wsock32.dll", 0, 0
 	},
 	{
 		"ws2_32.dll", 0, 0
@@ -291,7 +296,8 @@ winsock_strerror(int err, char *strerrbuf, size_t buflen)
 		if (!dlls[i].loaded)
 		{
 			dlls[i].loaded = 1; /* Only load once */
-			dlls[i].handle = (void *) LoadLibraryEx(dlls[i].dll_name,
+			dlls[i].handle = (void *) LoadLibraryEx(
+													dlls[i].dll_name,
 													0,
 													LOAD_LIBRARY_AS_DATAFILE);
 		}
@@ -303,11 +309,13 @@ winsock_strerror(int err, char *strerrbuf, size_t buflen)
 			| FORMAT_MESSAGE_IGNORE_INSERTS
 			| (dlls[i].handle ? FORMAT_MESSAGE_FROM_HMODULE : 0);
 
-		success = 0 != FormatMessage(flags,
+		success = 0 != FormatMessage(
+									 flags,
 									 dlls[i].handle, err,
-									 MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+								   MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
 									 strerrbuf, buflen - 64,
-									 0);
+									 0
+			);
 	}
 
 	if (!success)

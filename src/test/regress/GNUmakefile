@@ -3,19 +3,25 @@
 # GNUmakefile--
 #    Makefile for src/test/regress (the regression tests)
 #
-# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/test/regress/GNUmakefile
 #
 #-------------------------------------------------------------------------
 
-PGFILEDESC = "pg_regress - test driver"
-PGAPPICON = win32
-
 subdir = src/test/regress
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
+
+# file with extra config for temp build
+TEMP_CONF =
+ifdef TEMP_CONFIG
+TEMP_CONF += --temp-config=$(TEMP_CONFIG)
+endif
+
+# where to find psql for testing an existing installation
+PSQLDIR = $(bindir)
 
 # maximum simultaneous connections for parallel tests
 MAXCONNOPT =
@@ -25,6 +31,7 @@ endif
 
 # stuff to pass into build of pg_regress
 EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
+	'-DMAKEPROG="$(MAKE)"' \
 	'-DSHELLPROG="$(SHELL)"' \
 	'-DDLSUFFIX="$(DLSUFFIX)"'
 
@@ -36,15 +43,14 @@ EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
 
 all: pg_regress$(X)
 
-pg_regress$(X): pg_regress.o pg_regress_main.o $(WIN32RES) | submake-libpgport
+pg_regress$(X): pg_regress.o pg_regress_main.o | submake-libpgport
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
 
 # dependencies ensure that path changes propagate
 pg_regress.o: pg_regress.c $(top_builddir)/src/port/pg_config_paths.h
 pg_regress.o: override CPPFLAGS += -I$(top_builddir)/src/port $(EXTRADEFS)
 
-# note: because of the submake dependency, this rule's action is really a no-op
-$(top_builddir)/src/port/pg_config_paths.h: | submake-libpgport
+$(top_builddir)/src/port/pg_config_paths.h: $(top_builddir)/src/Makefile.global
 	$(MAKE) -C $(top_builddir)/src/port pg_config_paths.h
 
 install: all installdirs
@@ -60,14 +66,11 @@ uninstall:
 # Build dynamically-loaded object file for CREATE FUNCTION ... LANGUAGE C.
 
 NAME = regress
-OBJS = $(WIN32RES) regress.o
+OBJS = regress.o
 
 include $(top_srcdir)/src/Makefile.shlib
 
 all: all-lib
-
-# Ensure parallel safety if a build is started in this directory
-$(OBJS): | submake-libpgport submake-generated-headers
 
 # Test input and expected files.  These are created by pg_regress itself, so we
 # don't have a rule to create them.  We do need rules to clean them however.
@@ -87,17 +90,17 @@ regress_data_files = \
 
 install-tests: all install install-lib installdirs-tests
 	$(MAKE) -C $(top_builddir)/contrib/spi install
-	for file in $(subst $(srcdir)/,,$(regress_data_files)); do \
-		$(INSTALL_DATA) $(srcdir)/$$file '$(DESTDIR)$(pkglibdir)/regress/'$$file || exit; \
+	for file in $(regress_data_files); do \
+	  $(INSTALL_DATA) $$file '$(DESTDIR)$(pkglibdir)/regress/'$$file || exit; \
 	done
 
 installdirs-tests: installdirs
 	$(MKDIR_P)  $(patsubst $(srcdir)/%/,'$(DESTDIR)$(pkglibdir)/regress/%',$(sort $(dir $(regress_data_files))))
 
 
-# Get some extra C modules from contrib/spi
+# Get some extra C modules from contrib/spi and contrib/dummy_seclabel...
 
-all: refint$(DLSUFFIX) autoinc$(DLSUFFIX)
+all: refint$(DLSUFFIX) autoinc$(DLSUFFIX) dummy_seclabel$(DLSUFFIX)
 
 refint$(DLSUFFIX): $(top_builddir)/contrib/spi/refint$(DLSUFFIX)
 	cp $< $@
@@ -105,14 +108,22 @@ refint$(DLSUFFIX): $(top_builddir)/contrib/spi/refint$(DLSUFFIX)
 autoinc$(DLSUFFIX): $(top_builddir)/contrib/spi/autoinc$(DLSUFFIX)
 	cp $< $@
 
+dummy_seclabel$(DLSUFFIX): $(top_builddir)/contrib/dummy_seclabel/dummy_seclabel$(DLSUFFIX)
+	cp $< $@
+
 $(top_builddir)/contrib/spi/refint$(DLSUFFIX): | submake-contrib-spi ;
 
 $(top_builddir)/contrib/spi/autoinc$(DLSUFFIX): | submake-contrib-spi ;
 
-submake-contrib-spi: | submake-libpgport submake-generated-headers
+$(top_builddir)/contrib/dummy_seclabel/dummy_seclabel$(DLSUFFIX): | submake-contrib-dummy_seclabel ;
+
+submake-contrib-spi:
 	$(MAKE) -C $(top_builddir)/contrib/spi
 
-.PHONY: submake-contrib-spi
+submake-contrib-dummy_seclabel:
+	$(MAKE) -C $(top_builddir)/contrib/dummy_seclabel
+
+.PHONY: submake-contrib-spi submake-contrib-dummy_seclabel
 
 # Tablespace setup
 
@@ -126,13 +137,13 @@ tablespace-setup:
 ## Run tests
 ##
 
-REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 $(EXTRA_REGRESS_OPTS)
+REGRESS_OPTS = --dlpath=. $(EXTRA_REGRESS_OPTS)
 
 check: all tablespace-setup
-	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(TEMP_CONF) $(EXTRA_TESTS)
 
-check-tests: all tablespace-setup | temp-install
-	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)
+check-tests: all tablespace-setup
+	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TEMP_CONF) $(TESTS) $(EXTRA_TESTS)
 
 installcheck: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/serial_schedule $(EXTRA_TESTS)
@@ -155,7 +166,7 @@ runtest-parallel: installcheck-parallel
 bigtest: all tablespace-setup
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/serial_schedule numeric_big
 
-bigcheck: all tablespace-setup | temp-install
+bigcheck: all tablespace-setup
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) numeric_big
 
 
@@ -165,7 +176,7 @@ bigcheck: all tablespace-setup | temp-install
 
 clean distclean maintainer-clean: clean-lib
 # things built by `all' target
-	rm -f $(OBJS) refint$(DLSUFFIX) autoinc$(DLSUFFIX)
+	rm -f $(OBJS) refint$(DLSUFFIX) autoinc$(DLSUFFIX) dummy_seclabel$(DLSUFFIX)
 	rm -f pg_regress_main.o pg_regress.o pg_regress$(X)
 # things created by various check targets
 	rm -f $(output_files) $(input_files)

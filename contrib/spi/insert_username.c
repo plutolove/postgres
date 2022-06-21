@@ -1,4 +1,6 @@
 /*
+ * insert_username.c
+ * $Modified: Thu Oct 16 08:13:42 1997 by brook $
  * contrib/spi/insert_username.c
  *
  * insert user name in response to a trigger
@@ -6,7 +8,6 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "commands/trigger.h"
 #include "executor/spi.h"
@@ -25,7 +26,6 @@ insert_username(PG_FUNCTION_ARGS)
 	Trigger    *trigger;		/* to get trigger name */
 	int			nargs;			/* # of arguments */
 	Datum		newval;			/* new value of column */
-	bool		newnull;		/* null flag */
 	char	  **args;			/* arguments */
 	char	   *relname;		/* triggered relation name */
 	Relation	rel;			/* triggered relation */
@@ -67,7 +67,7 @@ insert_username(PG_FUNCTION_ARGS)
 
 	attnum = SPI_fnumber(tupdesc, args[0]);
 
-	if (attnum <= 0)
+	if (attnum < 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_TRIGGERED_ACTION_EXCEPTION),
 				 errmsg("\"%s\" has no attribute \"%s\"", relname, args[0])));
@@ -79,12 +79,14 @@ insert_username(PG_FUNCTION_ARGS)
 						args[0], relname)));
 
 	/* create fields containing name */
-	newval = CStringGetTextDatum(GetUserNameFromId(GetUserId(), false));
-	newnull = false;
+	newval = CStringGetTextDatum(GetUserNameFromId(GetUserId()));
 
 	/* construct new tuple */
-	rettuple = heap_modify_tuple_by_cols(rettuple, tupdesc,
-										 1, &attnum, &newval, &newnull);
+	rettuple = SPI_modifytuple(rel, rettuple, 1, &attnum, &newval, NULL);
+	if (rettuple == NULL)
+		/* internal error */
+		elog(ERROR, "insert_username (\"%s\"): %d returned by SPI_modifytuple",
+			 relname, SPI_result);
 
 	pfree(relname);
 

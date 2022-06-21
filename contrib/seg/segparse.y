@@ -7,7 +7,6 @@
 
 #include "fmgr.h"
 #include "utils/builtins.h"
-
 #include "segdata.h"
 
 /*
@@ -21,7 +20,14 @@
 #define YYMALLOC palloc
 #define YYFREE   pfree
 
-static float seg_atof(const char *value);
+extern int seg_yylex(void);
+
+extern int significant_digits(char *str);		/* defined in seg.c */
+
+extern int	seg_yyparse(SEG *result);
+extern void seg_yyerror(SEG *result, const char *message);
+
+static float seg_atof(char *value);
 
 static char strbuf[25] = {
 	'0', '0', '0', '0', '0',
@@ -151,7 +157,7 @@ deviation: SEGFLOAT
 
 
 static float
-seg_atof(const char *value)
+seg_atof(char *value)
 {
 	Datum datum;
 

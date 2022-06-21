@@ -4,7 +4,7 @@
  *	  PostgreSQL type definitions for ISNs (ISBN, ISMN, ISSN, EAN13, UPC)
  *
  * Author:	German Mendez Bravo (Kronuz)
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/isn/isn.c
@@ -14,22 +14,17 @@
 
 #include "postgres.h"
 
+#include "fmgr.h"
+#include "utils/builtins.h"
+
+#include "isn.h"
 #include "EAN13.h"
 #include "ISBN.h"
 #include "ISMN.h"
 #include "ISSN.h"
 #include "UPC.h"
-#include "fmgr.h"
-#include "isn.h"
-#include "utils/builtins.h"
 
 PG_MODULE_MAGIC;
-
-#ifdef USE_ASSERT_CHECKING
-#define ISN_DEBUG 1
-#else
-#define ISN_DEBUG 0
-#endif
 
 #define MAXEAN13LEN 18
 
@@ -41,6 +36,7 @@ enum isn_type
 static const char *const isn_names[] = {"EAN13/UPC/ISxN", "EAN13/UPC/ISxN", "EAN13", "ISBN", "ISMN", "ISSN", "UPC"};
 
 static bool g_weak = false;
+static bool g_initialized = false;
 
 
 /***********************************************************************
@@ -60,7 +56,7 @@ static bool g_weak = false;
 /*
  * Check if the table and its index is correct (just for debugging)
  */
-pg_attribute_unused()
+#ifdef ISN_DEBUG
 static bool
 check_table(const char *(*TABLE)[2], const unsigned TABLE_index[10][2])
 {
@@ -72,6 +68,7 @@ check_table(const char *(*TABLE)[2], const unsigned TABLE_index[10][2])
 				y = -1,
 				i = 0,
 				j,
+				cnt = 0,
 				init = 0;
 
 	if (TABLE == NULL || TABLE_index == NULL)
@@ -134,6 +131,7 @@ invalidindex:
 	elog(DEBUG1, "index %d is invalid", j);
 	return false;
 }
+#endif   /* ISN_DEBUG */
 
 /*----------------------------------------------------------
  * Formatting and conversion routines.
@@ -162,7 +160,7 @@ dehyphenate(char *bufO, char *bufI)
  *				  into bufO using the given hyphenation range TABLE.
  *				  Assumes the input string to be used is of only digits.
  *
- * Returns the number of characters actually hyphenated.
+ * Returns the number of characters acctually hyphenated.
  */
 static unsigned
 hyphenate(char *bufO, char *bufI, const char *(*TABLE)[2], const unsigned TABLE_index[10][2])
@@ -446,9 +444,9 @@ ean2ISBN(char *isn)
 	unsigned	check;
 
 	/*
-	 * The number should come in this format: 978-0-000-00000-0 or may be an
-	 * ISBN-13 number, 979-..., which does not have a short representation. Do
-	 * the short output version if possible.
+	 * The number should come in this format: 978-0-000-00000-0
+	 * or may be an ISBN-13 number, 979-..., which does not have a short
+	 * representation. Do the short output version if possible.
 	 */
 	if (strncmp("978-", isn, 4) == 0)
 	{
@@ -520,7 +518,7 @@ str2ean(const char *num)
 }
 
 /*
- * ean2string --- Try to convert an ean13 number to a hyphenated string.
+ * ean2string --- Try to convert an ean13 number to an hyphenated string.
  *				  Assumes there's enough space in result to hold
  *				  the string (maximum MAXEAN13LEN+1 bytes)
  *				  This doesn't verify for a valid check digit.
@@ -701,11 +699,11 @@ string2ean(const char *str, bool errorOK, ean13 *result,
 	/* recognize and validate the number: */
 	while (*aux2 && length <= 13)
 	{
-		last = (*(aux2 + 1) == '!' || *(aux2 + 1) == '\0'); /* is the last character */
+		last = (*(aux2 + 1) == '!' || *(aux2 + 1) == '\0');		/* is the last character */
 		digit = (isdigit((unsigned char) *aux2) != 0);	/* is current character
 														 * a digit? */
-		if (*aux2 == '?' && last)	/* automagically calculate check digit if
-									 * it's '?' */
+		if (*aux2 == '?' && last)		/* automagically calculate check digit
+										 * if it's '?' */
 			magic = digit = true;
 		if (length == 0 && (*aux2 == 'M' || *aux2 == 'm'))
 		{
@@ -750,7 +748,7 @@ string2ean(const char *str, bool errorOK, ean13 *result,
 		}
 		else if (*aux2 == '!' && *(aux2 + 1) == '\0')
 		{
-			/* the invalid check digit suffix was found, set it */
+			/* the invalid check digit sufix was found, set it */
 			if (!magic)
 				valid = false;
 			magic = true;
@@ -834,18 +832,18 @@ string2ean(const char *str, bool errorOK, ean13 *result,
 				goto eanwrongtype;
 			break;
 		case ISMN:
-			memcpy(buf, "9790", 4); /* this isn't for sure yet, for now ISMN
-									 * it's only 9790 */
+			strncpy(buf, "9790", 4);	/* this isn't for sure yet, for now
+										 * ISMN it's only 9790 */
 			valid = (valid && ((rcheck = checkdig(buf, 13)) == check || magic));
 			break;
 		case ISBN:
-			memcpy(buf, "978", 3);
+			strncpy(buf, "978", 3);
 			valid = (valid && ((rcheck = weight_checkdig(buf + 3, 10)) == check || magic));
 			break;
 		case ISSN:
-			memcpy(buf + 10, "00", 2);	/* append 00 as the normal issue
+			strncpy(buf + 10, "00", 2); /* append 00 as the normal issue
 										 * publication code */
-			memcpy(buf, "977", 3);
+			strncpy(buf, "977", 3);
 			valid = (valid && ((rcheck = weight_checkdig(buf + 3, 8)) == check || magic));
 			break;
 		case UPC:
@@ -889,8 +887,8 @@ eanbadcheck:
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid check digit for %s number: \"%s\", should be %c",
-							isn_names[accept], str, (rcheck == 10) ? ('X') : (rcheck + '0'))));
+			errmsg("invalid check digit for %s number: \"%s\", should be %c",
+				   isn_names[accept], str, (rcheck == 10) ? ('X') : (rcheck + '0'))));
 		}
 	}
 	return false;
@@ -924,24 +922,22 @@ eantoobig:
  * Exported routines.
  *---------------------------------------------------------*/
 
-void		_PG_init(void);
-
 void
-_PG_init(void)
+initialize(void)
 {
-	if (ISN_DEBUG)
-	{
-		if (!check_table(EAN13_range, EAN13_index))
-			elog(ERROR, "EAN13 failed check");
-		if (!check_table(ISBN_range, ISBN_index))
-			elog(ERROR, "ISBN failed check");
-		if (!check_table(ISMN_range, ISMN_index))
-			elog(ERROR, "ISMN failed check");
-		if (!check_table(ISSN_range, ISSN_index))
-			elog(ERROR, "ISSN failed check");
-		if (!check_table(UPC_range, UPC_index))
-			elog(ERROR, "UPC failed check");
-	}
+#ifdef ISN_DEBUG
+	if (!check_table(EAN13, EAN13_index))
+		elog(LOG, "EAN13 failed check");
+	if (!check_table(ISBN, ISBN_index))
+		elog(LOG, "ISBN failed check");
+	if (!check_table(ISMN, ISMN_index))
+		elog(LOG, "ISMN failed check");
+	if (!check_table(ISSN, ISSN_index))
+		elog(LOG, "ISSN failed check");
+	if (!check_table(UPC, UPC_index))
+		elog(LOG, "UPC failed check");
+#endif
+	g_initialized = true;
 }
 
 /* isn_out
@@ -1127,7 +1123,7 @@ accept_weak_input(PG_FUNCTION_ARGS)
 	g_weak = PG_GETARG_BOOL(0);
 #else
 	/* function has no effect */
-#endif							/* ISN_WEAK_MODE */
+#endif   /* ISN_WEAK_MODE */
 	PG_RETURN_BOOL(g_weak);
 }
 

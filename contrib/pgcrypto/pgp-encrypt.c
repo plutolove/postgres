@@ -34,8 +34,9 @@
 #include <time.h>
 
 #include "mbuf.h"
-#include "pgp.h"
 #include "px.h"
+#include "pgp.h"
+
 
 #define MDC_DIGEST_LEN 20
 #define STREAM_ID 0xE0
@@ -216,8 +217,6 @@ encrypt_free(void *priv)
 {
 	struct EncStat *st = priv;
 
-	if (st->ciph)
-		pgp_cfb_free(st->ciph);
 	px_memset(st, 0, sizeof(*st));
 	px_free(st);
 }
@@ -483,8 +482,9 @@ write_prefix(PGP_Context *ctx, PushFilter *dst)
 				bs;
 
 	bs = pgp_get_cipher_block_size(ctx->cipher_algo);
-	if (!pg_strong_random(prefix, bs))
-		return PXE_NO_RANDOM;
+	res = px_get_random_bytes(prefix, bs);
+	if (res < 0)
+		return res;
 
 	prefix[bs + 0] = prefix[bs - 2];
 	prefix[bs + 1] = prefix[bs - 1];
@@ -567,7 +567,7 @@ init_s2k_key(PGP_Context *ctx)
 	if (ctx->s2k_cipher_algo < 0)
 		ctx->s2k_cipher_algo = ctx->cipher_algo;
 
-	res = pgp_s2k_fill(&ctx->s2k, ctx->s2k_mode, ctx->s2k_digest_algo, ctx->s2k_count);
+	res = pgp_s2k_fill(&ctx->s2k, ctx->s2k_mode, ctx->s2k_digest_algo);
 	if (res < 0)
 		return res;
 
@@ -578,11 +578,14 @@ init_s2k_key(PGP_Context *ctx)
 static int
 init_sess_key(PGP_Context *ctx)
 {
+	int			res;
+
 	if (ctx->use_sess_key || ctx->pub_key)
 	{
 		ctx->sess_key_len = pgp_get_cipher_key_size(ctx->cipher_algo);
-		if (!pg_strong_random(ctx->sess_key, ctx->sess_key_len))
-			return PXE_NO_RANDOM;
+		res = px_get_random_bytes(ctx->sess_key, ctx->sess_key_len);
+		if (res < 0)
+			return res;
 	}
 	else
 	{
@@ -617,7 +620,7 @@ pgp_encrypt(PGP_Context *ctx, MBuf *src, MBuf *dst)
 		goto out;
 
 	/*
-	 * initialize sym_key
+	 * initialize symkey
 	 */
 	if (ctx->sym_key)
 	{

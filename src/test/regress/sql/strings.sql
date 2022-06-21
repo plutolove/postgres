@@ -21,34 +21,13 @@ SET standard_conforming_strings TO on;
 
 SELECT U&'d\0061t\+000061' AS U&"d\0061t\+000061";
 SELECT U&'d!0061t\+000061' UESCAPE '!' AS U&"d*0061t\+000061" UESCAPE '*';
-SELECT U&'a\\b' AS "a\b";
 
 SELECT U&' \' UESCAPE '!' AS "tricky";
 SELECT 'tricky' AS U&"\" UESCAPE '!';
 
 SELECT U&'wrong: \061';
 SELECT U&'wrong: \+0061';
-SELECT U&'wrong: +0061' UESCAPE +;
 SELECT U&'wrong: +0061' UESCAPE '+';
-
-SELECT U&'wrong: \db99';
-SELECT U&'wrong: \db99xy';
-SELECT U&'wrong: \db99\\';
-SELECT U&'wrong: \db99\0061';
-SELECT U&'wrong: \+00db99\+000061';
-SELECT U&'wrong: \+2FFFFF';
-
--- while we're here, check the same cases in E-style literals
-SELECT E'd\u0061t\U00000061' AS "data";
-SELECT E'a\\b' AS "a\b";
-SELECT E'wrong: \u061';
-SELECT E'wrong: \U0061';
-SELECT E'wrong: \udb99';
-SELECT E'wrong: \udb99xy';
-SELECT E'wrong: \udb99\\';
-SELECT E'wrong: \udb99\u0061';
-SELECT E'wrong: \U0000db99\U00000061';
-SELECT E'wrong: \U002FFFFF';
 
 SET standard_conforming_strings TO off;
 
@@ -131,59 +110,25 @@ SELECT SUBSTRING('1234567890' FROM 3) = '34567890' AS "34567890";
 
 SELECT SUBSTRING('1234567890' FROM 4 FOR 3) = '456' AS "456";
 
--- test overflow cases
-SELECT SUBSTRING('string' FROM 2 FOR 2147483646) AS "tring";
-SELECT SUBSTRING('string' FROM -10 FOR 2147483646) AS "string";
-SELECT SUBSTRING('string' FROM -10 FOR -2147483646) AS "error";
-
--- T581 regular expression substring (with SQL's bizarre regexp syntax)
+-- T581 regular expression substring (with SQL99's bizarre regexp syntax)
 SELECT SUBSTRING('abcdefg' FROM 'a#"(b_d)#"%' FOR '#') AS "bcd";
 
 -- No match should return NULL
 SELECT SUBSTRING('abcdefg' FROM '#"(b_d)#"%' FOR '#') IS NULL AS "True";
 
 -- Null inputs should return NULL
-SELECT SUBSTRING('abcdefg' FROM '%' FOR NULL) IS NULL AS "True";
-SELECT SUBSTRING(NULL FROM '%' FOR '#') IS NULL AS "True";
+SELECT SUBSTRING('abcdefg' FROM '(b|c)' FOR NULL) IS NULL AS "True";
+SELECT SUBSTRING(NULL FROM '(b|c)' FOR '#') IS NULL AS "True";
 SELECT SUBSTRING('abcdefg' FROM NULL FOR '#') IS NULL AS "True";
 
--- The first and last parts should act non-greedy
-SELECT SUBSTRING('abcdefg' FROM 'a#"%#"g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a*#"%#"g*' FOR '#') AS "abcdefg";
-
--- Vertical bar in any part affects only that part
-SELECT SUBSTRING('abcdefg' FROM 'a|b#"%#"g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a#"%#"x|g' FOR '#') AS "bcdef";
-SELECT SUBSTRING('abcdefg' FROM 'a#"%|ab#"g' FOR '#') AS "bcdef";
-
--- Can't have more than two part separators
-SELECT SUBSTRING('abcdefg' FROM 'a*#"%#"g*#"x' FOR '#') AS "error";
-
--- Postgres extension: with 0 or 1 separator, assume parts 1 and 3 are empty
-SELECT SUBSTRING('abcdefg' FROM 'a#"%g' FOR '#') AS "bcdefg";
-SELECT SUBSTRING('abcdefg' FROM 'a%g' FOR '#') AS "abcdefg";
-
--- substring() with just two arguments is not allowed by SQL spec;
--- we accept it, but we interpret the pattern as a POSIX regexp not SQL
+-- PostgreSQL extension to allow omitting the escape character;
+-- here the regexp is taken as Posix syntax
 SELECT SUBSTRING('abcdefg' FROM 'c.e') AS "cde";
 
 -- With a parenthesized subexpression, return only what matches the subexpr
 SELECT SUBSTRING('abcdefg' FROM 'b(.*)f') AS "cde";
 
--- Check behavior of SIMILAR TO, which uses largely the same regexp variant
-SELECT 'abcdefg' SIMILAR TO '_bcd%' AS true;
-SELECT 'abcdefg' SIMILAR TO 'bcd%' AS false;
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '#' AS false;
-SELECT 'abcd%' SIMILAR TO '_bcd#%' ESCAPE '#' AS true;
--- Postgres uses '\' as the default escape character, which is not per spec
-SELECT 'abcdefg' SIMILAR TO '_bcd\%' AS false;
--- and an empty string to mean "no escape", which is also not per spec
-SELECT 'abcd\efg' SIMILAR TO '_bcd\%' ESCAPE '' AS true;
--- these behaviors are per spec, though:
-SELECT 'abcdefg' SIMILAR TO '_bcd%' ESCAPE NULL AS null;
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '##' AS error;
-
--- Test back reference in regexp_replace
+-- PostgreSQL extension to allow using back reference in replace string;
 SELECT regexp_replace('1112223333', E'(\\d{3})(\\d{3})(\\d{4})', E'(\\1) \\2-\\3');
 SELECT regexp_replace('AAA   BBB   CCC   ', E'\\s+', ' ', 'g');
 SELECT regexp_replace('AAA', '^|$', 'Z', 'g');
@@ -243,9 +188,6 @@ SELECT regexp_split_to_array('the quick brown fox jumps over the lazy dog', 'nom
 SELECT regexp_split_to_array('123456','1');
 SELECT regexp_split_to_array('123456','6');
 SELECT regexp_split_to_array('123456','.');
-SELECT regexp_split_to_array('123456','');
-SELECT regexp_split_to_array('123456','(?:)');
-SELECT regexp_split_to_array('1','');
 -- errors
 SELECT foo, length(foo) FROM regexp_split_to_table('thE QUick bROWn FOx jUMPs ovEr The lazy dOG', 'e', 'zippy') AS foo;
 SELECT regexp_split_to_array('thE QUick bROWn FOx jUMPs ovEr The lazy dOG', 'e', 'iz');
@@ -379,19 +321,6 @@ SELECT 'jack' LIKE '%____%' AS t;
 
 
 --
--- basic tests of LIKE with indexes
---
-
-CREATE TABLE texttest (a text PRIMARY KEY, b int);
-SELECT * FROM texttest WHERE a LIKE '%1%';
-
-CREATE TABLE byteatest (a bytea PRIMARY KEY, b int);
-SELECT * FROM byteatest WHERE a LIKE '%1%';
-
-DROP TABLE texttest, byteatest;
-
-
---
 -- test implicit type conversion
 --
 
@@ -436,25 +365,6 @@ SELECT substr(f1, 99995) from toasttest;
 -- If start plus length is > string length, the result is truncated to
 -- string length
 SELECT substr(f1, 99995, 10) from toasttest;
-
-TRUNCATE TABLE toasttest;
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
--- expect >0 blocks
-SELECT pg_relation_size(reltoastrelid) = 0 AS is_empty
-  FROM pg_class where relname = 'toasttest';
-
-TRUNCATE TABLE toasttest;
-ALTER TABLE toasttest set (toast_tuple_target = 4080);
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
-INSERT INTO toasttest values (repeat('1234567890',300));
--- expect 0 blocks
-SELECT pg_relation_size(reltoastrelid) = 0 AS is_empty
-  FROM pg_class where relname = 'toasttest';
 
 DROP TABLE toasttest;
 
@@ -518,12 +428,6 @@ SELECT strpos('abcdef', 'cd') AS "pos_3";
 
 SELECT strpos('abcdef', 'xy') AS "pos_0";
 
-SELECT strpos('abcdef', '') AS "pos_1";
-
-SELECT strpos('', 'xy') AS "pos_0";
-
-SELECT strpos('', '') AS "pos_1";
-
 --
 -- test replace
 --
@@ -586,46 +490,6 @@ select md5('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'::byt
 select md5('12345678901234567890123456789012345678901234567890123456789012345678901234567890'::bytea) = '57edf4a22be3c955ac49da2e2107b67a' AS "TRUE";
 
 --
--- SHA-2
---
-SET bytea_output TO hex;
-
-SELECT sha224('');
-SELECT sha224('The quick brown fox jumps over the lazy dog.');
-
-SELECT sha256('');
-SELECT sha256('The quick brown fox jumps over the lazy dog.');
-
-SELECT sha384('');
-SELECT sha384('The quick brown fox jumps over the lazy dog.');
-
-SELECT sha512('');
-SELECT sha512('The quick brown fox jumps over the lazy dog.');
-
---
--- encode/decode
---
-SELECT encode('\x1234567890abcdef00', 'hex');
-SELECT decode('1234567890abcdef00', 'hex');
-SELECT encode(('\x' || repeat('1234567890abcdef0001', 7))::bytea, 'base64');
-SELECT decode(encode(('\x' || repeat('1234567890abcdef0001', 7))::bytea,
-                     'base64'), 'base64');
-SELECT encode('\x1234567890abcdef00', 'escape');
-SELECT decode(encode('\x1234567890abcdef00', 'escape'), 'escape');
-
---
--- get_bit/set_bit etc
---
-SELECT get_bit('\x1234567890abcdef00'::bytea, 43);
-SELECT get_bit('\x1234567890abcdef00'::bytea, 99);  -- error
-SELECT set_bit('\x1234567890abcdef00'::bytea, 43, 0);
-SELECT set_bit('\x1234567890abcdef00'::bytea, 99, 0);  -- error
-SELECT get_byte('\x1234567890abcdef00'::bytea, 3);
-SELECT get_byte('\x1234567890abcdef00'::bytea, 99);  -- error
-SELECT set_byte('\x1234567890abcdef00'::bytea, 7, 11);
-SELECT set_byte('\x1234567890abcdef00'::bytea, 99, 11);  -- error
-
---
 -- test behavior of escape_string_warning and standard_conforming_strings options
 --
 set escape_string_warning = off;
@@ -659,7 +523,6 @@ select 'a\\bcd' as f1, 'a\\b\'cd' as f2, 'a\\b\'''cd' as f3, 'abcd\\'   as f4, '
 --
 -- Additional string functions
 --
-SET bytea_output TO escape;
 
 SELECT initcap('hi THOMAS');
 
@@ -688,12 +551,6 @@ SELECT chr(0);
 
 SELECT repeat('Pg', 4);
 SELECT repeat('Pg', -4);
-
-SELECT SUBSTRING('1234567890'::bytea FROM 3) "34567890";
-SELECT SUBSTRING('1234567890'::bytea FROM 4 FOR 3) AS "456";
-SELECT SUBSTRING('string'::bytea FROM 2 FOR 2147483646) AS "tring";
-SELECT SUBSTRING('string'::bytea FROM -10 FOR 2147483646) AS "string";
-SELECT SUBSTRING('string'::bytea FROM -10 FOR -2147483646) AS "error";
 
 SELECT trim(E'\\000'::bytea from E'\\000Tom\\000'::bytea);
 SELECT btrim(E'\\000trim\\000'::bytea, E'\\000'::bytea);

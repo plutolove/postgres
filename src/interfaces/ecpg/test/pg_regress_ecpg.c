@@ -8,7 +8,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/ecpg/test/pg_regress_ecpg.c
@@ -16,12 +16,9 @@
  *-------------------------------------------------------------------------
  */
 
-#include "postgres_fe.h"
-
 #include "pg_regress.h"
 
 #define LINEBUFSIZE 300
-
 static void
 ecpg_filter(const char *sourcefile, const char *outfile)
 {
@@ -63,7 +60,8 @@ ecpg_filter(const char *sourcefile, const char *outfile)
 			if (plen > 1)
 			{
 				n = (char *) malloc(plen);
-				StrNCpy(n, p + 1, plen);
+				strncpy(n, p + 1, plen - 1);
+				n[plen - 1] = '\0';
 				replace_string(linebuf, n, "");
 			}
 		}
@@ -95,7 +93,6 @@ ecpg_start_test(const char *testname,
 				expectfile_source[MAXPGPATH];
 	char		cmd[MAXPGPATH * 3];
 	char	   *testname_dash;
-	char	   *appnameenv;
 
 	snprintf(inprg, sizeof(inprg), "%s/%s", inputdir, testname);
 
@@ -145,9 +142,6 @@ ecpg_start_test(const char *testname,
 			 outfile_stdout,
 			 outfile_stderr);
 
-	appnameenv = psprintf("PGAPPNAME=ecpg/%s", testname_dash);
-	putenv(appnameenv);
-
 	pid = spawn_process(cmd);
 
 	if (pid == INVALID_PID)
@@ -157,10 +151,6 @@ ecpg_start_test(const char *testname,
 		exit(2);
 	}
 
-	unsetenv("PGAPPNAME");
-	free(appnameenv);
-
-	free(testname_dash);
 	free(outfile_stdout);
 	free(outfile_stderr);
 	free(outfile_source);

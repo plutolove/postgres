@@ -3,7 +3,7 @@
  * testlo.c
  *	  test using large objects with libpq
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -187,6 +187,8 @@ exportFile(PGconn *conn, Oid lobjId, char *filename)
 
 	lo_close(conn, lobj_fd);
 	close(fd);
+
+	return;
 }
 
 static void
@@ -229,17 +231,6 @@ main(int argc, char **argv)
 				PQerrorMessage(conn));
 		exit_nicely(conn);
 	}
-
-	/* Set always-secure search path, so malicious users can't take control. */
-	res = PQexec(conn,
-				 "SELECT pg_catalog.set_config('search_path', '', false)");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
-	{
-		fprintf(stderr, "SET failed: %s", PQerrorMessage(conn));
-		PQclear(res);
-		exit_nicely(conn);
-	}
-	PQclear(res);
 
 	res = PQexec(conn, "begin");
 	PQclear(res);

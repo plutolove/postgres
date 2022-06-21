@@ -6,19 +6,20 @@
  * access control decisions recently used, and reduce number of kernel
  * invocations to avoid unnecessary performance hit.
  *
- * Copyright (c) 2011-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2011-2014, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
 #include "postgres.h"
 
+#include "access/hash.h"
 #include "catalog/pg_proc.h"
 #include "commands/seclabel.h"
-#include "common/hashfn.h"
-#include "sepgsql.h"
 #include "storage/ipc.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+
+#include "sepgsql.h"
 
 /*
  * avc_cache
@@ -44,7 +45,7 @@ typedef struct
 	/* true, if tcontext is valid */
 	char	   *ncontext;		/* temporary scontext on execution of trusted
 								 * procedure, or NULL elsewhere */
-}			avc_cache;
+}	avc_cache;
 
 /*
  * Declaration of static variables
@@ -92,20 +93,24 @@ static void
 sepgsql_avc_reclaim(void)
 {
 	ListCell   *cell;
+	ListCell   *next;
+	ListCell   *prev;
 	int			index;
 
 	while (avc_num_caches >= avc_threshold - AVC_NUM_RECLAIM)
 	{
 		index = avc_lru_hint;
 
-		foreach(cell, avc_slots[index])
+		prev = NULL;
+		for (cell = list_head(avc_slots[index]); cell; cell = next)
 		{
 			avc_cache  *cache = lfirst(cell);
 
+			next = lnext(cell);
 			if (!cache->hot_cache)
 			{
 				avc_slots[index]
-					= foreach_delete_current(avc_slots[index], cell);
+					= list_delete_cell(avc_slots[index], cell, prev);
 
 				pfree(cache->scontext);
 				pfree(cache->tcontext);
@@ -118,6 +123,7 @@ sepgsql_avc_reclaim(void)
 			else
 			{
 				cache->hot_cache = false;
+				prev = cell;
 			}
 		}
 		avc_lru_hint = (avc_lru_hint + 1) % AVC_NUM_SLOTS;
@@ -176,16 +182,19 @@ sepgsql_avc_unlabeled(void)
 		if (security_get_initial_context_raw("unlabeled", &unlabeled) < 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("SELinux: failed to get initial security label: %m")));
+			   errmsg("SELinux: failed to get initial security label: %m")));
 		PG_TRY();
 		{
 			avc_unlabeled = MemoryContextStrdup(avc_mem_cxt, unlabeled);
 		}
-		PG_FINALLY();
+		PG_CATCH();
 		{
 			freecon(unlabeled);
+			PG_RE_THROW();
 		}
 		PG_END_TRY();
+
+		freecon(unlabeled);
 	}
 	return avc_unlabeled;
 }
@@ -398,7 +407,7 @@ sepgsql_avc_check_perms_label(const char *tcontext,
 		audit_name != SEPGSQL_AVC_NOAUDIT &&
 		sepgsql_get_mode() != SEPGSQL_MODE_INTERNAL)
 	{
-		sepgsql_audit_log(denied != 0,
+		sepgsql_audit_log(!!denied,
 						  cache->scontext,
 						  cache->tcontext_is_valid ?
 						  cache->tcontext : sepgsql_avc_unlabeled(),
@@ -489,11 +498,13 @@ sepgsql_avc_init(void)
 	int			rc;
 
 	/*
-	 * All the avc stuff shall be allocated in avc_mem_cxt
+	 * All the avc stuff shall be allocated on avc_mem_cxt
 	 */
 	avc_mem_cxt = AllocSetContextCreate(TopMemoryContext,
 										"userspace access vector cache",
-										ALLOCSET_DEFAULT_SIZES);
+										ALLOCSET_DEFAULT_MINSIZE,
+										ALLOCSET_DEFAULT_INITSIZE,
+										ALLOCSET_DEFAULT_MAXSIZE);
 	memset(avc_slots, 0, sizeof(avc_slots));
 	avc_num_caches = 0;
 	avc_lru_hint = 0;

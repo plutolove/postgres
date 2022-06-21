@@ -2,16 +2,16 @@
  * slot.h
  *	   Replication slot management.
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2014, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
 #ifndef SLOT_H
 #define SLOT_H
 
+#include "fmgr.h"
 #include "access/xlog.h"
 #include "access/xlogreader.h"
-#include "storage/condition_variable.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
@@ -19,30 +19,17 @@
 /*
  * Behaviour of replication slots, upon release or crash.
  *
- * Slots marked as PERSISTENT are crash-safe and will not be dropped when
+ * Slots marked as PERSISTENT are crashsafe and will not be dropped when
  * released. Slots marked as EPHEMERAL will be dropped when released or after
- * restarts.  Slots marked TEMPORARY will be dropped at the end of a session
- * or on error.
+ * restarts.
  *
- * EPHEMERAL is used as a not-quite-ready state when creating persistent
- * slots.  EPHEMERAL slots can be made PERSISTENT by calling
- * ReplicationSlotPersist().  For a slot that goes away at the end of a
- * session, TEMPORARY is the appropriate choice.
+ * EPHEMERAL slots can be made PERSISTENT by calling ReplicationSlotPersist().
  */
 typedef enum ReplicationSlotPersistency
 {
 	RS_PERSISTENT,
-	RS_EPHEMERAL,
-	RS_TEMPORARY
+	RS_EPHEMERAL
 } ReplicationSlotPersistency;
-
-/* For ReplicationSlotAcquire, q.v. */
-typedef enum SlotAcquireBehavior
-{
-	SAB_Error,
-	SAB_Block,
-	SAB_Inquire
-} SlotAcquireBehavior;
 
 /*
  * On-Disk data of a replication slot, preserved across restarts.
@@ -79,15 +66,7 @@ typedef struct ReplicationSlotPersistentData
 	/* oldest LSN that might be required by this replication slot */
 	XLogRecPtr	restart_lsn;
 
-	/* restart_lsn is copied here when the slot is invalidated */
-	XLogRecPtr	invalidated_at;
-
-	/*
-	 * Oldest LSN that the client has acked receipt for.  This is used as the
-	 * start_lsn point in case the client doesn't specify one, and also as a
-	 * safety measure to jump forwards in case the client specifies a
-	 * start_lsn that's further in the past than this value.
-	 */
+	/* oldest LSN that the client has acked receipt for */
 	XLogRecPtr	confirmed_flush;
 
 	/* plugin name */
@@ -96,19 +75,6 @@ typedef struct ReplicationSlotPersistentData
 
 /*
  * Shared memory state of a single replication slot.
- *
- * The in-memory data of replication slots follows a locking model based
- * on two linked concepts:
- * - A replication slot's in_use flag is switched when added or discarded using
- * the LWLock ReplicationSlotControlLock, which needs to be hold in exclusive
- * mode when updating the flag by the backend owning the slot and doing the
- * operation, while readers (concurrent backends not owning the slot) need
- * to hold it in shared mode when looking at replication slot data.
- * - Individual fields are protected by mutex where only the backend owning
- * the slot is authorized to update the fields from its own slot.  The
- * backend owning the slot does not need to take this lock when reading its
- * own fields, while concurrent backends not owning this slot should take the
- * lock when reading this slot's data.
  */
 typedef struct ReplicationSlot
 {
@@ -118,8 +84,8 @@ typedef struct ReplicationSlot
 	/* is this slot defined */
 	bool		in_use;
 
-	/* Who is streaming out changes for this slot? 0 in unused slots. */
-	pid_t		active_pid;
+	/* is somebody streaming out changes for this slot */
+	bool		active;
 
 	/* any outstanding modifications? */
 	bool		just_dirtied;
@@ -143,17 +109,15 @@ typedef struct ReplicationSlot
 	ReplicationSlotPersistentData data;
 
 	/* is somebody performing io on this slot? */
-	LWLock		io_in_progress_lock;
-
-	/* Condition variable signaled when active_pid changes */
-	ConditionVariable active_cv;
+	LWLock	   *io_in_progress_lock;
 
 	/* all the remaining data is only used for logical slots */
 
-	/*
+	/* ----
 	 * When the client has confirmed flushes >= candidate_xmin_lsn we can
-	 * advance the catalog xmin.  When restart_valid has been passed,
+	 * advance the catalog xmin, when restart_valid has been passed,
 	 * restart_lsn can be increased.
+	 * ----
 	 */
 	TransactionId candidate_catalog_xmin;
 	XLogRecPtr	candidate_xmin_lsn;
@@ -161,26 +125,19 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_restart_lsn;
 } ReplicationSlot;
 
-#define SlotIsPhysical(slot) ((slot)->data.database == InvalidOid)
-#define SlotIsLogical(slot) ((slot)->data.database != InvalidOid)
-
 /*
  * Shared memory control area for all of replication slots.
  */
 typedef struct ReplicationSlotCtlData
 {
-	/*
-	 * This array should be declared [FLEXIBLE_ARRAY_MEMBER], but for some
-	 * reason you can't do that in an otherwise-empty struct.
-	 */
 	ReplicationSlot replication_slots[1];
 } ReplicationSlotCtlData;
 
 /*
  * Pointers to shared memory
  */
-extern PGDLLIMPORT ReplicationSlotCtlData *ReplicationSlotCtl;
-extern PGDLLIMPORT ReplicationSlot *MyReplicationSlot;
+extern ReplicationSlotCtlData *ReplicationSlotCtl;
+extern ReplicationSlot *MyReplicationSlot;
 
 /* GUCs */
 extern PGDLLIMPORT int max_replication_slots;
@@ -191,29 +148,31 @@ extern void ReplicationSlotsShmemInit(void);
 
 /* management of individual slots */
 extern void ReplicationSlotCreate(const char *name, bool db_specific,
-								  ReplicationSlotPersistency p);
+					  ReplicationSlotPersistency p);
 extern void ReplicationSlotPersist(void);
-extern void ReplicationSlotDrop(const char *name, bool nowait);
+extern void ReplicationSlotDrop(const char *name);
 
-extern int	ReplicationSlotAcquire(const char *name, SlotAcquireBehavior behavior);
+extern void ReplicationSlotAcquire(const char *name);
 extern void ReplicationSlotRelease(void);
-extern void ReplicationSlotCleanup(void);
 extern void ReplicationSlotSave(void);
 extern void ReplicationSlotMarkDirty(void);
 
 /* misc stuff */
 extern bool ReplicationSlotValidateName(const char *name, int elevel);
-extern void ReplicationSlotReserveWal(void);
 extern void ReplicationSlotsComputeRequiredXmin(bool already_locked);
 extern void ReplicationSlotsComputeRequiredLSN(void);
 extern XLogRecPtr ReplicationSlotsComputeLogicalRestartLSN(void);
 extern bool ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive);
-extern void ReplicationSlotsDropDBSlots(Oid dboid);
-extern void InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno);
 
 extern void StartupReplicationSlots(void);
 extern void CheckPointReplicationSlots(void);
 
 extern void CheckSlotRequirements(void);
 
-#endif							/* SLOT_H */
+/* SQL callable functions */
+extern Datum pg_create_physical_replication_slot(PG_FUNCTION_ARGS);
+extern Datum pg_create_logical_replication_slot(PG_FUNCTION_ARGS);
+extern Datum pg_drop_replication_slot(PG_FUNCTION_ARGS);
+extern Datum pg_get_replication_slots(PG_FUNCTION_ARGS);
+
+#endif   /* SLOT_H */

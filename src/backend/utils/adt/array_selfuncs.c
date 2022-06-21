@@ -3,7 +3,7 @@
  * array_selfuncs.c
  *	  Functions for selectivity estimation of array operators
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,8 +20,8 @@
 #include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
+#include "optimizer/clauses.h"
 #include "utils/array.h"
-#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/typcache.h"
@@ -39,27 +39,27 @@
 		DEFAULT_OVERLAP_SEL : DEFAULT_CONTAIN_SEL)
 
 static Selectivity calc_arraycontsel(VariableStatData *vardata, Datum constval,
-									 Oid elemtype, Oid operator);
+				  Oid elemtype, Oid operator);
 static Selectivity mcelem_array_selec(ArrayType *array,
-									  TypeCacheEntry *typentry,
-									  Datum *mcelem, int nmcelem,
-									  float4 *numbers, int nnumbers,
-									  float4 *hist, int nhist,
-									  Oid operator);
+				   TypeCacheEntry *typentry,
+				   Datum *mcelem, int nmcelem,
+				   float4 *numbers, int nnumbers,
+				   float4 *hist, int nhist,
+				   Oid operator, FmgrInfo *cmpfunc);
 static Selectivity mcelem_array_contain_overlap_selec(Datum *mcelem, int nmcelem,
-													  float4 *numbers, int nnumbers,
-													  Datum *array_data, int nitems,
-													  Oid operator, TypeCacheEntry *typentry);
+								   float4 *numbers, int nnumbers,
+								   Datum *array_data, int nitems,
+								   Oid operator, FmgrInfo *cmpfunc);
 static Selectivity mcelem_array_contained_selec(Datum *mcelem, int nmcelem,
-												float4 *numbers, int nnumbers,
-												Datum *array_data, int nitems,
-												float4 *hist, int nhist,
-												Oid operator, TypeCacheEntry *typentry);
+							 float4 *numbers, int nnumbers,
+							 Datum *array_data, int nitems,
+							 float4 *hist, int nhist,
+							 Oid operator, FmgrInfo *cmpfunc);
 static float *calc_hist(const float4 *hist, int nhist, int n);
 static float *calc_distr(const float *p, int n, int m, float rest);
 static int	floor_log2(uint32 n);
 static bool find_next_mcelem(Datum *mcelem, int nmcelem, Datum value,
-							 int *index, TypeCacheEntry *typentry);
+				 int *index, FmgrInfo *cmpfunc);
 static int	element_compare(const void *key1, const void *key2, void *arg);
 static int	float_compare_desc(const void *key1, const void *key2);
 
@@ -132,26 +132,38 @@ scalararraysel_containment(PlannerInfo *root,
 		useOr = !useOr;
 
 	/* Get array element stats for var, if available */
-	if (HeapTupleIsValid(vardata.statsTuple) &&
-		statistic_proc_security_check(&vardata, cmpfunc->fn_oid))
+	if (HeapTupleIsValid(vardata.statsTuple))
 	{
 		Form_pg_statistic stats;
-		AttStatsSlot sslot;
-		AttStatsSlot hslot;
+		Datum	   *values;
+		int			nvalues;
+		float4	   *numbers;
+		int			nnumbers;
+		float4	   *hist;
+		int			nhist;
 
 		stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
 
 		/* MCELEM will be an array of same type as element */
-		if (get_attstatsslot(&sslot, vardata.statsTuple,
+		if (get_attstatsslot(vardata.statsTuple,
+							 elemtype, vardata.atttypmod,
 							 STATISTIC_KIND_MCELEM, InvalidOid,
-							 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+							 NULL,
+							 &values, &nvalues,
+							 &numbers, &nnumbers))
 		{
 			/* For ALL case, also get histogram of distinct-element counts */
 			if (useOr ||
-				!get_attstatsslot(&hslot, vardata.statsTuple,
+				!get_attstatsslot(vardata.statsTuple,
+								  elemtype, vardata.atttypmod,
 								  STATISTIC_KIND_DECHIST, InvalidOid,
-								  ATTSTATSSLOT_NUMBERS))
-				memset(&hslot, 0, sizeof(hslot));
+								  NULL,
+								  NULL, NULL,
+								  &hist, &nhist))
+			{
+				hist = NULL;
+				nhist = 0;
+			}
 
 			/*
 			 * For = ANY, estimate as var @> ARRAY[const].
@@ -159,26 +171,22 @@ scalararraysel_containment(PlannerInfo *root,
 			 * For = ALL, estimate as var <@ ARRAY[const].
 			 */
 			if (useOr)
-				selec = mcelem_array_contain_overlap_selec(sslot.values,
-														   sslot.nvalues,
-														   sslot.numbers,
-														   sslot.nnumbers,
+				selec = mcelem_array_contain_overlap_selec(values, nvalues,
+														   numbers, nnumbers,
 														   &constval, 1,
-														   OID_ARRAY_CONTAINS_OP,
-														   typentry);
+													   OID_ARRAY_CONTAINS_OP,
+														   cmpfunc);
 			else
-				selec = mcelem_array_contained_selec(sslot.values,
-													 sslot.nvalues,
-													 sslot.numbers,
-													 sslot.nnumbers,
+				selec = mcelem_array_contained_selec(values, nvalues,
+													 numbers, nnumbers,
 													 &constval, 1,
-													 hslot.numbers,
-													 hslot.nnumbers,
+													 hist, nhist,
 													 OID_ARRAY_CONTAINED_OP,
-													 typentry);
+													 cmpfunc);
 
-			free_attstatsslot(&hslot);
-			free_attstatsslot(&sslot);
+			if (hist)
+				free_attstatsslot(elemtype, NULL, 0, hist, nhist);
+			free_attstatsslot(elemtype, values, nvalues, numbers, nnumbers);
 		}
 		else
 		{
@@ -187,15 +195,15 @@ scalararraysel_containment(PlannerInfo *root,
 				selec = mcelem_array_contain_overlap_selec(NULL, 0,
 														   NULL, 0,
 														   &constval, 1,
-														   OID_ARRAY_CONTAINS_OP,
-														   typentry);
+													   OID_ARRAY_CONTAINS_OP,
+														   cmpfunc);
 			else
 				selec = mcelem_array_contained_selec(NULL, 0,
 													 NULL, 0,
 													 &constval, 1,
 													 NULL, 0,
 													 OID_ARRAY_CONTAINED_OP,
-													 typentry);
+													 cmpfunc);
 		}
 
 		/*
@@ -211,14 +219,14 @@ scalararraysel_containment(PlannerInfo *root,
 													   NULL, 0,
 													   &constval, 1,
 													   OID_ARRAY_CONTAINS_OP,
-													   typentry);
+													   cmpfunc);
 		else
 			selec = mcelem_array_contained_selec(NULL, 0,
 												 NULL, 0,
 												 &constval, 1,
 												 NULL, 0,
 												 OID_ARRAY_CONTAINED_OP,
-												 typentry);
+												 cmpfunc);
 		/* we assume no nulls here, so no stanullfrac correction */
 	}
 
@@ -292,7 +300,7 @@ arraycontsel(PG_FUNCTION_ARGS)
 
 	/*
 	 * OK, there's a Var and a Const we're dealing with here.  We need the
-	 * Const to be an array with same element type as column, else we can't do
+	 * Const to be a array with same element type as column, else we can't do
 	 * anything useful.  (Such cases will likely fail at runtime, but here
 	 * we'd rather just return a default estimate.)
 	 */
@@ -350,51 +358,64 @@ calc_arraycontsel(VariableStatData *vardata, Datum constval,
 	cmpfunc = &typentry->cmp_proc_finfo;
 
 	/*
-	 * The caller made sure the const is an array with same element type, so
+	 * The caller made sure the const is a array with same element type, so
 	 * get it now
 	 */
 	array = DatumGetArrayTypeP(constval);
 
-	if (HeapTupleIsValid(vardata->statsTuple) &&
-		statistic_proc_security_check(vardata, cmpfunc->fn_oid))
+	if (HeapTupleIsValid(vardata->statsTuple))
 	{
 		Form_pg_statistic stats;
-		AttStatsSlot sslot;
-		AttStatsSlot hslot;
+		Datum	   *values;
+		int			nvalues;
+		float4	   *numbers;
+		int			nnumbers;
+		float4	   *hist;
+		int			nhist;
 
 		stats = (Form_pg_statistic) GETSTRUCT(vardata->statsTuple);
 
 		/* MCELEM will be an array of same type as column */
-		if (get_attstatsslot(&sslot, vardata->statsTuple,
+		if (get_attstatsslot(vardata->statsTuple,
+							 elemtype, vardata->atttypmod,
 							 STATISTIC_KIND_MCELEM, InvalidOid,
-							 ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS))
+							 NULL,
+							 &values, &nvalues,
+							 &numbers, &nnumbers))
 		{
 			/*
 			 * For "array <@ const" case we also need histogram of distinct
 			 * element counts.
 			 */
 			if (operator != OID_ARRAY_CONTAINED_OP ||
-				!get_attstatsslot(&hslot, vardata->statsTuple,
+				!get_attstatsslot(vardata->statsTuple,
+								  elemtype, vardata->atttypmod,
 								  STATISTIC_KIND_DECHIST, InvalidOid,
-								  ATTSTATSSLOT_NUMBERS))
-				memset(&hslot, 0, sizeof(hslot));
+								  NULL,
+								  NULL, NULL,
+								  &hist, &nhist))
+			{
+				hist = NULL;
+				nhist = 0;
+			}
 
 			/* Use the most-common-elements slot for the array Var. */
 			selec = mcelem_array_selec(array, typentry,
-									   sslot.values, sslot.nvalues,
-									   sslot.numbers, sslot.nnumbers,
-									   hslot.numbers, hslot.nnumbers,
-									   operator);
+									   values, nvalues,
+									   numbers, nnumbers,
+									   hist, nhist,
+									   operator, cmpfunc);
 
-			free_attstatsslot(&hslot);
-			free_attstatsslot(&sslot);
+			if (hist)
+				free_attstatsslot(elemtype, NULL, 0, hist, nhist);
+			free_attstatsslot(elemtype, values, nvalues, numbers, nnumbers);
 		}
 		else
 		{
 			/* No most-common-elements info, so do without */
 			selec = mcelem_array_selec(array, typentry,
 									   NULL, 0, NULL, 0, NULL, 0,
-									   operator);
+									   operator, cmpfunc);
 		}
 
 		/*
@@ -407,7 +428,7 @@ calc_arraycontsel(VariableStatData *vardata, Datum constval,
 		/* No stats at all, so do without */
 		selec = mcelem_array_selec(array, typentry,
 								   NULL, 0, NULL, 0, NULL, 0,
-								   operator);
+								   operator, cmpfunc);
 		/* we assume no nulls here, so no stanullfrac correction */
 	}
 
@@ -430,7 +451,7 @@ mcelem_array_selec(ArrayType *array, TypeCacheEntry *typentry,
 				   Datum *mcelem, int nmcelem,
 				   float4 *numbers, int nnumbers,
 				   float4 *hist, int nhist,
-				   Oid operator)
+				   Oid operator, FmgrInfo *cmpfunc)
 {
 	Selectivity selec;
 	int			num_elems;
@@ -475,20 +496,20 @@ mcelem_array_selec(ArrayType *array, TypeCacheEntry *typentry,
 
 	/* Sort extracted elements using their default comparison function. */
 	qsort_arg(elem_values, nonnull_nitems, sizeof(Datum),
-			  element_compare, typentry);
+			  element_compare, cmpfunc);
 
 	/* Separate cases according to operator */
 	if (operator == OID_ARRAY_CONTAINS_OP || operator == OID_ARRAY_OVERLAP_OP)
 		selec = mcelem_array_contain_overlap_selec(mcelem, nmcelem,
 												   numbers, nnumbers,
-												   elem_values, nonnull_nitems,
-												   operator, typentry);
+												 elem_values, nonnull_nitems,
+												   operator, cmpfunc);
 	else if (operator == OID_ARRAY_CONTAINED_OP)
 		selec = mcelem_array_contained_selec(mcelem, nmcelem,
 											 numbers, nnumbers,
 											 elem_values, nonnull_nitems,
 											 hist, nhist,
-											 operator, typentry);
+											 operator, cmpfunc);
 	else
 	{
 		elog(ERROR, "arraycontsel called for unrecognized operator %u",
@@ -522,7 +543,7 @@ static Selectivity
 mcelem_array_contain_overlap_selec(Datum *mcelem, int nmcelem,
 								   float4 *numbers, int nnumbers,
 								   Datum *array_data, int nitems,
-								   Oid operator, TypeCacheEntry *typentry)
+								   Oid operator, FmgrInfo *cmpfunc)
 {
 	Selectivity selec,
 				elem_selec;
@@ -585,14 +606,14 @@ mcelem_array_contain_overlap_selec(Datum *mcelem, int nmcelem,
 
 		/* Ignore any duplicates in the array data. */
 		if (i > 0 &&
-			element_compare(&array_data[i - 1], &array_data[i], typentry) == 0)
+			element_compare(&array_data[i - 1], &array_data[i], cmpfunc) == 0)
 			continue;
 
 		/* Find the smallest MCELEM >= this array item. */
 		if (use_bsearch)
 		{
 			match = find_next_mcelem(mcelem, nmcelem, array_data[i],
-									 &mcelem_index, typentry);
+									 &mcelem_index, cmpfunc);
 		}
 		else
 		{
@@ -600,7 +621,7 @@ mcelem_array_contain_overlap_selec(Datum *mcelem, int nmcelem,
 			{
 				int			cmp = element_compare(&mcelem[mcelem_index],
 												  &array_data[i],
-												  typentry);
+												  cmpfunc);
 
 				if (cmp < 0)
 					mcelem_index++;
@@ -698,7 +719,7 @@ mcelem_array_contained_selec(Datum *mcelem, int nmcelem,
 							 float4 *numbers, int nnumbers,
 							 Datum *array_data, int nitems,
 							 float4 *hist, int nhist,
-							 Oid operator, TypeCacheEntry *typentry)
+							 Oid operator, FmgrInfo *cmpfunc)
 {
 	int			mcelem_index,
 				i,
@@ -764,7 +785,7 @@ mcelem_array_contained_selec(Datum *mcelem, int nmcelem,
 
 		/* Ignore any duplicates in the array data. */
 		if (i > 0 &&
-			element_compare(&array_data[i - 1], &array_data[i], typentry) == 0)
+			element_compare(&array_data[i - 1], &array_data[i], cmpfunc) == 0)
 			continue;
 
 		/*
@@ -776,7 +797,7 @@ mcelem_array_contained_selec(Datum *mcelem, int nmcelem,
 		{
 			int			cmp = element_compare(&mcelem[mcelem_index],
 											  &array_data[i],
-											  typentry);
+											  cmpfunc);
 
 			if (cmp < 0)
 			{
@@ -787,7 +808,7 @@ mcelem_array_contained_selec(Datum *mcelem, int nmcelem,
 			else
 			{
 				if (cmp == 0)
-					match = true;	/* mcelem is found */
+					match = true;		/* mcelem is found */
 				break;
 			}
 		}
@@ -1129,7 +1150,7 @@ floor_log2(uint32 n)
  */
 static bool
 find_next_mcelem(Datum *mcelem, int nmcelem, Datum value, int *index,
-				 TypeCacheEntry *typentry)
+				 FmgrInfo *cmpfunc)
 {
 	int			l = *index,
 				r = nmcelem - 1,
@@ -1139,7 +1160,7 @@ find_next_mcelem(Datum *mcelem, int nmcelem, Datum value, int *index,
 	while (l <= r)
 	{
 		i = (l + r) / 2;
-		res = element_compare(&mcelem[i], &value, typentry);
+		res = element_compare(&mcelem[i], &value, cmpfunc);
 		if (res == 0)
 		{
 			*index = i;
@@ -1157,7 +1178,7 @@ find_next_mcelem(Datum *mcelem, int nmcelem, Datum value, int *index,
 /*
  * Comparison function for elements.
  *
- * We use the element type's default btree opclass, and its default collation
+ * We use the element type's default btree opclass, and the default collation
  * if the type is collation-sensitive.
  *
  * XXX consider using SortSupport infrastructure
@@ -1167,11 +1188,10 @@ element_compare(const void *key1, const void *key2, void *arg)
 {
 	Datum		d1 = *((const Datum *) key1);
 	Datum		d2 = *((const Datum *) key2);
-	TypeCacheEntry *typentry = (TypeCacheEntry *) arg;
-	FmgrInfo   *cmpfunc = &typentry->cmp_proc_finfo;
+	FmgrInfo   *cmpfunc = (FmgrInfo *) arg;
 	Datum		c;
 
-	c = FunctionCall2Coll(cmpfunc, typentry->typcollation, d1, d2);
+	c = FunctionCall2Coll(cmpfunc, DEFAULT_COLLATION_OID, d1, d2);
 	return DatumGetInt32(c);
 }
 

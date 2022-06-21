@@ -3,7 +3,7 @@ doc/src/sgml/ref/createdb.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="app-createdb">
+<refentry id="APP-CREATEDB">
  <indexterm zone="app-createdb">
   <primary>createdb</primary>
  </indexterm>
@@ -30,8 +30,10 @@ PostgreSQL documentation
  </refsynopsisdiv>
 
 
- <refsect1 id="r1-app-createdb-1">
-  <title>Description</title>
+ <refsect1 id="R1-APP-CREATEDB-1">
+  <title>
+   Description
+  </title>
   <para>
    <application>createdb</application> creates a new <productname>PostgreSQL</productname>
    database.
@@ -46,7 +48,7 @@ PostgreSQL documentation
 
   <para>
    <application>createdb</application> is a wrapper around the
-   <acronym>SQL</acronym> command <xref linkend="sql-createdatabase"/>.
+   <acronym>SQL</acronym> command <xref linkend="SQL-CREATEDATABASE">.
    There is no effective difference between creating databases via
    this utility and via other methods for accessing the server.
   </para>
@@ -84,8 +86,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-D <replaceable class="parameter">tablespace</replaceable></option></term>
-      <term><option>--tablespace=<replaceable class="parameter">tablespace</replaceable></option></term>
+      <term><option>-D <replaceable class="parameter">tablespace</replaceable></></term>
+      <term><option>--tablespace=<replaceable class="parameter">tablespace</replaceable></></term>
       <listitem>
        <para>
         Specifies the default tablespace for the database. (This name
@@ -95,8 +97,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-e</option></term>
-      <term><option>--echo</option></term>
+      <term><option>-e</></term>
+      <term><option>--echo</></term>
       <listitem>
        <para>
         Echo the commands that <application>createdb</application> generates
@@ -106,21 +108,21 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-E <replaceable class="parameter">encoding</replaceable></option></term>
-      <term><option>--encoding=<replaceable class="parameter">encoding</replaceable></option></term>
+      <term><option>-E <replaceable class="parameter">encoding</replaceable></></term>
+      <term><option>--encoding=<replaceable class="parameter">encoding</replaceable></></term>
       <listitem>
        <para>
         Specifies the character encoding scheme to be used in this
         database. The character sets supported by the
         <productname>PostgreSQL</productname> server are described in
-        <xref linkend="multibyte-charset-supported"/>.
+        <xref linkend="multibyte-charset-supported">.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>-l <replaceable class="parameter">locale</replaceable></option></term>
-      <term><option>--locale=<replaceable class="parameter">locale</replaceable></option></term>
+      <term><option>-l <replaceable class="parameter">locale</replaceable></></term>
+      <term><option>--locale=<replaceable class="parameter">locale</replaceable></></term>
       <listitem>
        <para>
         Specifies the locale to be used in this database.  This is equivalent
@@ -130,7 +132,7 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--lc-collate=<replaceable class="parameter">locale</replaceable></option></term>
+      <term><option>--lc-collate=<replaceable class="parameter">locale</replaceable></></term>
       <listitem>
        <para>
         Specifies the LC_COLLATE setting to be used in this database.
@@ -139,7 +141,7 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--lc-ctype=<replaceable class="parameter">locale</replaceable></option></term>
+      <term><option>--lc-ctype=<replaceable class="parameter">locale</replaceable></></term>
       <listitem>
        <para>
         Specifies the LC_CTYPE setting to be used in this database.
@@ -148,8 +150,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-O <replaceable class="parameter">owner</replaceable></option></term>
-      <term><option>--owner=<replaceable class="parameter">owner</replaceable></option></term>
+      <term><option>-O <replaceable class="parameter">owner</replaceable></></term>
+      <term><option>--owner=<replaceable class="parameter">owner</replaceable></></term>
       <listitem>
        <para>
         Specifies the database user who will own the new database.
@@ -159,8 +161,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-T <replaceable class="parameter">template</replaceable></option></term>
-      <term><option>--template=<replaceable class="parameter">template</replaceable></option></term>
+      <term><option>-T <replaceable class="parameter">template</replaceable></></term>
+      <term><option>--template=<replaceable class="parameter">template</replaceable></></term>
       <listitem>
        <para>
         Specifies the template database from which to build this
@@ -170,8 +172,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-       <term><option>-V</option></term>
-       <term><option>--version</option></term>
+       <term><option>-V</></term>
+       <term><option>--version</></term>
        <listitem>
        <para>
        Print the <application>createdb</application> version and exit.
@@ -180,8 +182,8 @@ PostgreSQL documentation
      </varlistentry>
 
     <varlistentry>
-      <term><option>-?</option></term>
-      <term><option>--help</option></term>
+      <term><option>-?</></term>
+      <term><option>--help</></term>
       <listitem>
       <para>
       Show help about <application>createdb</application> command line
@@ -197,7 +199,7 @@ PostgreSQL documentation
     The options <option>-D</option>, <option>-l</option>, <option>-E</option>,
     <option>-O</option>, and
     <option>-T</option> correspond to options of the underlying
-    SQL command <xref linkend="sql-createdatabase"/>; see there for more information
+    SQL command <xref linkend="SQL-CREATEDATABASE">; see there for more information
     about them.
    </para>
 
@@ -207,8 +209,8 @@ PostgreSQL documentation
 
     <variablelist>
      <varlistentry>
-      <term><option>-h <replaceable class="parameter">host</replaceable></option></term>
-      <term><option>--host=<replaceable class="parameter">host</replaceable></option></term>
+      <term><option>-h <replaceable class="parameter">host</replaceable></></term>
+      <term><option>--host=<replaceable class="parameter">host</replaceable></></term>
       <listitem>
        <para>
         Specifies the host name of the machine on which the
@@ -219,8 +221,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-p <replaceable class="parameter">port</replaceable></option></term>
-      <term><option>--port=<replaceable class="parameter">port</replaceable></option></term>
+      <term><option>-p <replaceable class="parameter">port</replaceable></></term>
+      <term><option>--port=<replaceable class="parameter">port</replaceable></></term>
       <listitem>
        <para>
         Specifies the TCP port or the local Unix domain socket file
@@ -230,8 +232,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-U <replaceable class="parameter">username</replaceable></option></term>
-      <term><option>--username=<replaceable class="parameter">username</replaceable></option></term>
+      <term><option>-U <replaceable class="parameter">username</replaceable></></term>
+      <term><option>--username=<replaceable class="parameter">username</replaceable></></term>
       <listitem>
        <para>
         User name to connect as.
@@ -240,8 +242,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-w</option></term>
-      <term><option>--no-password</option></term>
+      <term><option>-w</></term>
+      <term><option>--no-password</></term>
       <listitem>
        <para>
         Never issue a password prompt.  If the server requires
@@ -255,8 +257,8 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>-W</option></term>
-      <term><option>--password</option></term>
+      <term><option>-W</></term>
+      <term><option>--password</></term>
       <listitem>
        <para>
         Force <application>createdb</application> to prompt for a
@@ -269,14 +271,14 @@ PostgreSQL documentation
         for a password if the server demands password authentication.
         However, <application>createdb</application> will waste a
         connection attempt finding out that the server wants a password.
-        In some cases it is worth typing <option>-W</option> to avoid the extra
+        In some cases it is worth typing <option>-W</> to avoid the extra
         connection attempt.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--maintenance-db=<replaceable class="parameter">dbname</replaceable></option></term>
+      <term><option>--maintenance-db=<replaceable class="parameter">dbname</replaceable></></term>
       <listitem>
        <para>
          Specifies the name of the database to connect to when creating the
@@ -284,9 +286,6 @@ PostgreSQL documentation
          database will be used; if that does not exist (or if it is the name
          of the new database being created), <literal>template1</literal> will
          be used.
-         This can be a <link linkend="libpq-connstring">connection
-         string</link>.  If so, connection string parameters will override any
-         conflicting command line options.
        </para>
       </listitem>
      </varlistentry>
@@ -323,23 +322,12 @@ PostgreSQL documentation
      </para>
     </listitem>
    </varlistentry>
-
-   <varlistentry>
-    <term><envar>PG_COLOR</envar></term>
-    <listitem>
-     <para>
-      Specifies whether to use color in diagnostic messages. Possible values
-      are <literal>always</literal>, <literal>auto</literal> and
-      <literal>never</literal>.
-     </para>
-    </listitem>
-   </varlistentry>
   </variablelist>
 
   <para>
-   This utility, like most other <productname>PostgreSQL</productname> utilities,
-   also uses the environment variables supported by <application>libpq</application>
-   (see <xref linkend="libpq-envars"/>).
+   This utility, like most other <productname>PostgreSQL</> utilities,
+   also uses the environment variables supported by <application>libpq</>
+   (see <xref linkend="libpq-envars">).
   </para>
 
  </refsect1>
@@ -349,8 +337,8 @@ PostgreSQL documentation
   <title>Diagnostics</title>
 
   <para>
-   In case of difficulty, see <xref linkend="sql-createdatabase"/>
-   and <xref linkend="app-psql"/> for
+   In case of difficulty, see <xref linkend="SQL-CREATEDATABASE">
+   and <xref linkend="APP-PSQL"> for
    discussions of potential problems and error messages.
    The database server must be running at the
    targeted host.  Also, any default connection settings and environment
@@ -374,12 +362,12 @@ PostgreSQL documentation
 
    <para>
     To create the database <literal>demo</literal> using the
-    server on host <literal>eden</literal>, port 5000, using the
-    <literal>template0</literal> template database,  here is the
-    command-line command and the underlying SQL command:
+    server on host <literal>eden</>, port 5000, using the
+    <literal>LATIN1</literal> encoding scheme with a look at the
+    underlying command:
 <screen>
-<prompt>$ </prompt><userinput>createdb -p 5000 -h eden -T template0 -e demo</userinput>
-<computeroutput>CREATE DATABASE demo TEMPLATE template0;</computeroutput>
+<prompt>$ </prompt><userinput>createdb -p 5000 -h eden -E LATIN1 -e demo</userinput>
+<computeroutput>CREATE DATABASE demo ENCODING 'LATIN1';</computeroutput>
 </screen></para>
  </refsect1>
 
@@ -388,8 +376,8 @@ PostgreSQL documentation
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="app-dropdb"/></member>
-   <member><xref linkend="sql-createdatabase"/></member>
+   <member><xref linkend="app-dropdb"></member>
+   <member><xref linkend="sql-createdatabase"></member>
   </simplelist>
  </refsect1>
 

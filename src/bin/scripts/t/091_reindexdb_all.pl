@@ -1,16 +1,14 @@
 use strict;
 use warnings;
-
-use PostgresNode;
+use TestLib;
 use Test::More tests => 2;
 
-my $node = get_new_node('main');
-$node->init;
-$node->start;
+my $tempdir = tempdir;
+start_test_server $tempdir;
 
 $ENV{PGOPTIONS} = '--client-min-messages=WARNING';
 
-$node->issues_sql_like(
+issues_sql_like(
 	[ 'reindexdb', '-a' ],
 	qr/statement: REINDEX.*statement: REINDEX/s,
 	'reindex all databases');

@@ -1,6 +1,6 @@
 #-------------------------------------------------------------------------
 #
-# Makefile for the PL/Tcl procedural language
+# Makefile for the pl/tcl procedural language
 #
 # src/pl/tcl/Makefile
 #
@@ -11,26 +11,41 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 
-override CPPFLAGS := -I. -I$(srcdir) $(TCL_INCLUDE_SPEC) $(CPPFLAGS)
+override CPPFLAGS := $(TCL_INCLUDE_SPEC) $(CPPFLAGS)
+
+
+# Find out whether Tcl was built as a shared library --- if not, we
+# can't link a shared library that depends on it, and have to forget
+# about building pltcl. In Tcl 8, tclConfig.sh sets TCL_SHARED_BUILD
+# for us, but in older Tcl releases it doesn't. In that case we guess
+# based on the name of the Tcl library.
+
+ifndef TCL_SHARED_BUILD
+ifneq (,$(findstring $(DLSUFFIX),$(TCL_LIB_FILE)))
+TCL_SHARED_BUILD=1
+else
+TCL_SHARED_BUILD=0
+endif
+endif
+
 
 # On Windows, we don't link directly with the Tcl library; see below
 ifneq ($(PORTNAME), win32)
 SHLIB_LINK = $(TCL_LIB_SPEC) $(TCL_LIBS) -lc
 endif
 
-PGFILEDESC = "PL/Tcl - procedural language"
 
 NAME = pltcl
 
-OBJS = \
-	$(WIN32RES) \
-	pltcl.o
+OBJS = pltcl.o
 
-DATA = pltcl.control pltcl--1.0.sql \
-       pltclu.control pltclu--1.0.sql
+DATA = pltcl.control pltcl--1.0.sql pltcl--unpackaged--1.0.sql \
+       pltclu.control pltclu--1.0.sql pltclu--unpackaged--1.0.sql
 
 REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-extension=pltcl
-REGRESS = pltcl_setup pltcl_queries pltcl_trigger pltcl_call pltcl_start_proc pltcl_subxact pltcl_unicode pltcl_transaction
+REGRESS = pltcl_setup pltcl_queries
+# where to find psql for running the tests
+PSQLDIR = $(bindir)
 
 # Tcl on win32 ships with import libraries only for Microsoft Visual C++,
 # which are not compatible with mingw gcc. Therefore we need to build a
@@ -53,24 +68,21 @@ endif # win32
 
 include $(top_srcdir)/src/Makefile.shlib
 
+ifeq ($(TCL_SHARED_BUILD), 1)
 
 all: all-lib
+	$(MAKE) -C modules $@
 
-# Force this dependency to be known even without dependency info built:
-pltcl.o: pltclerrcodes.h
-
-# generate pltclerrcodes.h from src/backend/utils/errcodes.txt
-pltclerrcodes.h: $(top_srcdir)/src/backend/utils/errcodes.txt generate-pltclerrcodes.pl
-	$(PERL) $(srcdir)/generate-pltclerrcodes.pl $< > $@
-
-distprep: pltclerrcodes.h
 
 install: all install-lib install-data
+	$(MAKE) -C modules $@
 
 installdirs: installdirs-lib
 	$(MKDIR_P) '$(DESTDIR)$(datadir)/extension'
+	$(MAKE) -C modules $@
 
 uninstall: uninstall-lib uninstall-data
+	$(MAKE) -C modules $@
 
 install-data: installdirs
 	$(INSTALL_DATA) $(addprefix $(srcdir)/, $(DATA)) '$(DESTDIR)$(datadir)/extension/'
@@ -81,7 +93,7 @@ uninstall-data:
 .PHONY: install-data uninstall-data
 
 
-check: submake
+check: all submake
 	$(pg_regress_check) $(REGRESS_OPTS) $(REGRESS)
 
 installcheck: submake
@@ -91,13 +103,20 @@ installcheck: submake
 submake:
 	$(MAKE) -C $(top_builddir)/src/test/regress pg_regress$(X)
 
-# pltclerrcodes.h is in the distribution tarball, so don't clean it here.
-clean distclean: clean-lib
+else # TCL_SHARED_BUILD = 0
+
+# Provide dummy targets for the case where we can't build the shared library.
+all:
+	@echo "*****"; \
+	 echo "* Cannot build PL/Tcl because Tcl is not a shared library; skipping it."; \
+	 echo "*****"
+
+endif # TCL_SHARED_BUILD = 0
+
+clean distclean maintainer-clean: clean-lib
 	rm -f $(OBJS)
 	rm -rf $(pg_regress_clean_files)
 ifeq ($(PORTNAME), win32)
 	rm -f $(tclwithver).def
 endif
-
-maintainer-clean: distclean
-	rm -f pltclerrcodes.h
+	$(MAKE) -C modules $@

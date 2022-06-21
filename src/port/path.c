@@ -3,7 +3,7 @@
  * path.c
  *	  portable path handling routines
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -45,7 +45,7 @@
 #endif
 
 static void make_relative_path(char *ret_path, const char *target_path,
-							   const char *bin_path, const char *my_exec_path);
+				   const char *bin_path, const char *my_exec_path);
 static void trim_directory(char *path);
 static void trim_trailing_separator(char *path);
 
@@ -86,11 +86,7 @@ skip_drive(const char *path)
 bool
 has_drive_prefix(const char *path)
 {
-#ifdef WIN32
 	return skip_drive(path) != path;
-#else
-	return false;
-#endif
 }
 
 /*
@@ -106,7 +102,7 @@ first_dir_separator(const char *filename)
 
 	for (p = skip_drive(filename); *p; p++)
 		if (IS_DIR_SEP(*p))
-			return unconstify(char *, p);
+			return (char *) p;
 	return NULL;
 }
 
@@ -124,7 +120,7 @@ first_path_var_separator(const char *pathlist)
 	/* skip_drive is not needed */
 	for (p = pathlist; *p; p++)
 		if (IS_PATH_VAR_SEP(*p))
-			return unconstify(char *, p);
+			return (char *) p;
 	return NULL;
 }
 
@@ -143,7 +139,7 @@ last_dir_separator(const char *filename)
 	for (p = skip_drive(filename); *p; p++)
 		if (IS_DIR_SEP(*p))
 			ret = p;
-	return unconstify(char *, ret);
+	return (char *) ret;
 }
 
 
@@ -171,36 +167,6 @@ make_native_path(char *filename)
 	for (p = filename; *p; p++)
 		if (*p == '/')
 			*p = '\\';
-#endif
-}
-
-
-/*
- * This function cleans up the paths for use with either cmd.exe or Msys
- * on Windows. We need them to use filenames without spaces, for which a
- * short filename is the safest equivalent, eg:
- *		C:/Progra~1/
- */
-void
-cleanup_path(char *path)
-{
-#ifdef WIN32
-	char	   *ptr;
-
-	/*
-	 * GetShortPathName() will fail if the path does not exist, or short names
-	 * are disabled on this file system.  In both cases, we just return the
-	 * original path.  This is particularly useful for --sysconfdir, which
-	 * might not exist.
-	 */
-	GetShortPathName(path, path, MAXPGPATH - 1);
-
-	/* Replace '\' with '/' */
-	for (ptr = path; *ptr; ptr++)
-	{
-		if (*ptr == '\\')
-			*ptr = '/';
-	}
 #endif
 }
 
@@ -475,7 +441,7 @@ get_progname(const char *argv0)
 #if defined(__CYGWIN__) || defined(WIN32)
 	/* strip ".exe" suffix, regardless of case */
 	if (strlen(progname) > sizeof(EXE) - 1 &&
-		pg_strcasecmp(progname + strlen(progname) - (sizeof(EXE) - 1), EXE) == 0)
+	pg_strcasecmp(progname + strlen(progname) - (sizeof(EXE) - 1), EXE) == 0)
 		progname[strlen(progname) - (sizeof(EXE) - 1)] = '\0';
 #endif
 

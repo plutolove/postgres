@@ -1,5 +1,8 @@
-/psqlscanslash.c
+/psqlscan.c
 /sql_help.h
 /sql_help.c
+/dumputils.c
+/keywords.c
+/kwlookup.c
+
 /psql
-/tmp_check/

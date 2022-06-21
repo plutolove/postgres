@@ -86,27 +86,27 @@ DROP DOMAIN test_domain_exists;
 --- role/user/group
 ---
 
-CREATE USER regress_test_u1;
-CREATE ROLE regress_test_r1;
-CREATE GROUP regress_test_g1;
+CREATE USER tu1;
+CREATE ROLE tr1;
+CREATE GROUP tg1;
 
-DROP USER regress_test_u2;
+DROP USER tu2;
 
-DROP USER IF EXISTS regress_test_u1, regress_test_u2;
+DROP USER IF EXISTS tu1, tu2;
 
-DROP USER regress_test_u1;
+DROP USER tu1;
 
-DROP ROLE regress_test_r2;
+DROP ROLE tr2;
 
-DROP ROLE IF EXISTS regress_test_r1, regress_test_r2;
+DROP ROLE IF EXISTS tr1, tr2;
 
-DROP ROLE regress_test_r1;
+DROP ROLE tr1;
 
-DROP GROUP regress_test_g2;
+DROP GROUP tg2;
 
-DROP GROUP IF EXISTS regress_test_g1, regress_test_g2;
+DROP GROUP IF EXISTS tg1, tg2;
 
-DROP GROUP regress_test_g1;
+DROP GROUP tg1;
 
 -- collation
 DROP COLLATION IF EXISTS test_collation_exists;
@@ -227,10 +227,6 @@ DROP OPERATOR FAMILY IF EXISTS test_operator_family USING btree;
 DROP OPERATOR FAMILY test_operator_family USING no_such_am;
 DROP OPERATOR FAMILY IF EXISTS test_operator_family USING no_such_am;
 
--- access method
-DROP ACCESS METHOD no_such_am;
-DROP ACCESS METHOD IF EXISTS no_such_am;
-
 -- drop the table
 
 DROP TABLE IF EXISTS test_exists;
@@ -271,34 +267,3 @@ DROP TEXT SEARCH TEMPLATE IF EXISTS no_such_schema.foo;
 DROP TRIGGER IF EXISTS foo ON no_such_schema.bar;
 DROP TYPE IF EXISTS no_such_schema.foo;
 DROP VIEW IF EXISTS no_such_schema.foo;
-
--- Check we receive an ambiguous function error when there are
--- multiple matching functions.
-CREATE FUNCTION test_ambiguous_funcname(int) returns int as $$ select $1; $$ language sql;
-CREATE FUNCTION test_ambiguous_funcname(text) returns text as $$ select $1; $$ language sql;
-DROP FUNCTION test_ambiguous_funcname;
-DROP FUNCTION IF EXISTS test_ambiguous_funcname;
-
--- cleanup
-DROP FUNCTION test_ambiguous_funcname(int);
-DROP FUNCTION test_ambiguous_funcname(text);
-
--- Likewise for procedures.
-CREATE PROCEDURE test_ambiguous_procname(int) as $$ begin end; $$ language plpgsql;
-CREATE PROCEDURE test_ambiguous_procname(text) as $$ begin end; $$ language plpgsql;
-DROP PROCEDURE test_ambiguous_procname;
-DROP PROCEDURE IF EXISTS test_ambiguous_procname;
-
--- Check we get a similar error if we use ROUTINE instead of PROCEDURE.
-DROP ROUTINE IF EXISTS test_ambiguous_procname;
-
--- cleanup
-DROP PROCEDURE test_ambiguous_procname(int);
-DROP PROCEDURE test_ambiguous_procname(text);
-
--- This test checks both the functionality of 'if exists' and the syntax
--- of the drop database command.
-drop database test_database_exists (force);
-drop database test_database_exists with (force);
-drop database if exists test_database_exists (force);
-drop database if exists test_database_exists with (force);

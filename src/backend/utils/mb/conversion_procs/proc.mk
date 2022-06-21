@@ -1,5 +1,5 @@
 SRCS		+= $(NAME).c
-OBJS		+= $(NAME).o $(WIN32RES)
+OBJS		+= $(NAME).o
 
 rpath =
 

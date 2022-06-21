@@ -1,4 +1,4 @@
-/* Convert a broken-down timestamp to a string.  */
+/* Convert a broken-down time stamp to a string. */
 
 /*
  * Copyright 1989 The Regents of the University of California.
@@ -41,8 +41,10 @@
 #include "postgres.h"
 
 #include <fcntl.h>
+#include <locale.h>
 
 #include "private.h"
+#include "tzfile.h"
 
 
 struct lc_time_T
@@ -82,17 +84,17 @@ static const struct lc_time_T C_time_locale = {
 	/*
 	 * x_fmt
 	 *
-	 * C99 and later require this format. Using just numbers (as here) makes
-	 * Quakers happier; it's also compatible with SVR4.
+	 * C99 requires this format. Using just numbers (as here) makes Quakers
+	 * happier; it's also compatible with SVR4.
 	 */
 	"%m/%d/%y",
 
 	/*
 	 * c_fmt
 	 *
-	 * C99 and later require this format. Previously this code used "%D %X",
-	 * but we now conform to C99. Note that "%a %b %d %H:%M:%S %Y" is used by
-	 * Solaris 2.3.
+	 * C99 requires this format. Previously this code used "%D %X", but we now
+	 * conform to C99. Note that "%a %b %d %H:%M:%S %Y" is used by Solaris
+	 * 2.3.
 	 */
 	"%a %b %e %T %Y",
 
@@ -106,50 +108,36 @@ static const struct lc_time_T C_time_locale = {
 	"%a %b %e %H:%M:%S %Z %Y"
 };
 
-enum warn
-{
-	IN_NONE, IN_SOME, IN_THIS, IN_ALL
-};
-
 static char *_add(const char *, char *, const char *);
 static char *_conv(int, const char *, char *, const char *);
-static char *_fmt(const char *, const struct pg_tm *, char *, const char *,
-				  enum warn *);
-static char *_yconv(int, int, bool, bool, char *, char const *);
+static char *_fmt(const char *, const struct pg_tm *, char *,
+	 const char *, int *);
+static char *_yconv(int, int, bool, bool, char *, const char *);
+
+#define IN_NONE 0
+#define IN_SOME 1
+#define IN_THIS 2
+#define IN_ALL	3
 
 
-/*
- * Convert timestamp t to string s, a caller-allocated buffer of size maxsize,
- * using the given format pattern.
- *
- * See also timestamptz_to_str.
- */
 size_t
-pg_strftime(char *s, size_t maxsize, const char *format, const struct pg_tm *t)
+pg_strftime(char *s, size_t maxsize, const char *format,
+			const struct pg_tm * t)
 {
 	char	   *p;
-	int			saved_errno = errno;
-	enum warn	warn = IN_NONE;
+	int			warn;
 
-	p = _fmt(format, t, s, s + maxsize, &warn);
-	if (!p)
-	{
-		errno = EOVERFLOW;
-		return 0;
-	}
+	warn = IN_NONE;
+	p = _fmt(((format == NULL) ? "%c" : format), t, s, s + maxsize, &warn);
 	if (p == s + maxsize)
-	{
-		errno = ERANGE;
 		return 0;
-	}
 	*p = '\0';
-	errno = saved_errno;
 	return p - s;
 }
 
 static char *
-_fmt(const char *format, const struct pg_tm *t, char *pt,
-	 const char *ptlim, enum warn *warnp)
+_fmt(const char *format, const struct pg_tm * t, char *pt, const char *ptlim,
+	 int *warnp)
 {
 	for (; *format; ++format)
 	{
@@ -198,7 +186,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					continue;
 				case 'c':
 					{
-						enum warn	warn2 = IN_SOME;
+						int			warn2 = IN_SOME;
 
 						pt = _fmt(Locale->c_fmt, t, pt, ptlim, &warn2);
 						if (warn2 == IN_ALL)
@@ -217,9 +205,9 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 				case 'O':
 
 					/*
-					 * Locale modifiers of C99 and later. The sequences %Ec
-					 * %EC %Ex %EX %Ey %EY %Od %oe %OH %OI %Om %OM %OS %Ou %OU
-					 * %OV %Ow %OW %Oy are supposed to provide alternative
+					 * C99 locale modifiers. The sequences	%Ec %EC %Ex %EX
+					 * %Ey %EY	%Od %oe %OH %OI %Om %OM  %OS %Ou %OU %OV %Ow
+					 * %OW %Oy are supposed to provide alternate
 					 * representations.
 					 */
 					goto label;
@@ -243,9 +231,9 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 				case 'k':
 
 					/*
-					 * This used to be... _conv(t->tm_hour % 12 ? t->tm_hour %
-					 * 12 : 12, 2, ' '); ...and has been changed to the below
-					 * to match SunOS 4.1.1 and Arnold Robbins' strftime
+					 * This used to be...  _conv(t->tm_hour % 12 ? t->tm_hour
+					 * % 12 : 12, 2, ' '); ...and has been changed to the
+					 * below to match SunOS 4.1.1 and Arnold Robbins' strftime
 					 * version 3.0. That is, "%k" and "%l" have been swapped.
 					 * (ado, 1993-05-24)
 					 */
@@ -259,11 +247,11 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					 */
 					pt = _add("kitchen sink", pt, ptlim);
 					continue;
-#endif							/* defined KITCHEN_SINK */
+#endif   /* defined KITCHEN_SINK */
 				case 'l':
 
 					/*
-					 * This used to be... _conv(t->tm_hour, 2, ' '); ...and
+					 * This used to be...  _conv(t->tm_hour, 2, ' '); ...and
 					 * has been changed to the below to match SunOS 4.1.1 and
 					 * Arnold Robbin's strftime version 3.0. That is, "%k" and
 					 * "%l" have been swapped. (ado, 1993-05-24)
@@ -327,7 +315,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
  * (01-53)."
  * (ado, 1993-05-24)
  *
- * From <https://www.cl.cam.ac.uk/~mgk25/iso-time.html> by Markus Kuhn:
+ * From <http://www.ft.uni-erlangen.de/~mskuhn/iso-time.html> by Markus Kuhn:
  * "Week 01 of a year is per definition the first week which has the
  * Thursday in this year, which is equivalent to the week which contains
  * the fourth day of January. In other words, the first week of a new year
@@ -431,7 +419,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					continue;
 				case 'x':
 					{
-						enum warn	warn2 = IN_SOME;
+						int			warn2 = IN_SOME;
 
 						pt = _fmt(Locale->x_fmt, t, pt, ptlim, &warn2);
 						if (warn2 == IN_ALL)
@@ -456,27 +444,19 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 						pt = _add(t->tm_zone, pt, ptlim);
 
 					/*
-					 * C99 and later say that %Z must be replaced by the empty
-					 * string if the time zone abbreviation is not
-					 * determinable.
+					 * C99 says that %Z must be replaced by the empty string
+					 * if the time zone is not determinable.
 					 */
 					continue;
 				case 'z':
 					{
 						long		diff;
 						char const *sign;
-						bool		negative;
 
 						if (t->tm_isdst < 0)
 							continue;
 						diff = t->tm_gmtoff;
-						negative = diff < 0;
-						if (diff == 0)
-						{
-							if (t->tm_zone != NULL)
-								negative = t->tm_zone[0] == '-';
-						}
-						if (negative)
+						if (diff < 0)
 						{
 							sign = "-";
 							diff = -diff;
@@ -498,7 +478,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 
 					/*
 					 * X311J/88-090 (4.12.3.5): if conversion char is
-					 * undefined, behavior is undefined. Print out the
+					 * undefined, behavior is undefined.  Print out the
 					 * character itself as printf(3) also does.
 					 */
 				default:
@@ -515,7 +495,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 static char *
 _conv(int n, const char *format, char *pt, const char *ptlim)
 {
-	char		buf[INT_STRLEN_MAXIMUM(int) + 1];
+	char		buf[INT_STRLEN_MAXIMUM(int) +1];
 
 	sprintf(buf, format, n);
 	return _add(buf, pt, ptlim);
@@ -536,7 +516,6 @@ _add(const char *str, char *pt, const char *ptlim)
  * same output as %Y, and that %Y contains at least 4 bytes,
  * with more only if necessary.
  */
-
 static char *
 _yconv(int a, int b, bool convert_top, bool convert_yy,
 	   char *pt, const char *ptlim)
@@ -544,7 +523,7 @@ _yconv(int a, int b, bool convert_top, bool convert_yy,
 	int			lead;
 	int			trail;
 
-#define DIVISOR	100
+#define DIVISOR 100
 	trail = a % DIVISOR + b % DIVISOR;
 	lead = a / DIVISOR + b / DIVISOR + trail / DIVISOR;
 	trail %= DIVISOR;

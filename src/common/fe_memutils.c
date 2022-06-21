@@ -3,7 +3,7 @@
  * fe_memutils.c
  *	  memory management support for frontend code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,8 +19,8 @@
 
 #include "postgres_fe.h"
 
-static inline void *
-pg_malloc_internal(size_t size, int flags)
+void *
+pg_malloc(size_t size)
 {
 	void	   *tmp;
 
@@ -28,37 +28,22 @@ pg_malloc_internal(size_t size, int flags)
 	if (size == 0)
 		size = 1;
 	tmp = malloc(size);
-	if (tmp == NULL)
+	if (!tmp)
 	{
-		if ((flags & MCXT_ALLOC_NO_OOM) == 0)
-		{
-			fprintf(stderr, _("out of memory\n"));
-			exit(EXIT_FAILURE);
-		}
-		return NULL;
+		fprintf(stderr, _("out of memory\n"));
+		exit(EXIT_FAILURE);
 	}
-
-	if ((flags & MCXT_ALLOC_ZERO) != 0)
-		MemSet(tmp, 0, size);
 	return tmp;
-}
-
-void *
-pg_malloc(size_t size)
-{
-	return pg_malloc_internal(size, 0);
 }
 
 void *
 pg_malloc0(size_t size)
 {
-	return pg_malloc_internal(size, MCXT_ALLOC_ZERO);
-}
+	void	   *tmp;
 
-void *
-pg_malloc_extended(size_t size, int flags)
-{
-	return pg_malloc_internal(size, flags);
+	tmp = pg_malloc(size);
+	MemSet(tmp, 0, size);
+	return tmp;
 }
 
 void *
@@ -115,19 +100,13 @@ pg_free(void *ptr)
 void *
 palloc(Size size)
 {
-	return pg_malloc_internal(size, 0);
+	return pg_malloc(size);
 }
 
 void *
 palloc0(Size size)
 {
-	return pg_malloc_internal(size, MCXT_ALLOC_ZERO);
-}
-
-void *
-palloc_extended(Size size, int flags)
-{
-	return pg_malloc_internal(size, flags);
+	return pg_malloc0(size);
 }
 
 void
@@ -140,33 +119,6 @@ char *
 pstrdup(const char *in)
 {
 	return pg_strdup(in);
-}
-
-char *
-pnstrdup(const char *in, Size size)
-{
-	char	   *tmp;
-	int			len;
-
-	if (!in)
-	{
-		fprintf(stderr,
-				_("cannot duplicate null pointer (internal error)\n"));
-		exit(EXIT_FAILURE);
-	}
-
-	len = strnlen(in, size);
-	tmp = malloc(len + 1);
-	if (tmp == NULL)
-	{
-		fprintf(stderr, _("out of memory\n"));
-		exit(EXIT_FAILURE);
-	}
-
-	memcpy(tmp, in, len);
-	tmp[len] = '\0';
-
-	return tmp;
 }
 
 void *

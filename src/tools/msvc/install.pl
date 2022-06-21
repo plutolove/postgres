@@ -6,9 +6,6 @@
 use strict;
 use warnings;
 
-use FindBin;
-use lib $FindBin::RealBin;
-
 use Install qw(Install);
 
 # buildenv.pl is for specifying the build environment settings
@@ -17,11 +14,11 @@ use Install qw(Install);
 
 if (-e "src/tools/msvc/buildenv.pl")
 {
-	do "./src/tools/msvc/buildenv.pl";
+	require "src/tools/msvc/buildenv.pl";
 }
 elsif (-e "./buildenv.pl")
 {
-	do "./buildenv.pl";
+	require "./buildenv.pl";
 }
 
 my $target = shift || Usage();

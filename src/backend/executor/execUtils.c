@@ -3,7 +3,7 @@
  * execUtils.c
  *	  miscellaneous executor utility routines
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,21 +22,18 @@
  *		ReScanExprContext
  *
  *		ExecAssignExprContext	Common code for plan node init routines.
+ *		ExecAssignResultType
  *		etc
  *
  *		ExecOpenScanRelation	Common code for scan node init routines.
+ *		ExecCloseScanRelation
  *
- *		ExecInitRangeTable		Set up executor's range-table-related data.
- *
- *		ExecGetRangeTableRelation		Fetch Relation for a rangetable entry.
- *
- *		executor_errposition	Report syntactic position of an error.
+ *		ExecOpenIndices			\
+ *		ExecCloseIndices		 | referenced by InitPlan, EndPlan,
+ *		ExecInsertIndexTuples	/  ExecInsert, ExecUpdate
  *
  *		RegisterExprContextCallback    Register function shutdown callback
  *		UnregisterExprContextCallback  Deregister function shutdown callback
- *
- *		GetAttributeByName		Runtime extraction of columns from tuples.
- *		GetAttributeByNum
  *
  *	 NOTES
  *		This file has traditionally been the place to stick misc.
@@ -45,27 +42,21 @@
 
 #include "postgres.h"
 
-#include "access/parallel.h"
 #include "access/relscan.h"
-#include "access/table.h"
-#include "access/tableam.h"
 #include "access/transam.h"
-#include "executor/executor.h"
-#include "executor/execPartition.h"
-#include "jit/jit.h"
-#include "mb/pg_wchar.h"
-#include "miscadmin.h"
+#include "catalog/index.h"
+#include "executor/execdebug.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
-#include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
-#include "utils/rel.h"
-#include "utils/typcache.h"
+#include "utils/tqual.h"
 
 
-static bool tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc);
+static bool get_last_attnums(Node *node, ProjectionInfo *projInfo);
+static bool index_recheck_constraint(Relation index, Oid *constr_procs,
+						 Datum *existing_values, bool *existing_isnull,
+						 Datum *new_values);
 static void ShutdownExprContext(ExprContext *econtext, bool isCommit);
 
 
@@ -98,7 +89,9 @@ CreateExecutorState(void)
 	 */
 	qcontext = AllocSetContextCreate(CurrentMemoryContext,
 									 "ExecutorState",
-									 ALLOCSET_DEFAULT_SIZES);
+									 ALLOCSET_DEFAULT_MINSIZE,
+									 ALLOCSET_DEFAULT_INITSIZE,
+									 ALLOCSET_DEFAULT_MAXSIZE);
 
 	/*
 	 * Make the EState node within the per-query context.  This way, we don't
@@ -112,12 +105,9 @@ CreateExecutorState(void)
 	 * Initialize all fields of the Executor State structure
 	 */
 	estate->es_direction = ForwardScanDirection;
-	estate->es_snapshot = InvalidSnapshot;	/* caller must initialize this */
+	estate->es_snapshot = InvalidSnapshot;		/* caller must initialize this */
 	estate->es_crosscheck_snapshot = InvalidSnapshot;	/* no crosscheck */
 	estate->es_range_table = NIL;
-	estate->es_range_table_size = 0;
-	estate->es_relations = NULL;
-	estate->es_rowmarks = NULL;
 	estate->es_plannedstmt = NULL;
 
 	estate->es_junkFilter = NULL;
@@ -128,23 +118,22 @@ CreateExecutorState(void)
 	estate->es_num_result_relations = 0;
 	estate->es_result_relation_info = NULL;
 
-	estate->es_root_result_relations = NULL;
-	estate->es_num_root_result_relations = 0;
-
-	estate->es_tuple_routing_result_relations = NIL;
-
 	estate->es_trig_target_relations = NIL;
+	estate->es_trig_tuple_slot = NULL;
+	estate->es_trig_oldtup_slot = NULL;
+	estate->es_trig_newtup_slot = NULL;
 
 	estate->es_param_list_info = NULL;
 	estate->es_param_exec_vals = NULL;
-
-	estate->es_queryEnv = NULL;
 
 	estate->es_query_cxt = qcontext;
 
 	estate->es_tupleTable = NIL;
 
+	estate->es_rowMarks = NIL;
+
 	estate->es_processed = 0;
+	estate->es_lastoid = InvalidOid;
 
 	estate->es_top_eflags = 0;
 	estate->es_instrument = 0;
@@ -158,12 +147,9 @@ CreateExecutorState(void)
 
 	estate->es_per_tuple_exprcontext = NULL;
 
-	estate->es_sourceText = NULL;
-
-	estate->es_use_parallel_mode = false;
-
-	estate->es_jit_flags = 0;
-	estate->es_jit = NULL;
+	estate->es_epqTuple = NULL;
+	estate->es_epqTupleSet = NULL;
+	estate->es_epqScanDone = NULL;
 
 	/*
 	 * Return the executor state structure
@@ -178,11 +164,11 @@ CreateExecutorState(void)
  *
  *		Release an EState along with all remaining working storage.
  *
- * Note: this is not responsible for releasing non-memory resources, such as
- * open relations or buffer pins.  But it will shut down any still-active
- * ExprContexts within the EState and deallocate associated JITed expressions.
- * That is sufficient cleanup for situations where the EState has only been
- * used for expression evaluation, and not to run a complete Plan.
+ * Note: this is not responsible for releasing non-memory resources,
+ * such as open relations or buffer pins.  But it will shut down any
+ * still-active ExprContexts within the EState.  That is sufficient
+ * cleanup for situations where the EState has only been used for expression
+ * evaluation, and not to run a complete Plan.
  *
  * This can be called in any memory context ... so long as it's not one
  * of the ones to be freed.
@@ -208,20 +194,6 @@ FreeExecutorState(EState *estate)
 		/* FreeExprContext removed the list link for us */
 	}
 
-	/* release JIT context, if allocated */
-	if (estate->es_jit)
-	{
-		jit_release_context(estate->es_jit);
-		estate->es_jit = NULL;
-	}
-
-	/* release partition directory, if allocated */
-	if (estate->es_partition_directory)
-	{
-		DestroyPartitionDirectory(estate->es_partition_directory);
-		estate->es_partition_directory = NULL;
-	}
-
 	/*
 	 * Free the per-query memory context, thereby releasing all working
 	 * memory, including the EState node itself.
@@ -229,13 +201,21 @@ FreeExecutorState(EState *estate)
 	MemoryContextDelete(estate->es_query_cxt);
 }
 
-/*
- * Internal implementation for CreateExprContext() and CreateWorkExprContext()
- * that allows control over the AllocSet parameters.
+/* ----------------
+ *		CreateExprContext
+ *
+ *		Create a context for expression evaluation within an EState.
+ *
+ * An executor run may require multiple ExprContexts (we usually make one
+ * for each Plan node, and a separate one for per-output-tuple processing
+ * such as constraint checking).  Each ExprContext has its own "per-tuple"
+ * memory context.
+ *
+ * Note we make no assumption about the caller's memory context.
+ * ----------------
  */
-static ExprContext *
-CreateExprContextInternal(EState *estate, Size minContextSize,
-						  Size initBlockSize, Size maxBlockSize)
+ExprContext *
+CreateExprContext(EState *estate)
 {
 	ExprContext *econtext;
 	MemoryContext oldcontext;
@@ -258,9 +238,9 @@ CreateExprContextInternal(EState *estate, Size minContextSize,
 	econtext->ecxt_per_tuple_memory =
 		AllocSetContextCreate(estate->es_query_cxt,
 							  "ExprContext",
-							  minContextSize,
-							  initBlockSize,
-							  maxBlockSize);
+							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,
+							  ALLOCSET_DEFAULT_MAXSIZE);
 
 	econtext->ecxt_param_exec_vals = estate->es_param_exec_vals;
 	econtext->ecxt_param_list_info = estate->es_param_list_info;
@@ -288,52 +268,6 @@ CreateExprContextInternal(EState *estate, Size minContextSize,
 	MemoryContextSwitchTo(oldcontext);
 
 	return econtext;
-}
-
-/* ----------------
- *		CreateExprContext
- *
- *		Create a context for expression evaluation within an EState.
- *
- * An executor run may require multiple ExprContexts (we usually make one
- * for each Plan node, and a separate one for per-output-tuple processing
- * such as constraint checking).  Each ExprContext has its own "per-tuple"
- * memory context.
- *
- * Note we make no assumption about the caller's memory context.
- * ----------------
- */
-ExprContext *
-CreateExprContext(EState *estate)
-{
-	return CreateExprContextInternal(estate, ALLOCSET_DEFAULT_SIZES);
-}
-
-
-/* ----------------
- *		CreateWorkExprContext
- *
- * Like CreateExprContext, but specifies the AllocSet sizes to be reasonable
- * in proportion to work_mem. If the maximum block allocation size is too
- * large, it's easy to skip right past work_mem with a single allocation.
- * ----------------
- */
-ExprContext *
-CreateWorkExprContext(EState *estate)
-{
-	Size		minContextSize = ALLOCSET_DEFAULT_MINSIZE;
-	Size		initBlockSize = ALLOCSET_DEFAULT_INITSIZE;
-	Size		maxBlockSize = ALLOCSET_DEFAULT_MAXSIZE;
-
-	/* choose the maxBlockSize to be no larger than 1/16 of work_mem */
-	while (16 * maxBlockSize > work_mem * 1024L)
-		maxBlockSize >>= 1;
-
-	if (maxBlockSize < ALLOCSET_DEFAULT_INITSIZE)
-		maxBlockSize = ALLOCSET_DEFAULT_INITSIZE;
-
-	return CreateExprContextInternal(estate, minContextSize,
-									 initBlockSize, maxBlockSize);
 }
 
 /* ----------------
@@ -375,7 +309,9 @@ CreateStandaloneExprContext(void)
 	econtext->ecxt_per_tuple_memory =
 		AllocSetContextCreate(CurrentMemoryContext,
 							  "ExprContext",
-							  ALLOCSET_DEFAULT_SIZES);
+							  ALLOCSET_DEFAULT_MINSIZE,
+							  ALLOCSET_DEFAULT_INITSIZE,
+							  ALLOCSET_DEFAULT_MAXSIZE);
 
 	econtext->ecxt_param_exec_vals = NULL;
 	econtext->ecxt_param_list_info = NULL;
@@ -489,44 +425,241 @@ ExecAssignExprContext(EState *estate, PlanState *planstate)
 }
 
 /* ----------------
+ *		ExecAssignResultType
+ * ----------------
+ */
+void
+ExecAssignResultType(PlanState *planstate, TupleDesc tupDesc)
+{
+	TupleTableSlot *slot = planstate->ps_ResultTupleSlot;
+
+	ExecSetSlotDescriptor(slot, tupDesc);
+}
+
+/* ----------------
+ *		ExecAssignResultTypeFromTL
+ * ----------------
+ */
+void
+ExecAssignResultTypeFromTL(PlanState *planstate)
+{
+	bool		hasoid;
+	TupleDesc	tupDesc;
+
+	if (ExecContextForcesOids(planstate, &hasoid))
+	{
+		/* context forces OID choice; hasoid is now set correctly */
+	}
+	else
+	{
+		/* given free choice, don't leave space for OIDs in result tuples */
+		hasoid = false;
+	}
+
+	/*
+	 * ExecTypeFromTL needs the parse-time representation of the tlist, not a
+	 * list of ExprStates.  This is good because some plan nodes don't bother
+	 * to set up planstate->targetlist ...
+	 */
+	tupDesc = ExecTypeFromTL(planstate->plan->targetlist, hasoid);
+	ExecAssignResultType(planstate, tupDesc);
+}
+
+/* ----------------
  *		ExecGetResultType
  * ----------------
  */
 TupleDesc
 ExecGetResultType(PlanState *planstate)
 {
-	return planstate->ps_ResultTupleDesc;
+	TupleTableSlot *slot = planstate->ps_ResultTupleSlot;
+
+	return slot->tts_tupleDescriptor;
+}
+
+/* ----------------
+ *		ExecBuildProjectionInfo
+ *
+ * Build a ProjectionInfo node for evaluating the given tlist in the given
+ * econtext, and storing the result into the tuple slot.  (Caller must have
+ * ensured that tuple slot has a descriptor matching the tlist!)  Note that
+ * the given tlist should be a list of ExprState nodes, not Expr nodes.
+ *
+ * inputDesc can be NULL, but if it is not, we check to see whether simple
+ * Vars in the tlist match the descriptor.  It is important to provide
+ * inputDesc for relation-scan plan nodes, as a cross check that the relation
+ * hasn't been changed since the plan was made.  At higher levels of a plan,
+ * there is no need to recheck.
+ * ----------------
+ */
+ProjectionInfo *
+ExecBuildProjectionInfo(List *targetList,
+						ExprContext *econtext,
+						TupleTableSlot *slot,
+						TupleDesc inputDesc)
+{
+	ProjectionInfo *projInfo = makeNode(ProjectionInfo);
+	int			len = ExecTargetListLength(targetList);
+	int		   *workspace;
+	int		   *varSlotOffsets;
+	int		   *varNumbers;
+	int		   *varOutputCols;
+	List	   *exprlist;
+	int			numSimpleVars;
+	bool		directMap;
+	ListCell   *tl;
+
+	projInfo->pi_exprContext = econtext;
+	projInfo->pi_slot = slot;
+	/* since these are all int arrays, we need do just one palloc */
+	workspace = (int *) palloc(len * 3 * sizeof(int));
+	projInfo->pi_varSlotOffsets = varSlotOffsets = workspace;
+	projInfo->pi_varNumbers = varNumbers = workspace + len;
+	projInfo->pi_varOutputCols = varOutputCols = workspace + len * 2;
+	projInfo->pi_lastInnerVar = 0;
+	projInfo->pi_lastOuterVar = 0;
+	projInfo->pi_lastScanVar = 0;
+
+	/*
+	 * We separate the target list elements into simple Var references and
+	 * expressions which require the full ExecTargetList machinery.  To be a
+	 * simple Var, a Var has to be a user attribute and not mismatch the
+	 * inputDesc.  (Note: if there is a type mismatch then ExecEvalScalarVar
+	 * will probably throw an error at runtime, but we leave that to it.)
+	 */
+	exprlist = NIL;
+	numSimpleVars = 0;
+	directMap = true;
+	foreach(tl, targetList)
+	{
+		GenericExprState *gstate = (GenericExprState *) lfirst(tl);
+		Var		   *variable = (Var *) gstate->arg->expr;
+		bool		isSimpleVar = false;
+
+		if (variable != NULL &&
+			IsA(variable, Var) &&
+			variable->varattno > 0)
+		{
+			if (!inputDesc)
+				isSimpleVar = true;		/* can't check type, assume OK */
+			else if (variable->varattno <= inputDesc->natts)
+			{
+				Form_pg_attribute attr;
+
+				attr = inputDesc->attrs[variable->varattno - 1];
+				if (!attr->attisdropped && variable->vartype == attr->atttypid)
+					isSimpleVar = true;
+			}
+		}
+
+		if (isSimpleVar)
+		{
+			TargetEntry *tle = (TargetEntry *) gstate->xprstate.expr;
+			AttrNumber	attnum = variable->varattno;
+
+			varNumbers[numSimpleVars] = attnum;
+			varOutputCols[numSimpleVars] = tle->resno;
+			if (tle->resno != numSimpleVars + 1)
+				directMap = false;
+
+			switch (variable->varno)
+			{
+				case INNER_VAR:
+					varSlotOffsets[numSimpleVars] = offsetof(ExprContext,
+															 ecxt_innertuple);
+					if (projInfo->pi_lastInnerVar < attnum)
+						projInfo->pi_lastInnerVar = attnum;
+					break;
+
+				case OUTER_VAR:
+					varSlotOffsets[numSimpleVars] = offsetof(ExprContext,
+															 ecxt_outertuple);
+					if (projInfo->pi_lastOuterVar < attnum)
+						projInfo->pi_lastOuterVar = attnum;
+					break;
+
+					/* INDEX_VAR is handled by default case */
+
+				default:
+					varSlotOffsets[numSimpleVars] = offsetof(ExprContext,
+															 ecxt_scantuple);
+					if (projInfo->pi_lastScanVar < attnum)
+						projInfo->pi_lastScanVar = attnum;
+					break;
+			}
+			numSimpleVars++;
+		}
+		else
+		{
+			/* Not a simple variable, add it to generic targetlist */
+			exprlist = lappend(exprlist, gstate);
+			/* Examine expr to include contained Vars in lastXXXVar counts */
+			get_last_attnums((Node *) variable, projInfo);
+		}
+	}
+	projInfo->pi_targetlist = exprlist;
+	projInfo->pi_numSimpleVars = numSimpleVars;
+	projInfo->pi_directMap = directMap;
+
+	if (exprlist == NIL)
+		projInfo->pi_itemIsDone = NULL; /* not needed */
+	else
+		projInfo->pi_itemIsDone = (ExprDoneCond *)
+			palloc(len * sizeof(ExprDoneCond));
+
+	return projInfo;
 }
 
 /*
- * ExecGetResultSlotOps - information about node's type of result slot
+ * get_last_attnums: expression walker for ExecBuildProjectionInfo
+ *
+ *	Update the lastXXXVar counts to be at least as large as the largest
+ *	attribute numbers found in the expression
  */
-const TupleTableSlotOps *
-ExecGetResultSlotOps(PlanState *planstate, bool *isfixed)
+static bool
+get_last_attnums(Node *node, ProjectionInfo *projInfo)
 {
-	if (planstate->resultopsset && planstate->resultops)
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var))
 	{
-		if (isfixed)
-			*isfixed = planstate->resultopsfixed;
-		return planstate->resultops;
+		Var		   *variable = (Var *) node;
+		AttrNumber	attnum = variable->varattno;
+
+		switch (variable->varno)
+		{
+			case INNER_VAR:
+				if (projInfo->pi_lastInnerVar < attnum)
+					projInfo->pi_lastInnerVar = attnum;
+				break;
+
+			case OUTER_VAR:
+				if (projInfo->pi_lastOuterVar < attnum)
+					projInfo->pi_lastOuterVar = attnum;
+				break;
+
+				/* INDEX_VAR is handled by default case */
+
+			default:
+				if (projInfo->pi_lastScanVar < attnum)
+					projInfo->pi_lastScanVar = attnum;
+				break;
+		}
+		return false;
 	}
 
-	if (isfixed)
-	{
-		if (planstate->resultopsset)
-			*isfixed = planstate->resultopsfixed;
-		else if (planstate->ps_ResultTupleSlot)
-			*isfixed = TTS_FIXED(planstate->ps_ResultTupleSlot);
-		else
-			*isfixed = false;
-	}
-
-	if (!planstate->ps_ResultTupleSlot)
-		return &TTSOpsVirtual;
-
-	return planstate->ps_ResultTupleSlot->tts_ops;
+	/*
+	 * Don't examine the arguments or filters of Aggrefs or WindowFuncs,
+	 * because those do not represent expressions to be evaluated within the
+	 * overall targetlist's econtext.
+	 */
+	if (IsA(node, Aggref))
+		return false;
+	if (IsA(node, WindowFunc))
+		return false;
+	return expression_tree_walker(node, get_last_attnums,
+								  (void *) projInfo);
 }
-
 
 /* ----------------
  *		ExecAssignProjectionInfo
@@ -542,99 +675,12 @@ ExecAssignProjectionInfo(PlanState *planstate,
 						 TupleDesc inputDesc)
 {
 	planstate->ps_ProjInfo =
-		ExecBuildProjectionInfo(planstate->plan->targetlist,
+		ExecBuildProjectionInfo(planstate->targetlist,
 								planstate->ps_ExprContext,
 								planstate->ps_ResultTupleSlot,
-								planstate,
 								inputDesc);
 }
 
-
-/* ----------------
- *		ExecConditionalAssignProjectionInfo
- *
- * as ExecAssignProjectionInfo, but store NULL rather than building projection
- * info if no projection is required
- * ----------------
- */
-void
-ExecConditionalAssignProjectionInfo(PlanState *planstate, TupleDesc inputDesc,
-									Index varno)
-{
-	if (tlist_matches_tupdesc(planstate,
-							  planstate->plan->targetlist,
-							  varno,
-							  inputDesc))
-	{
-		planstate->ps_ProjInfo = NULL;
-		planstate->resultopsset = planstate->scanopsset;
-		planstate->resultopsfixed = planstate->scanopsfixed;
-		planstate->resultops = planstate->scanops;
-	}
-	else
-	{
-		if (!planstate->ps_ResultTupleSlot)
-		{
-			ExecInitResultSlot(planstate, &TTSOpsVirtual);
-			planstate->resultops = &TTSOpsVirtual;
-			planstate->resultopsfixed = true;
-			planstate->resultopsset = true;
-		}
-		ExecAssignProjectionInfo(planstate, inputDesc);
-	}
-}
-
-static bool
-tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc)
-{
-	int			numattrs = tupdesc->natts;
-	int			attrno;
-	ListCell   *tlist_item = list_head(tlist);
-
-	/* Check the tlist attributes */
-	for (attrno = 1; attrno <= numattrs; attrno++)
-	{
-		Form_pg_attribute att_tup = TupleDescAttr(tupdesc, attrno - 1);
-		Var		   *var;
-
-		if (tlist_item == NULL)
-			return false;		/* tlist too short */
-		var = (Var *) ((TargetEntry *) lfirst(tlist_item))->expr;
-		if (!var || !IsA(var, Var))
-			return false;		/* tlist item not a Var */
-		/* if these Asserts fail, planner messed up */
-		Assert(var->varno == varno);
-		Assert(var->varlevelsup == 0);
-		if (var->varattno != attrno)
-			return false;		/* out of order */
-		if (att_tup->attisdropped)
-			return false;		/* table contains dropped columns */
-		if (att_tup->atthasmissing)
-			return false;		/* table contains cols with missing values */
-
-		/*
-		 * Note: usually the Var's type should match the tupdesc exactly, but
-		 * in situations involving unions of columns that have different
-		 * typmods, the Var may have come from above the union and hence have
-		 * typmod -1.  This is a legitimate situation since the Var still
-		 * describes the column, just not as exactly as the tupdesc does. We
-		 * could change the planner to prevent it, but it'd then insert
-		 * projection steps just to convert from specific typmod to typmod -1,
-		 * which is pretty silly.
-		 */
-		if (var->vartype != att_tup->atttypid ||
-			(var->vartypmod != att_tup->atttypmod &&
-			 var->vartypmod != -1))
-			return false;		/* type mismatch */
-
-		tlist_item = lnext(tlist, tlist_item);
-	}
-
-	if (tlist_item)
-		return false;			/* tlist too long */
-
-	return true;
-}
 
 /* ----------------
  *		ExecFreeExprContext
@@ -662,11 +708,27 @@ ExecFreeExprContext(PlanState *planstate)
 	planstate->ps_ExprContext = NULL;
 }
 
-
 /* ----------------------------------------------------------------
- *				  Scan node support
+ *		the following scan type support functions are for
+ *		those nodes which are stubborn and return tuples in
+ *		their Scan tuple slot instead of their Result tuple
+ *		slot..  luck fur us, these nodes do not do projections
+ *		so we don't have to worry about getting the ProjectionInfo
+ *		right for them...  -cim 6/3/91
  * ----------------------------------------------------------------
  */
+
+/* ----------------
+ *		ExecGetScanType
+ * ----------------
+ */
+TupleDesc
+ExecGetScanType(ScanState *scanstate)
+{
+	TupleTableSlot *slot = scanstate->ss_ScanTupleSlot;
+
+	return slot->tts_tupleDescriptor;
+}
 
 /* ----------------
  *		ExecAssignScanType
@@ -681,13 +743,11 @@ ExecAssignScanType(ScanState *scanstate, TupleDesc tupDesc)
 }
 
 /* ----------------
- *		ExecCreateScanSlotFromOuterPlan
+ *		ExecAssignScanTypeFromOuterPlan
  * ----------------
  */
 void
-ExecCreateScanSlotFromOuterPlan(EState *estate,
-								ScanState *scanstate,
-								const TupleTableSlotOps *tts_ops)
+ExecAssignScanTypeFromOuterPlan(ScanState *scanstate)
 {
 	PlanState  *outerPlan;
 	TupleDesc	tupDesc;
@@ -695,18 +755,20 @@ ExecCreateScanSlotFromOuterPlan(EState *estate,
 	outerPlan = outerPlanState(scanstate);
 	tupDesc = ExecGetResultType(outerPlan);
 
-	ExecInitScanTupleSlot(estate, scanstate, tupDesc, tts_ops);
+	ExecAssignScanType(scanstate, tupDesc);
 }
+
+
+/* ----------------------------------------------------------------
+ *				  Scan node support
+ * ----------------------------------------------------------------
+ */
 
 /* ----------------------------------------------------------------
  *		ExecRelationIsTargetRelation
  *
  *		Detect whether a relation (identified by rangetable index)
  *		is one of the target relations of the query.
- *
- * Note: This is currently no longer used in core.  We keep it around
- * because FDWs may wish to use it to determine if their foreign table
- * is a target relation.
  * ----------------------------------------------------------------
  */
 bool
@@ -729,15 +791,48 @@ ExecRelationIsTargetRelation(EState *estate, Index scanrelid)
  *
  *		Open the heap relation to be scanned by a base-level scan plan node.
  *		This should be called during the node's ExecInit routine.
+ *
+ * By default, this acquires AccessShareLock on the relation.  However,
+ * if the relation was already locked by InitPlan, we don't need to acquire
+ * any additional lock.  This saves trips to the shared lock manager.
  * ----------------------------------------------------------------
  */
 Relation
 ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags)
 {
 	Relation	rel;
+	Oid			reloid;
+	LOCKMODE	lockmode;
 
-	/* Open the relation. */
-	rel = ExecGetRangeTableRelation(estate, scanrelid);
+	/*
+	 * Determine the lock type we need.  First, scan to see if target relation
+	 * is a result relation.  If not, check if it's a FOR UPDATE/FOR SHARE
+	 * relation.  In either of those cases, we got the lock already.
+	 */
+	lockmode = AccessShareLock;
+	if (ExecRelationIsTargetRelation(estate, scanrelid))
+		lockmode = NoLock;
+	else
+	{
+		ListCell   *l;
+
+		foreach(l, estate->es_rowMarks)
+		{
+			ExecRowMark *erm = lfirst(l);
+
+			/* Keep this check in sync with InitPlan! */
+			if (erm->rti == scanrelid &&
+				erm->relation != NULL)
+			{
+				lockmode = NoLock;
+				break;
+			}
+		}
+	}
+
+	/* Open the relation and acquire lock as needed */
+	reloid = getrelid(scanrelid, estate->es_range_table);
+	rel = heap_open(reloid, lockmode);
 
 	/*
 	 * Complain if we're attempting a scan of an unscannable relation, except
@@ -755,85 +850,545 @@ ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags)
 	return rel;
 }
 
-/*
- * ExecInitRangeTable
- *		Set up executor's range-table-related data
+/* ----------------------------------------------------------------
+ *		ExecCloseScanRelation
  *
- * In addition to the range table proper, initialize arrays that are
- * indexed by rangetable index.
+ *		Close the heap relation scanned by a base-level scan plan node.
+ *		This should be called during the node's ExecEnd routine.
+ *
+ * Currently, we do not release the lock acquired by ExecOpenScanRelation.
+ * This lock should be held till end of transaction.  (There is a faction
+ * that considers this too much locking, however.)
+ *
+ * If we did want to release the lock, we'd have to repeat the logic in
+ * ExecOpenScanRelation in order to figure out what to release.
+ * ----------------------------------------------------------------
  */
 void
-ExecInitRangeTable(EState *estate, List *rangeTable)
+ExecCloseScanRelation(Relation scanrel)
 {
-	/* Remember the range table List as-is */
-	estate->es_range_table = rangeTable;
+	heap_close(scanrel, NoLock);
+}
 
-	/* Set size of associated arrays */
-	estate->es_range_table_size = list_length(rangeTable);
+
+/* ----------------------------------------------------------------
+ *				  ExecInsertIndexTuples support
+ * ----------------------------------------------------------------
+ */
+
+/* ----------------------------------------------------------------
+ *		ExecOpenIndices
+ *
+ *		Find the indices associated with a result relation, open them,
+ *		and save information about them in the result ResultRelInfo.
+ *
+ *		At entry, caller has already opened and locked
+ *		resultRelInfo->ri_RelationDesc.
+ * ----------------------------------------------------------------
+ */
+void
+ExecOpenIndices(ResultRelInfo *resultRelInfo)
+{
+	Relation	resultRelation = resultRelInfo->ri_RelationDesc;
+	List	   *indexoidlist;
+	ListCell   *l;
+	int			len,
+				i;
+	RelationPtr relationDescs;
+	IndexInfo **indexInfoArray;
+
+	resultRelInfo->ri_NumIndices = 0;
+
+	/* fast path if no indexes */
+	if (!RelationGetForm(resultRelation)->relhasindex)
+		return;
 
 	/*
-	 * Allocate an array to store an open Relation corresponding to each
-	 * rangetable entry, and initialize entries to NULL.  Relations are opened
-	 * and stored here as needed.
+	 * Get cached list of index OIDs
 	 */
-	estate->es_relations = (Relation *)
-		palloc0(estate->es_range_table_size * sizeof(Relation));
+	indexoidlist = RelationGetIndexList(resultRelation);
+	len = list_length(indexoidlist);
+	if (len == 0)
+		return;
 
 	/*
-	 * es_rowmarks is also parallel to the es_range_table, but it's allocated
-	 * only if needed.
+	 * allocate space for result arrays
 	 */
-	estate->es_rowmarks = NULL;
+	relationDescs = (RelationPtr) palloc(len * sizeof(Relation));
+	indexInfoArray = (IndexInfo **) palloc(len * sizeof(IndexInfo *));
+
+	resultRelInfo->ri_NumIndices = len;
+	resultRelInfo->ri_IndexRelationDescs = relationDescs;
+	resultRelInfo->ri_IndexRelationInfo = indexInfoArray;
+
+	/*
+	 * For each index, open the index relation and save pg_index info. We
+	 * acquire RowExclusiveLock, signifying we will update the index.
+	 *
+	 * Note: we do this even if the index is not IndexIsReady; it's not worth
+	 * the trouble to optimize for the case where it isn't.
+	 */
+	i = 0;
+	foreach(l, indexoidlist)
+	{
+		Oid			indexOid = lfirst_oid(l);
+		Relation	indexDesc;
+		IndexInfo  *ii;
+
+		indexDesc = index_open(indexOid, RowExclusiveLock);
+
+		/* extract index key information from the index's pg_index info */
+		ii = BuildIndexInfo(indexDesc);
+
+		relationDescs[i] = indexDesc;
+		indexInfoArray[i] = ii;
+		i++;
+	}
+
+	list_free(indexoidlist);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecCloseIndices
+ *
+ *		Close the index relations stored in resultRelInfo
+ * ----------------------------------------------------------------
+ */
+void
+ExecCloseIndices(ResultRelInfo *resultRelInfo)
+{
+	int			i;
+	int			numIndices;
+	RelationPtr indexDescs;
+
+	numIndices = resultRelInfo->ri_NumIndices;
+	indexDescs = resultRelInfo->ri_IndexRelationDescs;
+
+	for (i = 0; i < numIndices; i++)
+	{
+		if (indexDescs[i] == NULL)
+			continue;			/* shouldn't happen? */
+
+		/* Drop lock acquired by ExecOpenIndices */
+		index_close(indexDescs[i], RowExclusiveLock);
+	}
+
+	/*
+	 * XXX should free indexInfo array here too?  Currently we assume that
+	 * such stuff will be cleaned up automatically in FreeExecutorState.
+	 */
+}
+
+/* ----------------------------------------------------------------
+ *		ExecInsertIndexTuples
+ *
+ *		This routine takes care of inserting index tuples
+ *		into all the relations indexing the result relation
+ *		when a heap tuple is inserted into the result relation.
+ *		Much of this code should be moved into the genam
+ *		stuff as it only exists here because the genam stuff
+ *		doesn't provide the functionality needed by the
+ *		executor.. -cim 9/27/89
+ *
+ *		This returns a list of index OIDs for any unique or exclusion
+ *		constraints that are deferred and that had
+ *		potential (unconfirmed) conflicts.
+ *
+ *		CAUTION: this must not be called for a HOT update.
+ *		We can't defend against that here for lack of info.
+ *		Should we change the API to make it safer?
+ * ----------------------------------------------------------------
+ */
+List *
+ExecInsertIndexTuples(TupleTableSlot *slot,
+					  ItemPointer tupleid,
+					  EState *estate)
+{
+	List	   *result = NIL;
+	ResultRelInfo *resultRelInfo;
+	int			i;
+	int			numIndices;
+	RelationPtr relationDescs;
+	Relation	heapRelation;
+	IndexInfo **indexInfoArray;
+	ExprContext *econtext;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	/*
+	 * Get information from the result relation info structure.
+	 */
+	resultRelInfo = estate->es_result_relation_info;
+	numIndices = resultRelInfo->ri_NumIndices;
+	relationDescs = resultRelInfo->ri_IndexRelationDescs;
+	indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
+	heapRelation = resultRelInfo->ri_RelationDesc;
+
+	/*
+	 * We will use the EState's per-tuple context for evaluating predicates
+	 * and index expressions (creating it if it's not already there).
+	 */
+	econtext = GetPerTupleExprContext(estate);
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/*
+	 * for each index, form and insert the index tuple
+	 */
+	for (i = 0; i < numIndices; i++)
+	{
+		Relation	indexRelation = relationDescs[i];
+		IndexInfo  *indexInfo;
+		IndexUniqueCheck checkUnique;
+		bool		satisfiesConstraint;
+
+		if (indexRelation == NULL)
+			continue;
+
+		indexInfo = indexInfoArray[i];
+
+		/* If the index is marked as read-only, ignore it */
+		if (!indexInfo->ii_ReadyForInserts)
+			continue;
+
+		/* Check for partial index */
+		if (indexInfo->ii_Predicate != NIL)
+		{
+			List	   *predicate;
+
+			/*
+			 * If predicate state not set up yet, create it (in the estate's
+			 * per-query context)
+			 */
+			predicate = indexInfo->ii_PredicateState;
+			if (predicate == NIL)
+			{
+				predicate = (List *)
+					ExecPrepareExpr((Expr *) indexInfo->ii_Predicate,
+									estate);
+				indexInfo->ii_PredicateState = predicate;
+			}
+
+			/* Skip this index-update if the predicate isn't satisfied */
+			if (!ExecQual(predicate, econtext, false))
+				continue;
+		}
+
+		/*
+		 * FormIndexDatum fills in its values and isnull parameters with the
+		 * appropriate values for the column(s) of the index.
+		 */
+		FormIndexDatum(indexInfo,
+					   slot,
+					   estate,
+					   values,
+					   isnull);
+
+		/*
+		 * The index AM does the actual insertion, plus uniqueness checking.
+		 *
+		 * For an immediate-mode unique index, we just tell the index AM to
+		 * throw error if not unique.
+		 *
+		 * For a deferrable unique index, we tell the index AM to just detect
+		 * possible non-uniqueness, and we add the index OID to the result
+		 * list if further checking is needed.
+		 */
+		if (!indexRelation->rd_index->indisunique)
+			checkUnique = UNIQUE_CHECK_NO;
+		else if (indexRelation->rd_index->indimmediate)
+			checkUnique = UNIQUE_CHECK_YES;
+		else
+			checkUnique = UNIQUE_CHECK_PARTIAL;
+
+		satisfiesConstraint =
+			index_insert(indexRelation, /* index relation */
+						 values,	/* array of index Datums */
+						 isnull,	/* null flags */
+						 tupleid,		/* tid of heap tuple */
+						 heapRelation,	/* heap relation */
+						 checkUnique);	/* type of uniqueness check to do */
+
+		/*
+		 * If the index has an associated exclusion constraint, check that.
+		 * This is simpler than the process for uniqueness checks since we
+		 * always insert first and then check.  If the constraint is deferred,
+		 * we check now anyway, but don't throw error on violation; instead
+		 * we'll queue a recheck event.
+		 *
+		 * An index for an exclusion constraint can't also be UNIQUE (not an
+		 * essential property, we just don't allow it in the grammar), so no
+		 * need to preserve the prior state of satisfiesConstraint.
+		 */
+		if (indexInfo->ii_ExclusionOps != NULL)
+		{
+			bool		errorOK = !indexRelation->rd_index->indimmediate;
+
+			satisfiesConstraint =
+				check_exclusion_constraint(heapRelation,
+										   indexRelation, indexInfo,
+										   tupleid, values, isnull,
+										   estate, false, errorOK);
+		}
+
+		if ((checkUnique == UNIQUE_CHECK_PARTIAL ||
+			 indexInfo->ii_ExclusionOps != NULL) &&
+			!satisfiesConstraint)
+		{
+			/*
+			 * The tuple potentially violates the uniqueness or exclusion
+			 * constraint, so make a note of the index so that we can re-check
+			 * it later.
+			 */
+			result = lappend_oid(result, RelationGetRelid(indexRelation));
+		}
+	}
+
+	return result;
 }
 
 /*
- * ExecGetRangeTableRelation
- *		Open the Relation for a range table entry, if not already done
+ * Check for violation of an exclusion constraint
  *
- * The Relations will be closed again in ExecEndPlan().
+ * heap: the table containing the new tuple
+ * index: the index supporting the exclusion constraint
+ * indexInfo: info about the index, including the exclusion properties
+ * tupleid: heap TID of the new tuple we have just inserted
+ * values, isnull: the *index* column values computed for the new tuple
+ * estate: an EState we can do evaluation in
+ * newIndex: if true, we are trying to build a new index (this affects
+ *		only the wording of error messages)
+ * errorOK: if true, don't throw error for violation
+ *
+ * Returns true if OK, false if actual or potential violation
+ *
+ * When errorOK is true, we report violation without waiting to see if any
+ * concurrent transaction has committed or not; so the violation is only
+ * potential, and the caller must recheck sometime later.  This behavior
+ * is convenient for deferred exclusion checks; we need not bother queuing
+ * a deferred event if there is definitely no conflict at insertion time.
+ *
+ * When errorOK is false, we'll throw error on violation, so a false result
+ * is impossible.
  */
-Relation
-ExecGetRangeTableRelation(EState *estate, Index rti)
+bool
+check_exclusion_constraint(Relation heap, Relation index, IndexInfo *indexInfo,
+						   ItemPointer tupleid, Datum *values, bool *isnull,
+						   EState *estate, bool newIndex, bool errorOK)
 {
-	Relation	rel;
+	Oid		   *constr_procs = indexInfo->ii_ExclusionProcs;
+	uint16	   *constr_strats = indexInfo->ii_ExclusionStrats;
+	Oid		   *index_collations = index->rd_indcollation;
+	int			index_natts = index->rd_index->indnatts;
+	IndexScanDesc index_scan;
+	HeapTuple	tup;
+	ScanKeyData scankeys[INDEX_MAX_KEYS];
+	SnapshotData DirtySnapshot;
+	int			i;
+	bool		conflict;
+	bool		found_self;
+	ExprContext *econtext;
+	TupleTableSlot *existing_slot;
+	TupleTableSlot *save_scantuple;
 
-	Assert(rti > 0 && rti <= estate->es_range_table_size);
-
-	rel = estate->es_relations[rti - 1];
-	if (rel == NULL)
+	/*
+	 * If any of the input values are NULL, the constraint check is assumed to
+	 * pass (i.e., we assume the operators are strict).
+	 */
+	for (i = 0; i < index_natts; i++)
 	{
-		/* First time through, so open the relation */
-		RangeTblEntry *rte = exec_rt_fetch(rti, estate);
-
-		Assert(rte->rtekind == RTE_RELATION);
-
-		if (!IsParallelWorker())
-		{
-			/*
-			 * In a normal query, we should already have the appropriate lock,
-			 * but verify that through an Assert.  Since there's already an
-			 * Assert inside table_open that insists on holding some lock, it
-			 * seems sufficient to check this only when rellockmode is higher
-			 * than the minimum.
-			 */
-			rel = table_open(rte->relid, NoLock);
-			Assert(rte->rellockmode == AccessShareLock ||
-				   CheckRelationLockedByMe(rel, rte->rellockmode, false));
-		}
-		else
-		{
-			/*
-			 * If we are a parallel worker, we need to obtain our own local
-			 * lock on the relation.  This ensures sane behavior in case the
-			 * parent process exits before we do.
-			 */
-			rel = table_open(rte->relid, rte->rellockmode);
-		}
-
-		estate->es_relations[rti - 1] = rel;
+		if (isnull[i])
+			return true;
 	}
 
-	return rel;
+	/*
+	 * Search the tuples that are in the index for any violations, including
+	 * tuples that aren't visible yet.
+	 */
+	InitDirtySnapshot(DirtySnapshot);
+
+	for (i = 0; i < index_natts; i++)
+	{
+		ScanKeyEntryInitialize(&scankeys[i],
+							   0,
+							   i + 1,
+							   constr_strats[i],
+							   InvalidOid,
+							   index_collations[i],
+							   constr_procs[i],
+							   values[i]);
+	}
+
+	/*
+	 * Need a TupleTableSlot to put existing tuples in.
+	 *
+	 * To use FormIndexDatum, we have to make the econtext's scantuple point
+	 * to this slot.  Be sure to save and restore caller's value for
+	 * scantuple.
+	 */
+	existing_slot = MakeSingleTupleTableSlot(RelationGetDescr(heap));
+
+	econtext = GetPerTupleExprContext(estate);
+	save_scantuple = econtext->ecxt_scantuple;
+	econtext->ecxt_scantuple = existing_slot;
+
+	/*
+	 * May have to restart scan from this point if a potential conflict is
+	 * found.
+	 */
+retry:
+	conflict = false;
+	found_self = false;
+	index_scan = index_beginscan(heap, index, &DirtySnapshot, index_natts, 0);
+	index_rescan(index_scan, scankeys, index_natts, NULL, 0);
+
+	while ((tup = index_getnext(index_scan,
+								ForwardScanDirection)) != NULL)
+	{
+		TransactionId xwait;
+		ItemPointerData ctid_wait;
+		Datum		existing_values[INDEX_MAX_KEYS];
+		bool		existing_isnull[INDEX_MAX_KEYS];
+		char	   *error_new;
+		char	   *error_existing;
+
+		/*
+		 * Ignore the entry for the tuple we're trying to check.
+		 */
+		if (ItemPointerEquals(tupleid, &tup->t_self))
+		{
+			if (found_self)		/* should not happen */
+				elog(ERROR, "found self tuple multiple times in index \"%s\"",
+					 RelationGetRelationName(index));
+			found_self = true;
+			continue;
+		}
+
+		/*
+		 * Extract the index column values and isnull flags from the existing
+		 * tuple.
+		 */
+		ExecStoreTuple(tup, existing_slot, InvalidBuffer, false);
+		FormIndexDatum(indexInfo, existing_slot, estate,
+					   existing_values, existing_isnull);
+
+		/* If lossy indexscan, must recheck the condition */
+		if (index_scan->xs_recheck)
+		{
+			if (!index_recheck_constraint(index,
+										  constr_procs,
+										  existing_values,
+										  existing_isnull,
+										  values))
+				continue;		/* tuple doesn't actually match, so no
+								 * conflict */
+		}
+
+		/*
+		 * At this point we have either a conflict or a potential conflict. If
+		 * we're not supposed to raise error, just return the fact of the
+		 * potential conflict without waiting to see if it's real.
+		 */
+		if (errorOK)
+		{
+			conflict = true;
+			break;
+		}
+
+		/*
+		 * If an in-progress transaction is affecting the visibility of this
+		 * tuple, we need to wait for it to complete and then recheck.  For
+		 * simplicity we do rechecking by just restarting the whole scan ---
+		 * this case probably doesn't happen often enough to be worth trying
+		 * harder, and anyway we don't want to hold any index internal locks
+		 * while waiting.
+		 */
+		xwait = TransactionIdIsValid(DirtySnapshot.xmin) ?
+			DirtySnapshot.xmin : DirtySnapshot.xmax;
+
+		if (TransactionIdIsValid(xwait))
+		{
+			ctid_wait = tup->t_data->t_ctid;
+			index_endscan(index_scan);
+			XactLockTableWait(xwait, heap, &ctid_wait,
+							  XLTW_RecheckExclusionConstr);
+			goto retry;
+		}
+
+		/*
+		 * We have a definite conflict.  Report it.
+		 */
+		error_new = BuildIndexValueDescription(index, values, isnull);
+		error_existing = BuildIndexValueDescription(index, existing_values,
+													existing_isnull);
+		if (newIndex)
+			ereport(ERROR,
+					(errcode(ERRCODE_EXCLUSION_VIOLATION),
+					 errmsg("could not create exclusion constraint \"%s\"",
+							RelationGetRelationName(index)),
+					 error_new && error_existing ?
+						errdetail("Key %s conflicts with key %s.",
+								  error_new, error_existing) :
+						errdetail("Key conflicts exist."),
+					 errtableconstraint(heap,
+										RelationGetRelationName(index))));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_EXCLUSION_VIOLATION),
+					 errmsg("conflicting key value violates exclusion constraint \"%s\"",
+							RelationGetRelationName(index)),
+					 error_new && error_existing ?
+						errdetail("Key %s conflicts with existing key %s.",
+								  error_new, error_existing) :
+						errdetail("Key conflicts with existing key."),
+					 errtableconstraint(heap,
+										RelationGetRelationName(index))));
+	}
+
+	index_endscan(index_scan);
+
+	/*
+	 * Ordinarily, at this point the search should have found the originally
+	 * inserted tuple, unless we exited the loop early because of conflict.
+	 * However, it is possible to define exclusion constraints for which that
+	 * wouldn't be true --- for instance, if the operator is <>. So we no
+	 * longer complain if found_self is still false.
+	 */
+
+	econtext->ecxt_scantuple = save_scantuple;
+
+	ExecDropSingleTupleTableSlot(existing_slot);
+
+	return !conflict;
+}
+
+/*
+ * Check existing tuple's index values to see if it really matches the
+ * exclusion condition against the new_values.  Returns true if conflict.
+ */
+static bool
+index_recheck_constraint(Relation index, Oid *constr_procs,
+						 Datum *existing_values, bool *existing_isnull,
+						 Datum *new_values)
+{
+	int			index_natts = index->rd_index->indnatts;
+	int			i;
+
+	for (i = 0; i < index_natts; i++)
+	{
+		/* Assume the exclusion operators are strict */
+		if (existing_isnull[i])
+			return false;
+
+		if (!DatumGetBool(OidFunctionCall2Coll(constr_procs[i],
+											   index->rd_indcollation[i],
+											   existing_values[i],
+											   new_values[i])))
+			return false;
+	}
+
+	return true;
 }
 
 /*
@@ -859,36 +1414,6 @@ UpdateChangedParamSet(PlanState *node, Bitmapset *newchg)
 		node->chgParam = bms_join(node->chgParam, parmset);
 	else
 		bms_free(parmset);
-}
-
-/*
- * executor_errposition
- *		Report an execution-time cursor position, if possible.
- *
- * This is expected to be used within an ereport() call.  The return value
- * is a dummy (always 0, in fact).
- *
- * The locations stored in parsetrees are byte offsets into the source string.
- * We have to convert them to 1-based character indexes for reporting to
- * clients.  (We do things this way to avoid unnecessary overhead in the
- * normal non-error case: computing character indexes would be much more
- * expensive than storing token offsets.)
- */
-int
-executor_errposition(EState *estate, int location)
-{
-	int			pos;
-
-	/* No-op if location was not provided */
-	if (location < 0)
-		return 0;
-	/* Can't do anything if source text is not available */
-	if (estate == NULL || estate->es_sourceText == NULL)
-		return 0;
-	/* Convert offset to character number */
-	pos = pg_mbstrlen_with_len(estate->es_sourceText, location) + 1;
-	/* And pass it to the ereport mechanism */
-	return errposition(pos);
 }
 
 /*
@@ -981,328 +1506,9 @@ ShutdownExprContext(ExprContext *econtext, bool isCommit)
 	{
 		econtext->ecxt_callbacks = ecxt_callback->next;
 		if (isCommit)
-			ecxt_callback->function(ecxt_callback->arg);
+			(*ecxt_callback->function) (ecxt_callback->arg);
 		pfree(ecxt_callback);
 	}
 
 	MemoryContextSwitchTo(oldcontext);
-}
-
-/*
- *		GetAttributeByName
- *		GetAttributeByNum
- *
- *		These functions return the value of the requested attribute
- *		out of the given tuple Datum.
- *		C functions which take a tuple as an argument are expected
- *		to use these.  Ex: overpaid(EMP) might call GetAttributeByNum().
- *		Note: these are actually rather slow because they do a typcache
- *		lookup on each call.
- */
-Datum
-GetAttributeByName(HeapTupleHeader tuple, const char *attname, bool *isNull)
-{
-	AttrNumber	attrno;
-	Datum		result;
-	Oid			tupType;
-	int32		tupTypmod;
-	TupleDesc	tupDesc;
-	HeapTupleData tmptup;
-	int			i;
-
-	if (attname == NULL)
-		elog(ERROR, "invalid attribute name");
-
-	if (isNull == NULL)
-		elog(ERROR, "a NULL isNull pointer was passed");
-
-	if (tuple == NULL)
-	{
-		/* Kinda bogus but compatible with old behavior... */
-		*isNull = true;
-		return (Datum) 0;
-	}
-
-	tupType = HeapTupleHeaderGetTypeId(tuple);
-	tupTypmod = HeapTupleHeaderGetTypMod(tuple);
-	tupDesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
-
-	attrno = InvalidAttrNumber;
-	for (i = 0; i < tupDesc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(tupDesc, i);
-
-		if (namestrcmp(&(att->attname), attname) == 0)
-		{
-			attrno = att->attnum;
-			break;
-		}
-	}
-
-	if (attrno == InvalidAttrNumber)
-		elog(ERROR, "attribute \"%s\" does not exist", attname);
-
-	/*
-	 * heap_getattr needs a HeapTuple not a bare HeapTupleHeader.  We set all
-	 * the fields in the struct just in case user tries to inspect system
-	 * columns.
-	 */
-	tmptup.t_len = HeapTupleHeaderGetDatumLength(tuple);
-	ItemPointerSetInvalid(&(tmptup.t_self));
-	tmptup.t_tableOid = InvalidOid;
-	tmptup.t_data = tuple;
-
-	result = heap_getattr(&tmptup,
-						  attrno,
-						  tupDesc,
-						  isNull);
-
-	ReleaseTupleDesc(tupDesc);
-
-	return result;
-}
-
-Datum
-GetAttributeByNum(HeapTupleHeader tuple,
-				  AttrNumber attrno,
-				  bool *isNull)
-{
-	Datum		result;
-	Oid			tupType;
-	int32		tupTypmod;
-	TupleDesc	tupDesc;
-	HeapTupleData tmptup;
-
-	if (!AttributeNumberIsValid(attrno))
-		elog(ERROR, "invalid attribute number %d", attrno);
-
-	if (isNull == NULL)
-		elog(ERROR, "a NULL isNull pointer was passed");
-
-	if (tuple == NULL)
-	{
-		/* Kinda bogus but compatible with old behavior... */
-		*isNull = true;
-		return (Datum) 0;
-	}
-
-	tupType = HeapTupleHeaderGetTypeId(tuple);
-	tupTypmod = HeapTupleHeaderGetTypMod(tuple);
-	tupDesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
-
-	/*
-	 * heap_getattr needs a HeapTuple not a bare HeapTupleHeader.  We set all
-	 * the fields in the struct just in case user tries to inspect system
-	 * columns.
-	 */
-	tmptup.t_len = HeapTupleHeaderGetDatumLength(tuple);
-	ItemPointerSetInvalid(&(tmptup.t_self));
-	tmptup.t_tableOid = InvalidOid;
-	tmptup.t_data = tuple;
-
-	result = heap_getattr(&tmptup,
-						  attrno,
-						  tupDesc,
-						  isNull);
-
-	ReleaseTupleDesc(tupDesc);
-
-	return result;
-}
-
-/*
- * Number of items in a tlist (including any resjunk items!)
- */
-int
-ExecTargetListLength(List *targetlist)
-{
-	/* This used to be more complex, but fjoins are dead */
-	return list_length(targetlist);
-}
-
-/*
- * Number of items in a tlist, not including any resjunk items
- */
-int
-ExecCleanTargetListLength(List *targetlist)
-{
-	int			len = 0;
-	ListCell   *tl;
-
-	foreach(tl, targetlist)
-	{
-		TargetEntry *curTle = lfirst_node(TargetEntry, tl);
-
-		if (!curTle->resjunk)
-			len++;
-	}
-	return len;
-}
-
-/*
- * Return a relInfo's tuple slot for a trigger's OLD tuples.
- */
-TupleTableSlot *
-ExecGetTriggerOldSlot(EState *estate, ResultRelInfo *relInfo)
-{
-	if (relInfo->ri_TrigOldSlot == NULL)
-	{
-		Relation	rel = relInfo->ri_RelationDesc;
-		MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
-
-		relInfo->ri_TrigOldSlot =
-			ExecInitExtraTupleSlot(estate,
-								   RelationGetDescr(rel),
-								   table_slot_callbacks(rel));
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	return relInfo->ri_TrigOldSlot;
-}
-
-/*
- * Return a relInfo's tuple slot for a trigger's NEW tuples.
- */
-TupleTableSlot *
-ExecGetTriggerNewSlot(EState *estate, ResultRelInfo *relInfo)
-{
-	if (relInfo->ri_TrigNewSlot == NULL)
-	{
-		Relation	rel = relInfo->ri_RelationDesc;
-		MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
-
-		relInfo->ri_TrigNewSlot =
-			ExecInitExtraTupleSlot(estate,
-								   RelationGetDescr(rel),
-								   table_slot_callbacks(rel));
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	return relInfo->ri_TrigNewSlot;
-}
-
-/*
- * Return a relInfo's tuple slot for processing returning tuples.
- */
-TupleTableSlot *
-ExecGetReturningSlot(EState *estate, ResultRelInfo *relInfo)
-{
-	if (relInfo->ri_ReturningSlot == NULL)
-	{
-		Relation	rel = relInfo->ri_RelationDesc;
-		MemoryContext oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
-
-		relInfo->ri_ReturningSlot =
-			ExecInitExtraTupleSlot(estate,
-								   RelationGetDescr(rel),
-								   table_slot_callbacks(rel));
-
-		MemoryContextSwitchTo(oldcontext);
-	}
-
-	return relInfo->ri_ReturningSlot;
-}
-
-/* Return a bitmap representing columns being inserted */
-Bitmapset *
-ExecGetInsertedCols(ResultRelInfo *relinfo, EState *estate)
-{
-	/*
-	 * The columns are stored in the range table entry.  If this ResultRelInfo
-	 * represents a partition routing target, and doesn't have an entry of its
-	 * own in the range table, fetch the parent's RTE and map the columns to
-	 * the order they are in the partition.
-	 */
-	if (relinfo->ri_RangeTableIndex != 0)
-	{
-		RangeTblEntry *rte = exec_rt_fetch(relinfo->ri_RangeTableIndex, estate);
-
-		return rte->insertedCols;
-	}
-	else if (relinfo->ri_RootResultRelInfo)
-	{
-		ResultRelInfo *rootRelInfo = relinfo->ri_RootResultRelInfo;
-		RangeTblEntry *rte = exec_rt_fetch(rootRelInfo->ri_RangeTableIndex, estate);
-		PartitionRoutingInfo *partrouteinfo = relinfo->ri_PartitionInfo;
-
-		if (partrouteinfo->pi_RootToPartitionMap != NULL)
-			return execute_attr_map_cols(partrouteinfo->pi_RootToPartitionMap->attrMap,
-										 rte->insertedCols);
-		else
-			return rte->insertedCols;
-	}
-	else
-	{
-		/*
-		 * The relation isn't in the range table and it isn't a partition
-		 * routing target.  This ResultRelInfo must've been created only for
-		 * firing triggers and the relation is not being inserted into.  (See
-		 * ExecGetTriggerResultRel.)
-		 */
-		return NULL;
-	}
-}
-
-/* Return a bitmap representing columns being updated */
-Bitmapset *
-ExecGetUpdatedCols(ResultRelInfo *relinfo, EState *estate)
-{
-	/* see ExecGetInsertedCols() */
-	if (relinfo->ri_RangeTableIndex != 0)
-	{
-		RangeTblEntry *rte = exec_rt_fetch(relinfo->ri_RangeTableIndex, estate);
-
-		return rte->updatedCols;
-	}
-	else if (relinfo->ri_RootResultRelInfo)
-	{
-		ResultRelInfo *rootRelInfo = relinfo->ri_RootResultRelInfo;
-		RangeTblEntry *rte = exec_rt_fetch(rootRelInfo->ri_RangeTableIndex, estate);
-		PartitionRoutingInfo *partrouteinfo = relinfo->ri_PartitionInfo;
-
-		if (partrouteinfo->pi_RootToPartitionMap != NULL)
-			return execute_attr_map_cols(partrouteinfo->pi_RootToPartitionMap->attrMap,
-										 rte->updatedCols);
-		else
-			return rte->updatedCols;
-	}
-	else
-		return NULL;
-}
-
-/* Return a bitmap representing generated columns being updated */
-Bitmapset *
-ExecGetExtraUpdatedCols(ResultRelInfo *relinfo, EState *estate)
-{
-	/* see ExecGetInsertedCols() */
-	if (relinfo->ri_RangeTableIndex != 0)
-	{
-		RangeTblEntry *rte = exec_rt_fetch(relinfo->ri_RangeTableIndex, estate);
-
-		return rte->extraUpdatedCols;
-	}
-	else if (relinfo->ri_RootResultRelInfo)
-	{
-		ResultRelInfo *rootRelInfo = relinfo->ri_RootResultRelInfo;
-		RangeTblEntry *rte = exec_rt_fetch(rootRelInfo->ri_RangeTableIndex, estate);
-		PartitionRoutingInfo *partrouteinfo = relinfo->ri_PartitionInfo;
-
-		if (partrouteinfo->pi_RootToPartitionMap != NULL)
-			return execute_attr_map_cols(partrouteinfo->pi_RootToPartitionMap->attrMap,
-										 rte->extraUpdatedCols);
-		else
-			return rte->extraUpdatedCols;
-	}
-	else
-		return NULL;
-}
-
-/* Return columns being updated, including generated columns */
-Bitmapset *
-ExecGetAllUpdatedCols(ResultRelInfo *relinfo, EState *estate)
-{
-	return bms_union(ExecGetUpdatedCols(relinfo, estate),
-					 ExecGetExtraUpdatedCols(relinfo, estate));
 }

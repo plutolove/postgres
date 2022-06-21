@@ -3,7 +3,7 @@
  * tsquery_gist.c
  *	  GiST index support for tsquery
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -14,10 +14,9 @@
 
 #include "postgres.h"
 
+#include "access/skey.h"
 #include "access/gist.h"
-#include "access/stratnum.h"
 #include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
 
 #define GETENTRY(vec,pos) DatumGetTSQuerySign((vec)->vector[pos].key)
 
@@ -37,16 +36,17 @@ gtsquery_compress(PG_FUNCTION_ARGS)
 
 		gistentryinit(*retval, TSQuerySignGetDatum(sign),
 					  entry->rel, entry->page,
-					  entry->offset, false);
+					  entry->offset, FALSE);
 	}
 
 	PG_RETURN_POINTER(retval);
 }
 
-/*
- * We do not need a decompress function, because the other gtsquery
- * support functions work with the compressed representation.
- */
+Datum
+gtsquery_decompress(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_DATUM(PG_GETARG_DATUM(0));
+}
 
 Datum
 gtsquery_consistent(PG_FUNCTION_ARGS)
@@ -79,7 +79,7 @@ gtsquery_consistent(PG_FUNCTION_ARGS)
 				retval = (key & sq) != 0;
 			break;
 		default:
-			retval = false;
+			retval = FALSE;
 	}
 	PG_RETURN_BOOL(retval);
 }
@@ -261,17 +261,4 @@ gtsquery_picksplit(PG_FUNCTION_ARGS)
 	v->spl_rdatum = TSQuerySignGetDatum(datum_r);
 
 	PG_RETURN_POINTER(v);
-}
-
-/*
- * Formerly, gtsquery_consistent was declared in pg_proc.h with arguments
- * that did not match the documented conventions for GiST support functions.
- * We fixed that, but we still need a pg_proc entry with the old signature
- * to support reloading pre-9.6 contrib/tsearch2 opclass declarations.
- * This compatibility function should go away eventually.
- */
-Datum
-gtsquery_consistent_oldsig(PG_FUNCTION_ARGS)
-{
-	return gtsquery_consistent(fcinfo);
 }

@@ -12,13 +12,11 @@
 
 <xsl:param name="man.authors.section.enabled">0</xsl:param>
 <xsl:param name="man.copyright.section.enabled">0</xsl:param>
-<xsl:param name="man.endnotes.are.numbered">0</xsl:param> <!-- for performance -->
 <xsl:param name="man.output.base.dir"></xsl:param>
 <xsl:param name="man.output.in.separate.dir" select="1"></xsl:param>
-<xsl:param name="man.output.quietly" select="1"></xsl:param>
+<xsl:param name="refentry.meta.get.quietly" select="0"></xsl:param>
 <xsl:param name="man.th.title.max.length">32</xsl:param> <!-- enough room for "CREATE TEXT SEARCH CONFIGURATION" -->
 <xsl:param name="man.th.extra3.max.length">40</xsl:param> <!-- enough room for "PostgreSQL X.Ydevel Documentation" -->
-<xsl:param name="refentry.meta.get.quietly" select="0"></xsl:param>
 <xsl:param name="refentry.xref.manvolnum" select="1"/> <!-- overridden from stylesheet-common.xsl -->
 
 <!-- Fixup for apostrophe groff output.  See the following references:
@@ -39,13 +37,6 @@
   <xsl:text>&lt;</xsl:text>
   <xsl:apply-templates/>
   <xsl:text>&gt;</xsl:text>
-</xsl:template>
-
-
-<!-- Make superscripts visible in man pages (default is no decoration) -->
-<xsl:template match="superscript">
-  <xsl:text>^</xsl:text>
-  <xsl:apply-templates/>
 </xsl:template>
 
 
@@ -191,12 +182,6 @@
 
   <!-- http://sourceforge.net/p/docbook/bugs/1340/ -->
   <xsl:template match="indexterm"/>
-
-
-<!-- https://github.com/docbook/xslt10-stylesheets/issues/59 -->
-<xsl:template match="a/sup">
-  <xsl:apply-templates/>
-</xsl:template>
 
 
 <!-- Gentext customization -->

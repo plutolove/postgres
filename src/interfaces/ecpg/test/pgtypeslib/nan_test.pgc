@@ -7,11 +7,16 @@
 
 exec sql include ../regression;
 
+#ifdef WIN32
+#define isinf(x) ((_fpclass(x) == _FPCLASS_PINF) || (_fpclass(x) == _FPCLASS_NINF))
+#define isnan(x) _isnan(x)
+#endif   /* WIN32 */
+
 int
 main(void)
 {
 	exec sql begin declare section;
-	int	id, loopcount;
+	int	id;
 	double	d;
 	numeric	*num;
 	char	val[16];
@@ -27,7 +32,7 @@ main(void)
 
 	exec sql declare cur cursor for select id, d, d from nantest1;
 	exec sql open cur;
-	for (loopcount = 0; loopcount < 100; loopcount++)
+	while (1)
 	{
 		exec sql fetch from cur into :id, :d, :val;
 		if (sqlca.sqlcode)
@@ -43,7 +48,7 @@ main(void)
 	exec sql close cur;
 
 	exec sql open cur;
-	for (loopcount = 0; loopcount < 100; loopcount++)
+	while (1)
 	{
 		exec sql fetch from cur into :id, :d, :val;
 		if (sqlca.sqlcode)
@@ -69,7 +74,7 @@ main(void)
 
 	exec sql declare cur1 cursor for select id, d, d from nantest2;
 	exec sql open cur1;
-	for (loopcount = 0; loopcount < 100; loopcount++)
+	while (1)
 	{
 		exec sql fetch from cur1 into :id, :num, :val;
 		if (sqlca.sqlcode)
@@ -83,5 +88,5 @@ main(void)
 	exec sql rollback;
 	exec sql disconnect;
 
-	return 0;
+	return (0);
 }

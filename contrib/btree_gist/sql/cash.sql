@@ -1,6 +1,6 @@
 -- money check
 
-CREATE TABLE moneytmp (a money);
+CREATE TABLE moneytmp (a money) WITH OIDS;
 
 \copy moneytmp from 'data/cash.data'
 

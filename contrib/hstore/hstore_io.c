@@ -7,17 +7,18 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
-#include "common/jsonapi.h"
 #include "funcapi.h"
-#include "hstore.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
 #include "utils/builtins.h"
 #include "utils/json.h"
+#include "utils/jsonapi.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
+
+#include "hstore.h"
 
 PG_MODULE_MAGIC;
 
@@ -322,11 +323,6 @@ hstoreUniquePairs(Pairs *a, int32 l, int32 *buflen)
 	}
 
 	qsort((void *) a, l, sizeof(Pairs), comparePairs);
-
-	/*
-	 * We can't use qunique here because we have some clean-up code to run on
-	 * removed elements.
-	 */
 	ptr = a + 1;
 	res = a;
 	while (ptr - a < l)
@@ -344,8 +340,7 @@ hstoreUniquePairs(Pairs *a, int32 l, int32 *buflen)
 		{
 			*buflen += res->keylen + ((res->isnull) ? 0 : res->vallen);
 			res++;
-			if (res != ptr)
-				memcpy(res, ptr, sizeof(Pairs));
+			memcpy(res, ptr, sizeof(Pairs));
 		}
 
 		ptr++;
@@ -448,8 +443,8 @@ hstore_recv(PG_FUNCTION_ARGS)
 	if (pcount < 0 || pcount > MaxAllocSize / sizeof(Pairs))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
-						pcount, (int) (MaxAllocSize / sizeof(Pairs)))));
+			  errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
+					 pcount, (int) (MaxAllocSize / sizeof(Pairs)))));
 	pairs = palloc(pcount * sizeof(Pairs));
 
 	for (i = 0; i < pcount; ++i)
@@ -560,15 +555,15 @@ hstore_from_arrays(PG_FUNCTION_ARGS)
 				 errmsg("wrong number of array subscripts")));
 
 	deconstruct_array(key_array,
-					  TEXTOID, -1, false, TYPALIGN_INT,
+					  TEXTOID, -1, false, 'i',
 					  &key_datums, &key_nulls, &key_count);
 
 	/* see discussion in hstoreArrayToPairs() */
 	if (key_count > MaxAllocSize / sizeof(Pairs))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
-						key_count, (int) (MaxAllocSize / sizeof(Pairs)))));
+			  errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
+					 key_count, (int) (MaxAllocSize / sizeof(Pairs)))));
 
 	/* value_array might be NULL */
 
@@ -599,7 +594,7 @@ hstore_from_arrays(PG_FUNCTION_ARGS)
 					 errmsg("arrays must have same bounds")));
 
 		deconstruct_array(value_array,
-						  TEXTOID, -1, false, TYPALIGN_INT,
+						  TEXTOID, -1, false, 'i',
 						  &value_datums, &value_nulls, &value_count);
 
 		Assert(key_count == value_count);
@@ -616,22 +611,19 @@ hstore_from_arrays(PG_FUNCTION_ARGS)
 
 		if (!value_nulls || value_nulls[i])
 		{
-			pairs[i].key = VARDATA(key_datums[i]);
+			pairs[i].key = VARDATA_ANY(key_datums[i]);
 			pairs[i].val = NULL;
-			pairs[i].keylen =
-				hstoreCheckKeyLen(VARSIZE(key_datums[i]) - VARHDRSZ);
+			pairs[i].keylen = hstoreCheckKeyLen(VARSIZE_ANY_EXHDR(key_datums[i]));
 			pairs[i].vallen = 4;
 			pairs[i].isnull = true;
 			pairs[i].needfree = false;
 		}
 		else
 		{
-			pairs[i].key = VARDATA(key_datums[i]);
-			pairs[i].val = VARDATA(value_datums[i]);
-			pairs[i].keylen =
-				hstoreCheckKeyLen(VARSIZE(key_datums[i]) - VARHDRSZ);
-			pairs[i].vallen =
-				hstoreCheckValLen(VARSIZE(value_datums[i]) - VARHDRSZ);
+			pairs[i].key = VARDATA_ANY(key_datums[i]);
+			pairs[i].val = VARDATA_ANY(value_datums[i]);
+			pairs[i].keylen = hstoreCheckKeyLen(VARSIZE_ANY_EXHDR(key_datums[i]));
+			pairs[i].vallen = hstoreCheckValLen(VARSIZE_ANY_EXHDR(value_datums[i]));
 			pairs[i].isnull = false;
 			pairs[i].needfree = false;
 		}
@@ -689,7 +681,7 @@ hstore_from_array(PG_FUNCTION_ARGS)
 	}
 
 	deconstruct_array(in_array,
-					  TEXTOID, -1, false, TYPALIGN_INT,
+					  TEXTOID, -1, false, 'i',
 					  &in_datums, &in_nulls, &in_count);
 
 	count = in_count / 2;
@@ -698,8 +690,8 @@ hstore_from_array(PG_FUNCTION_ARGS)
 	if (count > MaxAllocSize / sizeof(Pairs))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
-						count, (int) (MaxAllocSize / sizeof(Pairs)))));
+			  errmsg("number of pairs (%d) exceeds the maximum allowed (%d)",
+					 count, (int) (MaxAllocSize / sizeof(Pairs)))));
 
 	pairs = palloc(count * sizeof(Pairs));
 
@@ -712,22 +704,19 @@ hstore_from_array(PG_FUNCTION_ARGS)
 
 		if (in_nulls[i * 2 + 1])
 		{
-			pairs[i].key = VARDATA(in_datums[i * 2]);
+			pairs[i].key = VARDATA_ANY(in_datums[i * 2]);
 			pairs[i].val = NULL;
-			pairs[i].keylen =
-				hstoreCheckKeyLen(VARSIZE(in_datums[i * 2]) - VARHDRSZ);
+			pairs[i].keylen = hstoreCheckKeyLen(VARSIZE_ANY_EXHDR(in_datums[i * 2]));
 			pairs[i].vallen = 4;
 			pairs[i].isnull = true;
 			pairs[i].needfree = false;
 		}
 		else
 		{
-			pairs[i].key = VARDATA(in_datums[i * 2]);
-			pairs[i].val = VARDATA(in_datums[i * 2 + 1]);
-			pairs[i].keylen =
-				hstoreCheckKeyLen(VARSIZE(in_datums[i * 2]) - VARHDRSZ);
-			pairs[i].vallen =
-				hstoreCheckValLen(VARSIZE(in_datums[i * 2 + 1]) - VARHDRSZ);
+			pairs[i].key = VARDATA_ANY(in_datums[i * 2]);
+			pairs[i].val = VARDATA_ANY(in_datums[i * 2 + 1]);
+			pairs[i].keylen = hstoreCheckKeyLen(VARSIZE_ANY_EXHDR(in_datums[i * 2]));
+			pairs[i].vallen = hstoreCheckValLen(VARSIZE_ANY_EXHDR(in_datums[i * 2 + 1]));
 			pairs[i].isnull = false;
 			pairs[i].needfree = false;
 		}
@@ -757,10 +746,8 @@ typedef struct RecordIOData
 {
 	Oid			record_type;
 	int32		record_typmod;
-	/* this field is used only if target type is domain over composite: */
-	void	   *domain_info;	/* opaque cache for domain checks */
 	int			ncolumns;
-	ColumnIOData columns[FLEXIBLE_ARRAY_MEMBER];
+	ColumnIOData columns[1];	/* VARIABLE LENGTH ARRAY */
 } RecordIOData;
 
 PG_FUNCTION_INFO_V1(hstore_from_record);
@@ -787,11 +774,9 @@ hstore_from_record(PG_FUNCTION_ARGS)
 		Oid			argtype = get_fn_expr_argtype(fcinfo->flinfo, 0);
 
 		/*
-		 * We have no tuple to look at, so the only source of type info is the
-		 * argtype --- which might be domain over composite, but we don't care
-		 * here, since we have no need to be concerned about domain
-		 * constraints.  The lookup_rowtype_tupdesc_domain call below will
-		 * error out if we don't have a known composite type oid here.
+		 * have no tuple to look at, so the only source of type info is the
+		 * argtype. The lookup_rowtype_tupdesc call below will error out if we
+		 * don't have a known composite type oid here.
 		 */
 		tupType = argtype;
 		tupTypmod = -1;
@@ -802,15 +787,12 @@ hstore_from_record(PG_FUNCTION_ARGS)
 	{
 		rec = PG_GETARG_HEAPTUPLEHEADER(0);
 
-		/*
-		 * Extract type info from the tuple itself -- this will work even for
-		 * anonymous record types.
-		 */
+		/* Extract type info from the tuple itself */
 		tupType = HeapTupleHeaderGetTypeId(rec);
 		tupTypmod = HeapTupleHeaderGetTypMod(rec);
 	}
 
-	tupdesc = lookup_rowtype_tupdesc_domain(tupType, tupTypmod, false);
+	tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
 	ncolumns = tupdesc->natts;
 
 	/*
@@ -823,8 +805,8 @@ hstore_from_record(PG_FUNCTION_ARGS)
 	{
 		fcinfo->flinfo->fn_extra =
 			MemoryContextAlloc(fcinfo->flinfo->fn_mcxt,
-							   offsetof(RecordIOData, columns) +
-							   ncolumns * sizeof(ColumnIOData));
+							   sizeof(RecordIOData) - sizeof(ColumnIOData)
+							   + ncolumns * sizeof(ColumnIOData));
 		my_extra = (RecordIOData *) fcinfo->flinfo->fn_extra;
 		my_extra->record_type = InvalidOid;
 		my_extra->record_typmod = 0;
@@ -834,14 +816,14 @@ hstore_from_record(PG_FUNCTION_ARGS)
 		my_extra->record_typmod != tupTypmod)
 	{
 		MemSet(my_extra, 0,
-			   offsetof(RecordIOData, columns) +
-			   ncolumns * sizeof(ColumnIOData));
+			   sizeof(RecordIOData) - sizeof(ColumnIOData)
+			   + ncolumns * sizeof(ColumnIOData));
 		my_extra->record_type = tupType;
 		my_extra->record_typmod = tupTypmod;
 		my_extra->ncolumns = ncolumns;
 	}
 
-	Assert(ncolumns <= MaxTupleAttributeNumber);	/* thus, no overflow */
+	Assert(ncolumns <= MaxTupleAttributeNumber);		/* thus, no overflow */
 	pairs = palloc(ncolumns * sizeof(Pairs));
 
 	if (rec)
@@ -867,16 +849,15 @@ hstore_from_record(PG_FUNCTION_ARGS)
 	for (i = 0, j = 0; i < ncolumns; ++i)
 	{
 		ColumnIOData *column_info = &my_extra->columns[i];
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
-		Oid			column_type = att->atttypid;
+		Oid			column_type = tupdesc->attrs[i]->atttypid;
 		char	   *value;
 
 		/* Ignore dropped columns in datatype */
-		if (att->attisdropped)
+		if (tupdesc->attrs[i]->attisdropped)
 			continue;
 
-		pairs[j].key = NameStr(att->attname);
-		pairs[j].keylen = hstoreCheckKeyLen(strlen(NameStr(att->attname)));
+		pairs[j].key = NameStr(tupdesc->attrs[i]->attname);
+		pairs[j].keylen = hstoreCheckKeyLen(strlen(NameStr(tupdesc->attrs[i]->attname)));
 
 		if (!nulls || nulls[i])
 		{
@@ -955,9 +936,9 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 		rec = NULL;
 
 		/*
-		 * We have no tuple to look at, so the only source of type info is the
-		 * argtype.  The lookup_rowtype_tupdesc_domain call below will error
-		 * out if we don't have a known composite type oid here.
+		 * have no tuple to look at, so the only source of type info is the
+		 * argtype. The lookup_rowtype_tupdesc call below will error out if we
+		 * don't have a known composite type oid here.
 		 */
 		tupType = argtype;
 		tupTypmod = -1;
@@ -969,15 +950,12 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 		if (PG_ARGISNULL(1))
 			PG_RETURN_POINTER(rec);
 
-		/*
-		 * Extract type info from the tuple itself -- this will work even for
-		 * anonymous record types.
-		 */
+		/* Extract type info from the tuple itself */
 		tupType = HeapTupleHeaderGetTypeId(rec);
 		tupTypmod = HeapTupleHeaderGetTypMod(rec);
 	}
 
-	hs = PG_GETARG_HSTORE_P(1);
+	hs = PG_GETARG_HS(1);
 	entries = ARRPTR(hs);
 	ptr = STRPTR(hs);
 
@@ -990,11 +968,7 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 	if (HS_COUNT(hs) == 0 && rec)
 		PG_RETURN_POINTER(rec);
 
-	/*
-	 * Lookup the input record's tupdesc.  For the moment, we don't worry
-	 * about whether it is a domain over composite.
-	 */
-	tupdesc = lookup_rowtype_tupdesc_domain(tupType, tupTypmod, false);
+	tupdesc = lookup_rowtype_tupdesc(tupType, tupTypmod);
 	ncolumns = tupdesc->natts;
 
 	if (rec)
@@ -1016,20 +990,19 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 	{
 		fcinfo->flinfo->fn_extra =
 			MemoryContextAlloc(fcinfo->flinfo->fn_mcxt,
-							   offsetof(RecordIOData, columns) +
-							   ncolumns * sizeof(ColumnIOData));
+							   sizeof(RecordIOData) - sizeof(ColumnIOData)
+							   + ncolumns * sizeof(ColumnIOData));
 		my_extra = (RecordIOData *) fcinfo->flinfo->fn_extra;
 		my_extra->record_type = InvalidOid;
 		my_extra->record_typmod = 0;
-		my_extra->domain_info = NULL;
 	}
 
 	if (my_extra->record_type != tupType ||
 		my_extra->record_typmod != tupTypmod)
 	{
 		MemSet(my_extra, 0,
-			   offsetof(RecordIOData, columns) +
-			   ncolumns * sizeof(ColumnIOData));
+			   sizeof(RecordIOData) - sizeof(ColumnIOData)
+			   + ncolumns * sizeof(ColumnIOData));
 		my_extra->record_type = tupType;
 		my_extra->record_typmod = tupTypmod;
 		my_extra->ncolumns = ncolumns;
@@ -1055,22 +1028,21 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 	for (i = 0; i < ncolumns; ++i)
 	{
 		ColumnIOData *column_info = &my_extra->columns[i];
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
-		Oid			column_type = att->atttypid;
+		Oid			column_type = tupdesc->attrs[i]->atttypid;
 		char	   *value;
 		int			idx;
 		int			vallen;
 
 		/* Ignore dropped columns in datatype */
-		if (att->attisdropped)
+		if (tupdesc->attrs[i]->attisdropped)
 		{
 			nulls[i] = true;
 			continue;
 		}
 
 		idx = hstoreFindKey(hs, 0,
-							NameStr(att->attname),
-							strlen(NameStr(att->attname)));
+							NameStr(tupdesc->attrs[i]->attname),
+							strlen(NameStr(tupdesc->attrs[i]->attname)));
 
 		/*
 		 * we can't just skip here if the key wasn't found since we might have
@@ -1096,7 +1068,7 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 			column_info->column_type = column_type;
 		}
 
-		if (idx < 0 || HSTORE_VALISNULL(entries, idx))
+		if (idx < 0 || HS_VALISNULL(entries, idx))
 		{
 			/*
 			 * need InputFunctionCall to happen even for nulls, so that domain
@@ -1104,35 +1076,24 @@ hstore_populate_record(PG_FUNCTION_ARGS)
 			 */
 			values[i] = InputFunctionCall(&column_info->proc, NULL,
 										  column_info->typioparam,
-										  att->atttypmod);
+										  tupdesc->attrs[i]->atttypmod);
 			nulls[i] = true;
 		}
 		else
 		{
-			vallen = HSTORE_VALLEN(entries, idx);
+			vallen = HS_VALLEN(entries, idx);
 			value = palloc(1 + vallen);
-			memcpy(value, HSTORE_VAL(entries, ptr, idx), vallen);
+			memcpy(value, HS_VAL(entries, ptr, idx), vallen);
 			value[vallen] = 0;
 
 			values[i] = InputFunctionCall(&column_info->proc, value,
 										  column_info->typioparam,
-										  att->atttypmod);
+										  tupdesc->attrs[i]->atttypmod);
 			nulls[i] = false;
 		}
 	}
 
 	rettuple = heap_form_tuple(tupdesc, values, nulls);
-
-	/*
-	 * If the target type is domain over composite, all we know at this point
-	 * is that we've made a valid value of the base composite type.  Must
-	 * check domain constraints before deciding we're done.
-	 */
-	if (argtype != tupdesc->tdtypeid)
-		domain_check(HeapTupleGetDatum(rettuple), false,
-					 argtype,
-					 &my_extra->domain_info,
-					 fcinfo->flinfo->fn_mcxt);
 
 	ReleaseTupleDesc(tupdesc);
 
@@ -1158,7 +1119,7 @@ PG_FUNCTION_INFO_V1(hstore_out);
 Datum
 hstore_out(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			buflen,
 				i;
 	int			count = HS_COUNT(in);
@@ -1183,11 +1144,11 @@ hstore_out(PG_FUNCTION_ARGS)
 	for (i = 0; i < count; i++)
 	{
 		/* include "" and => and comma-space */
-		buflen += 6 + 2 * HSTORE_KEYLEN(entries, i);
+		buflen += 6 + 2 * HS_KEYLEN(entries, i);
 		/* include "" only if nonnull */
-		buflen += 2 + (HSTORE_VALISNULL(entries, i)
+		buflen += 2 + (HS_VALISNULL(entries, i)
 					   ? 2
-					   : 2 * HSTORE_VALLEN(entries, i));
+					   : 2 * HS_VALLEN(entries, i));
 	}
 
 	out = ptr = palloc(buflen);
@@ -1195,11 +1156,11 @@ hstore_out(PG_FUNCTION_ARGS)
 	for (i = 0; i < count; i++)
 	{
 		*ptr++ = '"';
-		ptr = cpw(ptr, HSTORE_KEY(entries, base, i), HSTORE_KEYLEN(entries, i));
+		ptr = cpw(ptr, HS_KEY(entries, base, i), HS_KEYLEN(entries, i));
 		*ptr++ = '"';
 		*ptr++ = '=';
 		*ptr++ = '>';
-		if (HSTORE_VALISNULL(entries, i))
+		if (HS_VALISNULL(entries, i))
 		{
 			*ptr++ = 'N';
 			*ptr++ = 'U';
@@ -1209,7 +1170,7 @@ hstore_out(PG_FUNCTION_ARGS)
 		else
 		{
 			*ptr++ = '"';
-			ptr = cpw(ptr, HSTORE_VAL(entries, base, i), HSTORE_VALLEN(entries, i));
+			ptr = cpw(ptr, HS_VAL(entries, base, i), HS_VALLEN(entries, i));
 			*ptr++ = '"';
 		}
 
@@ -1229,7 +1190,7 @@ PG_FUNCTION_INFO_V1(hstore_send);
 Datum
 hstore_send(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			i;
 	int			count = HS_COUNT(in);
 	char	   *base = STRPTR(in);
@@ -1238,24 +1199,24 @@ hstore_send(PG_FUNCTION_ARGS)
 
 	pq_begintypsend(&buf);
 
-	pq_sendint32(&buf, count);
+	pq_sendint(&buf, count, 4);
 
 	for (i = 0; i < count; i++)
 	{
-		int32		keylen = HSTORE_KEYLEN(entries, i);
+		int32		keylen = HS_KEYLEN(entries, i);
 
-		pq_sendint32(&buf, keylen);
-		pq_sendtext(&buf, HSTORE_KEY(entries, base, i), keylen);
-		if (HSTORE_VALISNULL(entries, i))
+		pq_sendint(&buf, keylen, 4);
+		pq_sendtext(&buf, HS_KEY(entries, base, i), keylen);
+		if (HS_VALISNULL(entries, i))
 		{
-			pq_sendint32(&buf, -1);
+			pq_sendint(&buf, -1, 4);
 		}
 		else
 		{
-			int32		vallen = HSTORE_VALLEN(entries, i);
+			int32		vallen = HS_VALLEN(entries, i);
 
-			pq_sendint32(&buf, vallen);
-			pq_sendtext(&buf, HSTORE_VAL(entries, base, i), vallen);
+			pq_sendint(&buf, vallen, 4);
+			pq_sendtext(&buf, HS_VAL(entries, base, i), vallen);
 		}
 	}
 
@@ -1275,7 +1236,7 @@ PG_FUNCTION_INFO_V1(hstore_to_json_loose);
 Datum
 hstore_to_json_loose(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			i;
 	int			count = HS_COUNT(in);
 	char	   *base = STRPTR(in);
@@ -1294,24 +1255,20 @@ hstore_to_json_loose(PG_FUNCTION_ARGS)
 	for (i = 0; i < count; i++)
 	{
 		resetStringInfo(&tmp);
-		appendBinaryStringInfo(&tmp, HSTORE_KEY(entries, base, i),
-							   HSTORE_KEYLEN(entries, i));
+		appendBinaryStringInfo(&tmp, HS_KEY(entries, base, i), HS_KEYLEN(entries, i));
 		escape_json(&dst, tmp.data);
 		appendStringInfoString(&dst, ": ");
-		if (HSTORE_VALISNULL(entries, i))
+		if (HS_VALISNULL(entries, i))
 			appendStringInfoString(&dst, "null");
 		/* guess that values of 't' or 'f' are booleans */
-		else if (HSTORE_VALLEN(entries, i) == 1 &&
-				 *(HSTORE_VAL(entries, base, i)) == 't')
+		else if (HS_VALLEN(entries, i) == 1 && *(HS_VAL(entries, base, i)) == 't')
 			appendStringInfoString(&dst, "true");
-		else if (HSTORE_VALLEN(entries, i) == 1 &&
-				 *(HSTORE_VAL(entries, base, i)) == 'f')
+		else if (HS_VALLEN(entries, i) == 1 && *(HS_VAL(entries, base, i)) == 'f')
 			appendStringInfoString(&dst, "false");
 		else
 		{
 			resetStringInfo(&tmp);
-			appendBinaryStringInfo(&tmp, HSTORE_VAL(entries, base, i),
-								   HSTORE_VALLEN(entries, i));
+			appendBinaryStringInfo(&tmp, HS_VAL(entries, base, i), HS_VALLEN(entries, i));
 			if (IsValidJsonNumber(tmp.data, tmp.len))
 				appendBinaryStringInfo(&dst, tmp.data, tmp.len);
 			else
@@ -1330,7 +1287,7 @@ PG_FUNCTION_INFO_V1(hstore_to_json);
 Datum
 hstore_to_json(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			i;
 	int			count = HS_COUNT(in);
 	char	   *base = STRPTR(in);
@@ -1349,17 +1306,15 @@ hstore_to_json(PG_FUNCTION_ARGS)
 	for (i = 0; i < count; i++)
 	{
 		resetStringInfo(&tmp);
-		appendBinaryStringInfo(&tmp, HSTORE_KEY(entries, base, i),
-							   HSTORE_KEYLEN(entries, i));
+		appendBinaryStringInfo(&tmp, HS_KEY(entries, base, i), HS_KEYLEN(entries, i));
 		escape_json(&dst, tmp.data);
 		appendStringInfoString(&dst, ": ");
-		if (HSTORE_VALISNULL(entries, i))
+		if (HS_VALISNULL(entries, i))
 			appendStringInfoString(&dst, "null");
 		else
 		{
 			resetStringInfo(&tmp);
-			appendBinaryStringInfo(&tmp, HSTORE_VAL(entries, base, i),
-								   HSTORE_VALLEN(entries, i));
+			appendBinaryStringInfo(&tmp, HS_VAL(entries, base, i), HS_VALLEN(entries, i));
 			escape_json(&dst, tmp.data);
 		}
 
@@ -1375,7 +1330,7 @@ PG_FUNCTION_INFO_V1(hstore_to_jsonb);
 Datum
 hstore_to_jsonb(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			i;
 	int			count = HS_COUNT(in);
 	char	   *base = STRPTR(in);
@@ -1391,20 +1346,20 @@ hstore_to_jsonb(PG_FUNCTION_ARGS)
 					val;
 
 		key.type = jbvString;
-		key.val.string.len = HSTORE_KEYLEN(entries, i);
-		key.val.string.val = HSTORE_KEY(entries, base, i);
+		key.val.string.len = HS_KEYLEN(entries, i);
+		key.val.string.val = HS_KEY(entries, base, i);
 
 		(void) pushJsonbValue(&state, WJB_KEY, &key);
 
-		if (HSTORE_VALISNULL(entries, i))
+		if (HS_VALISNULL(entries, i))
 		{
 			val.type = jbvNull;
 		}
 		else
 		{
 			val.type = jbvString;
-			val.val.string.len = HSTORE_VALLEN(entries, i);
-			val.val.string.val = HSTORE_VAL(entries, base, i);
+			val.val.string.len = HS_VALLEN(entries, i);
+			val.val.string.val = HS_VAL(entries, base, i);
 		}
 		(void) pushJsonbValue(&state, WJB_VALUE, &val);
 	}
@@ -1418,7 +1373,7 @@ PG_FUNCTION_INFO_V1(hstore_to_jsonb_loose);
 Datum
 hstore_to_jsonb_loose(PG_FUNCTION_ARGS)
 {
-	HStore	   *in = PG_GETARG_HSTORE_P(0);
+	HStore	   *in = PG_GETARG_HS(0);
 	int			i;
 	int			count = HS_COUNT(in);
 	char	   *base = STRPTR(in);
@@ -1426,6 +1381,7 @@ hstore_to_jsonb_loose(PG_FUNCTION_ARGS)
 	JsonbParseState *state = NULL;
 	JsonbValue *res;
 	StringInfoData tmp;
+	bool		is_number;
 
 	initStringInfo(&tmp);
 
@@ -1437,49 +1393,82 @@ hstore_to_jsonb_loose(PG_FUNCTION_ARGS)
 					val;
 
 		key.type = jbvString;
-		key.val.string.len = HSTORE_KEYLEN(entries, i);
-		key.val.string.val = HSTORE_KEY(entries, base, i);
+		key.val.string.len = HS_KEYLEN(entries, i);
+		key.val.string.val = HS_KEY(entries, base, i);
 
 		(void) pushJsonbValue(&state, WJB_KEY, &key);
 
-		if (HSTORE_VALISNULL(entries, i))
+		if (HS_VALISNULL(entries, i))
 		{
 			val.type = jbvNull;
 		}
 		/* guess that values of 't' or 'f' are booleans */
-		else if (HSTORE_VALLEN(entries, i) == 1 &&
-				 *(HSTORE_VAL(entries, base, i)) == 't')
+		else if (HS_VALLEN(entries, i) == 1 && *(HS_VAL(entries, base, i)) == 't')
 		{
 			val.type = jbvBool;
 			val.val.boolean = true;
 		}
-		else if (HSTORE_VALLEN(entries, i) == 1 &&
-				 *(HSTORE_VAL(entries, base, i)) == 'f')
+		else if (HS_VALLEN(entries, i) == 1 && *(HS_VAL(entries, base, i)) == 'f')
 		{
 			val.type = jbvBool;
 			val.val.boolean = false;
 		}
 		else
 		{
+			is_number = false;
 			resetStringInfo(&tmp);
-			appendBinaryStringInfo(&tmp, HSTORE_VAL(entries, base, i),
-								   HSTORE_VALLEN(entries, i));
-			if (IsValidJsonNumber(tmp.data, tmp.len))
-			{
-				Datum		numd;
 
+			appendBinaryStringInfo(&tmp, HS_VAL(entries, base, i), HS_VALLEN(entries, i));
+
+			/*
+			 * don't treat something with a leading zero followed by another
+			 * digit as numeric - could be a zip code or similar
+			 */
+			if (tmp.len > 0 &&
+				!(tmp.data[0] == '0' &&
+				  isdigit((unsigned char) tmp.data[1])) &&
+				strspn(tmp.data, "+-0123456789Ee.") == tmp.len)
+			{
+				/*
+				 * might be a number. See if we can input it as a numeric
+				 * value. Ignore any actual parsed value.
+				 */
+				char	   *endptr = "junk";
+				long		lval;
+
+				lval = strtol(tmp.data, &endptr, 10);
+				(void) lval;
+				if (*endptr == '\0')
+				{
+					/*
+					 * strol man page says this means the whole string is
+					 * valid
+					 */
+					is_number = true;
+				}
+				else
+				{
+					/* not an int - try a double */
+					double		dval;
+
+					dval = strtod(tmp.data, &endptr);
+					(void) dval;
+					if (*endptr == '\0')
+						is_number = true;
+				}
+			}
+			if (is_number)
+			{
 				val.type = jbvNumeric;
-				numd = DirectFunctionCall3(numeric_in,
-										   CStringGetDatum(tmp.data),
-										   ObjectIdGetDatum(InvalidOid),
-										   Int32GetDatum(-1));
-				val.val.numeric = DatumGetNumeric(numd);
+				val.val.numeric = DatumGetNumeric(
+												  DirectFunctionCall3(numeric_in, CStringGetDatum(tmp.data), 0, -1));
+
 			}
 			else
 			{
 				val.type = jbvString;
-				val.val.string.len = HSTORE_VALLEN(entries, i);
-				val.val.string.val = HSTORE_VAL(entries, base, i);
+				val.val.string.len = HS_VALLEN(entries, i);
+				val.val.string.val = HS_VAL(entries, base, i);
 			}
 		}
 		(void) pushJsonbValue(&state, WJB_VALUE, &val);

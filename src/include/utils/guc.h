@@ -4,7 +4,7 @@
  * External declarations pertaining to backend/utils/misc/guc.c and
  * backend/utils/misc/guc-file.l
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * src/include/utils/guc.h
@@ -17,14 +17,6 @@
 #include "tcop/dest.h"
 #include "utils/array.h"
 
-
-/* upper limit for GUC variables measured in kilobytes of memory */
-/* note that various places assume the byte size fits in a "long" variable */
-#if SIZEOF_SIZE_T > 4 && SIZEOF_LONG > 4
-#define MAX_KILOBYTES	INT_MAX
-#else
-#define MAX_KILOBYTES	(INT_MAX / 1024)
-#endif
 
 /*
  * Automatic configuration file name for ALTER SYSTEM.
@@ -51,17 +43,15 @@
  * certain point in their main loop. It's safer to wait than to read a
  * file asynchronously.)
  *
- * BACKEND and SU_BACKEND options can only be set at postmaster startup,
- * from the configuration file, or by client request in the connection
- * startup packet (e.g., from libpq's PGOPTIONS variable).  SU_BACKEND
- * options can be set from the startup packet only when the user is a
- * superuser.  Furthermore, an already-started backend will ignore changes
- * to such an option in the configuration file.  The idea is that these
- * options are fixed for a given backend once it's started, but they can
- * vary across backends.
+ * BACKEND options can only be set at postmaster startup, from the
+ * configuration file, or by client request in the connection startup
+ * packet (e.g., from libpq's PGOPTIONS variable).  Furthermore, an
+ * already-started backend will ignore changes to such an option in the
+ * configuration file.  The idea is that these options are fixed for a
+ * given backend once it's started, but they can vary across backends.
  *
  * SUSET options can be set at postmaster startup, with the SIGHUP
- * mechanism, or from the startup packet or SQL if you're a superuser.
+ * mechanism, or from SQL if you're a superuser.
  *
  * USERSET options can be set by anyone any time.
  */
@@ -70,7 +60,6 @@ typedef enum
 	PGC_INTERNAL,
 	PGC_POSTMASTER,
 	PGC_SIGHUP,
-	PGC_SU_BACKEND,
 	PGC_BACKEND,
 	PGC_SUSET,
 	PGC_USERSET
@@ -122,38 +111,32 @@ typedef enum
 
 /*
  * Parsing the configuration file(s) will return a list of name-value pairs
- * with source location info.  We also abuse this data structure to carry
- * error reports about the config files.  An entry reporting an error will
- * have errmsg != NULL, and might have NULLs for name, value, and/or filename.
+ * with source location info.
  *
- * If "ignore" is true, don't attempt to apply the item (it might be an error
- * report, or an item we determined to be duplicate).  "applied" is set true
- * if we successfully applied, or could have applied, the setting.
+ * If "ignore" is true, don't attempt to apply the item (it might be an item
+ * we determined to be duplicate, for instance).
  */
 typedef struct ConfigVariable
 {
 	char	   *name;
 	char	   *value;
-	char	   *errmsg;
 	char	   *filename;
 	int			sourceline;
-	bool		ignore;
-	bool		applied;
 	struct ConfigVariable *next;
+	bool		ignore;
 } ConfigVariable;
 
-extern bool ParseConfigFile(const char *config_file, bool strict,
-							const char *calling_file, int calling_lineno,
-							int depth, int elevel,
-							ConfigVariable **head_p, ConfigVariable **tail_p);
+extern bool ParseConfigFile(const char *config_file, const char *calling_file,
+				bool strict, int depth, int elevel,
+				ConfigVariable **head_p, ConfigVariable **tail_p);
 extern bool ParseConfigFp(FILE *fp, const char *config_file,
-						  int depth, int elevel,
-						  ConfigVariable **head_p, ConfigVariable **tail_p);
+			  int depth, int elevel,
+			  ConfigVariable **head_p, ConfigVariable **tail_p);
 extern bool ParseConfigDirectory(const char *includedir,
-								 const char *calling_file, int calling_lineno,
-								 int depth, int elevel,
-								 ConfigVariable **head_p,
-								 ConfigVariable **tail_p);
+					 const char *calling_file,
+					 int depth, int elevel,
+					 ConfigVariable **head_p,
+					 ConfigVariable **tail_p);
 extern void FreeConfigVariables(ConfigVariable *list);
 
 /*
@@ -211,28 +194,22 @@ typedef enum
 #define GUC_CUSTOM_PLACEHOLDER	0x0080	/* placeholder for custom variable */
 #define GUC_SUPERUSER_ONLY		0x0100	/* show only to superusers */
 #define GUC_IS_NAME				0x0200	/* limit string to NAMEDATALEN-1 */
-#define GUC_NOT_WHILE_SEC_REST	0x0400	/* can't set if security restricted */
-#define GUC_DISALLOW_IN_AUTO_FILE 0x0800	/* can't set in
-											 * PG_AUTOCONF_FILENAME */
 
-#define GUC_UNIT_KB				0x1000	/* value is in kilobytes */
-#define GUC_UNIT_BLOCKS			0x2000	/* value is in blocks */
-#define GUC_UNIT_XBLOCKS		0x3000	/* value is in xlog blocks */
-#define GUC_UNIT_MB				0x4000	/* value is in megabytes */
-#define GUC_UNIT_BYTE			0x8000	/* value is in bytes */
-#define GUC_UNIT_MEMORY			0xF000	/* mask for size-related units */
+#define GUC_UNIT_KB				0x0400	/* value is in kilobytes */
+#define GUC_UNIT_BLOCKS			0x0800	/* value is in blocks */
+#define GUC_UNIT_XBLOCKS		0x0C00	/* value is in xlog blocks */
+#define GUC_UNIT_MEMORY			0x0C00	/* mask for KB, BLOCKS, XBLOCKS */
 
-#define GUC_UNIT_MS			   0x10000	/* value is in milliseconds */
-#define GUC_UNIT_S			   0x20000	/* value is in seconds */
-#define GUC_UNIT_MIN		   0x30000	/* value is in minutes */
-#define GUC_UNIT_TIME		   0xF0000	/* mask for time-related units */
+#define GUC_UNIT_MS				0x1000	/* value is in milliseconds */
+#define GUC_UNIT_S				0x2000	/* value is in seconds */
+#define GUC_UNIT_MIN			0x4000	/* value is in minutes */
+#define GUC_UNIT_TIME			0x7000	/* mask for MS, S, MIN */
 
-#define GUC_EXPLAIN			  0x100000	/* include in explain */
-
-#define GUC_UNIT				(GUC_UNIT_MEMORY | GUC_UNIT_TIME)
-
+#define GUC_NOT_WHILE_SEC_REST	0x8000	/* can't set if security restricted */
+#define GUC_DISALLOW_IN_AUTO_FILE	0x00010000	/* can't set in PG_AUTOCONF_FILENAME */
 
 /* GUC vars that are actually declared in guc.c, rather than elsewhere */
+extern bool log_duration;
 extern bool Debug_print_plan;
 extern bool Debug_print_parse;
 extern bool Debug_print_rewritten;
@@ -245,115 +222,107 @@ extern bool log_statement_stats;
 extern bool log_btree_build_stats;
 
 extern PGDLLIMPORT bool check_function_bodies;
-extern bool session_auth_is_superuser;
+extern bool default_with_oids;
+extern bool SQL_inheritance;
 
-extern bool log_duration;
-extern int	log_parameter_max_length;
-extern int	log_parameter_max_length_on_error;
 extern int	log_min_error_statement;
-extern PGDLLIMPORT int log_min_messages;
-extern PGDLLIMPORT int client_min_messages;
-extern int	log_min_duration_sample;
+extern int	log_min_messages;
+extern int	client_min_messages;
 extern int	log_min_duration_statement;
 extern int	log_temp_files;
-extern double log_statement_sample_rate;
-extern double log_xact_sample_rate;
-extern char *backtrace_functions;
-extern char *backtrace_symbol_list;
 
 extern int	temp_file_limit;
 
 extern int	num_temp_buffers;
 
-extern char *cluster_name;
-extern PGDLLIMPORT char *ConfigFileName;
+extern char *data_directory;
+extern char *ConfigFileName;
 extern char *HbaFileName;
 extern char *IdentFileName;
 extern char *external_pid_file;
 
-extern PGDLLIMPORT char *application_name;
+extern char *application_name;
 
 extern int	tcp_keepalives_idle;
 extern int	tcp_keepalives_interval;
 extern int	tcp_keepalives_count;
-extern int	tcp_user_timeout;
-
-#ifdef TRACE_SORT
-extern bool trace_sort;
-#endif
 
 /*
  * Functions exported by guc.c
  */
 extern void SetConfigOption(const char *name, const char *value,
-							GucContext context, GucSource source);
+				GucContext context, GucSource source);
 
-extern void DefineCustomBoolVariable(const char *name,
-									 const char *short_desc,
-									 const char *long_desc,
-									 bool *valueAddr,
-									 bool bootValue,
-									 GucContext context,
-									 int flags,
-									 GucBoolCheckHook check_hook,
-									 GucBoolAssignHook assign_hook,
-									 GucShowHook show_hook);
+extern void DefineCustomBoolVariable(
+						 const char *name,
+						 const char *short_desc,
+						 const char *long_desc,
+						 bool *valueAddr,
+						 bool bootValue,
+						 GucContext context,
+						 int flags,
+						 GucBoolCheckHook check_hook,
+						 GucBoolAssignHook assign_hook,
+						 GucShowHook show_hook);
 
-extern void DefineCustomIntVariable(const char *name,
-									const char *short_desc,
-									const char *long_desc,
-									int *valueAddr,
-									int bootValue,
-									int minValue,
-									int maxValue,
-									GucContext context,
-									int flags,
-									GucIntCheckHook check_hook,
-									GucIntAssignHook assign_hook,
-									GucShowHook show_hook);
+extern void DefineCustomIntVariable(
+						const char *name,
+						const char *short_desc,
+						const char *long_desc,
+						int *valueAddr,
+						int bootValue,
+						int minValue,
+						int maxValue,
+						GucContext context,
+						int flags,
+						GucIntCheckHook check_hook,
+						GucIntAssignHook assign_hook,
+						GucShowHook show_hook);
 
-extern void DefineCustomRealVariable(const char *name,
-									 const char *short_desc,
-									 const char *long_desc,
-									 double *valueAddr,
-									 double bootValue,
-									 double minValue,
-									 double maxValue,
-									 GucContext context,
-									 int flags,
-									 GucRealCheckHook check_hook,
-									 GucRealAssignHook assign_hook,
-									 GucShowHook show_hook);
+extern void DefineCustomRealVariable(
+						 const char *name,
+						 const char *short_desc,
+						 const char *long_desc,
+						 double *valueAddr,
+						 double bootValue,
+						 double minValue,
+						 double maxValue,
+						 GucContext context,
+						 int flags,
+						 GucRealCheckHook check_hook,
+						 GucRealAssignHook assign_hook,
+						 GucShowHook show_hook);
 
-extern void DefineCustomStringVariable(const char *name,
-									   const char *short_desc,
-									   const char *long_desc,
-									   char **valueAddr,
-									   const char *bootValue,
-									   GucContext context,
-									   int flags,
-									   GucStringCheckHook check_hook,
-									   GucStringAssignHook assign_hook,
-									   GucShowHook show_hook);
+extern void DefineCustomStringVariable(
+						   const char *name,
+						   const char *short_desc,
+						   const char *long_desc,
+						   char **valueAddr,
+						   const char *bootValue,
+						   GucContext context,
+						   int flags,
+						   GucStringCheckHook check_hook,
+						   GucStringAssignHook assign_hook,
+						   GucShowHook show_hook);
 
-extern void DefineCustomEnumVariable(const char *name,
-									 const char *short_desc,
-									 const char *long_desc,
-									 int *valueAddr,
-									 int bootValue,
-									 const struct config_enum_entry *options,
-									 GucContext context,
-									 int flags,
-									 GucEnumCheckHook check_hook,
-									 GucEnumAssignHook assign_hook,
-									 GucShowHook show_hook);
+extern void DefineCustomEnumVariable(
+						 const char *name,
+						 const char *short_desc,
+						 const char *long_desc,
+						 int *valueAddr,
+						 int bootValue,
+						 const struct config_enum_entry * options,
+						 GucContext context,
+						 int flags,
+						 GucEnumCheckHook check_hook,
+						 GucEnumAssignHook assign_hook,
+						 GucShowHook show_hook);
 
 extern void EmitWarningsOnPlaceholders(const char *className);
 
 extern const char *GetConfigOption(const char *name, bool missing_ok,
-								   bool restrict_privileged);
+				bool restrict_superuser);
 extern const char *GetConfigOptionResetString(const char *name);
-extern int	GetConfigOptionFlags(const char *name, bool missing_ok);
 extern void ProcessConfigFile(GucContext context);
 extern void InitializeGUCOptions(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
@@ -364,16 +333,13 @@ extern void AtEOXact_GUC(bool isCommit, int nestLevel);
 extern void BeginReportingGUCOptions(void);
 extern void ParseLongOption(const char *string, char **name, char **value);
 extern bool parse_int(const char *value, int *result, int flags,
-					  const char **hintmsg);
-extern bool parse_real(const char *value, double *result, int flags,
-					   const char **hintmsg);
-extern int	set_config_option(const char *name, const char *value,
-							  GucContext context, GucSource source,
-							  GucAction action, bool changeVal, int elevel,
-							  bool is_reload);
-extern void AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt);
-extern char *GetConfigOptionByName(const char *name, const char **varname,
-								   bool missing_ok);
+		  const char **hintmsg);
+extern bool parse_real(const char *value, double *result);
+extern int set_config_option(const char *name, const char *value,
+				  GucContext context, GucSource source,
+				  GucAction action, bool changeVal, int elevel);
+extern void AlterSystemSetConfigFile(AlterSystemStmt *setstmt);
+extern char *GetConfigOptionByName(const char *name, const char **varname);
 extern void GetConfigOptionByNum(int varnum, const char **values, bool *noshow);
 extern int	GetNumConfigOptions(void);
 
@@ -385,7 +351,7 @@ extern void ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel);
 extern char *ExtractSetVariableArgs(VariableSetStmt *stmt);
 
 extern void ProcessGUCArray(ArrayType *array,
-							GucContext context, GucSource source, GucAction action);
+				GucContext context, GucSource source, GucAction action);
 extern ArrayType *GUCArrayAdd(ArrayType *array, const char *name, const char *value);
 extern ArrayType *GUCArrayDelete(ArrayType *array, const char *name);
 extern ArrayType *GUCArrayReset(ArrayType *array);
@@ -394,11 +360,6 @@ extern ArrayType *GUCArrayReset(ArrayType *array);
 extern void write_nondefault_variables(GucContext context);
 extern void read_nondefault_variables(void);
 #endif
-
-/* GUC serialization */
-extern Size EstimateGUCStateSpace(void);
-extern void SerializeGUCState(Size maxsize, char *start_address);
-extern void RestoreGUCState(void *gucstate);
 
 /* Support for messages reported from GUC check hooks */
 
@@ -440,4 +401,4 @@ extern void assign_search_path(const char *newval, void *extra);
 extern bool check_wal_buffers(int *newval, void **extra, GucSource source);
 extern void assign_xlog_sync_method(int new_sync_method, void *extra);
 
-#endif							/* GUC_H */
+#endif   /* GUC_H */

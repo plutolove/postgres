@@ -1,5 +1,5 @@
 --
--- AES cipher (aka Rijndael-128, -192, or -256)
+-- AES / Rijndael-128 cipher
 --
 -- ensure consistent test output regardless of the default bytea format
 SET bytea_output TO escape;

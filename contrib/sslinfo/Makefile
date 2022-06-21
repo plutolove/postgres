@@ -1,13 +1,10 @@
 # contrib/sslinfo/Makefile
 
 MODULE_big = sslinfo
-OBJS = \
-	$(WIN32RES) \
-	sslinfo.o
+OBJS = sslinfo.o
 
 EXTENSION = sslinfo
-DATA = sslinfo--1.2.sql sslinfo--1.1--1.2.sql sslinfo--1.0--1.1.sql
-PGFILEDESC = "sslinfo - information about client SSL certificate"
+DATA = sslinfo--1.0.sql sslinfo--unpackaged--1.0.sql
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

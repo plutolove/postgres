@@ -21,12 +21,11 @@ subdir = src/backend/port
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	$(TAS) \
-	atomics.o \
-	pg_sema.o \
-	pg_shmem.o
+OBJS = dynloader.o pg_sema.o pg_shmem.o pg_latch.o $(TAS)
 
+ifeq ($(PORTNAME), darwin)
+SUBDIRS += darwin
+endif
 ifeq ($(PORTNAME), win32)
 SUBDIRS += win32
 endif
@@ -45,4 +44,5 @@ endif
 
 distclean clean:
 	rm -f tas_cpp.s
+	$(MAKE) -C darwin clean
 	$(MAKE) -C win32 clean

@@ -1,5 +1,5 @@
 --
--- pgp decrypt tests
+-- pgp_descrypt tests
 --
 
 --  Checking ciphers

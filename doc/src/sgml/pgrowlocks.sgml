@@ -12,13 +12,6 @@
   locking information for a specified table.
  </para>
 
- <para>
-  By default use is restricted to superusers, members of the
-  <literal>pg_stat_scan_tables</literal> role, and users with
-  <literal>SELECT</literal> permissions on the table.
- </para>
-
-
  <sect2>
   <title>Overview</title>
 
@@ -33,11 +26,11 @@ pgrowlocks(text) returns setof record
   <para>
    The parameter is the name of a table.  The result is a set of records,
    with one row for each locked row within the table.  The output columns
-   are shown in <xref linkend="pgrowlocks-columns"/>.
+   are shown in <xref linkend="pgrowlocks-columns">.
   </para>
 
   <table id="pgrowlocks-columns">
-   <title><function>pgrowlocks</function> Output Columns</title>
+   <title><function>pgrowlocks</> Output Columns</title>
 
    <tgroup cols="3">
     <thead>
@@ -70,12 +63,12 @@ pgrowlocks(text) returns setof record
       <entry>Transaction IDs of lockers (more than one if multitransaction)</entry>
      </row>
      <row>
-      <entry><structfield>modes</structfield></entry>
+      <entry><structfield>lock_type</structfield></entry>
       <entry><type>text[]</type></entry>
       <entry>Lock mode of lockers (more than one if multitransaction),
-       an array of <literal>Key Share</literal>, <literal>Share</literal>,
-       <literal>For No Key Update</literal>, <literal>No Key Update</literal>,
-       <literal>For Update</literal>, <literal>Update</literal>.</entry>
+       an array of <literal>Key Share</>, <literal>Share</>,
+       <literal>For No Key Update</>, <literal>No Key Update</>,
+       <literal>For Update</>, <literal>Update</>.</entry>
      </row>
 
      <row>
@@ -89,7 +82,7 @@ pgrowlocks(text) returns setof record
   </table>
 
   <para>
-   <function>pgrowlocks</function> takes <literal>AccessShareLock</literal> for the
+   <function>pgrowlocks</function> takes <literal>AccessShareLock</> for the
    target table and reads each row one by one to collect the row locking
    information.  This is not very speedy for a large table.  Note that:
   </para>
@@ -97,8 +90,8 @@ pgrowlocks(text) returns setof record
   <orderedlist>
    <listitem>
     <para>
-     If an <literal>ACCESS EXCLUSIVE</literal> lock is taken on the table,
-     <function>pgrowlocks</function> will be blocked.
+    If the table as a whole is exclusive-locked by someone else,
+    <function>pgrowlocks</function> will be blocked.
     </para>
    </listitem>
    <listitem>
@@ -127,14 +120,14 @@ SELECT * FROM accounts AS a, pgrowlocks('accounts') AS p
  <sect2>
   <title>Sample Output</title>
 
-  <screen>
-=# SELECT * FROM pgrowlocks('t1');
- locked_row | locker | multi | xids  |     modes      |  pids
-------------+--------+-------+-------+----------------+--------
- (0,1)      |    609 | f     | {609} | {"For Share"}  | {3161}
- (0,2)      |    609 | f     | {609} | {"For Share"}  | {3161}
- (0,3)      |    607 | f     | {607} | {"For Update"} | {3107}
- (0,4)      |    607 | f     | {607} | {"For Update"} | {3107}
+<screen>
+test=# SELECT * FROM pgrowlocks('t1');
+ locked_row | lock_type | locker | multi |   xids    |     pids
+------------+-----------+--------+-------+-----------+---------------
+      (0,1) | Shared    |     19 | t     | {804,805} | {29066,29068}
+      (0,2) | Shared    |     19 | t     | {804,805} | {29066,29068}
+      (0,3) | Exclusive |    804 | f     | {804}     | {29066}
+      (0,4) | Exclusive |    804 | f     | {804}     | {29066}
 (4 rows)
 </screen>
  </sect2>

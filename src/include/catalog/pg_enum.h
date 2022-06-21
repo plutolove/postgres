@@ -1,17 +1,20 @@
 /*-------------------------------------------------------------------------
  *
  * pg_enum.h
- *	  definition of the "enum" system catalog (pg_enum)
+ *	  definition of the system "enum" relation (pg_enum)
+ *	  along with the relation's initial contents.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
- * Portions Copyright (c) 1994, Regents of the University of California
+ * Copyright (c) 2006-2014, PostgreSQL Global Development Group
  *
  * src/include/catalog/pg_enum.h
  *
  * NOTES
- *	  The Catalog.pm module reads this file and derives schema
- *	  information.
+ *	  the genbki.pl script reads this file and generates .bki
+ *	  information from the DATA() statements.
+ *
+ *	  XXX do NOT break up DATA() statements into multiple lines!
+ *		  the scripts are not as smart as you might think...
  *
  *-------------------------------------------------------------------------
  */
@@ -19,8 +22,6 @@
 #define PG_ENUM_H
 
 #include "catalog/genbki.h"
-#include "catalog/pg_enum_d.h"
-
 #include "nodes/pg_list.h"
 
 /* ----------------
@@ -28,9 +29,10 @@
  *		typedef struct FormData_pg_enum
  * ----------------
  */
-CATALOG(pg_enum,3501,EnumRelationId)
+#define EnumRelationId	3501
+
+CATALOG(pg_enum,3501)
 {
-	Oid			oid;			/* oid */
 	Oid			enumtypid;		/* OID of owning enum type */
 	float4		enumsortorder;	/* sort position of this enum value */
 	NameData	enumlabel;		/* text representation of enum value */
@@ -43,20 +45,27 @@ CATALOG(pg_enum,3501,EnumRelationId)
  */
 typedef FormData_pg_enum *Form_pg_enum;
 
+/* ----------------
+ *		compiler constants for pg_enum
+ * ----------------
+ */
+#define Natts_pg_enum					3
+#define Anum_pg_enum_enumtypid			1
+#define Anum_pg_enum_enumsortorder		2
+#define Anum_pg_enum_enumlabel			3
+
+/* ----------------
+ *		pg_enum has no initial contents
+ * ----------------
+ */
+
 /*
  * prototypes for functions in pg_enum.c
  */
 extern void EnumValuesCreate(Oid enumTypeOid, List *vals);
 extern void EnumValuesDelete(Oid enumTypeOid);
 extern void AddEnumLabel(Oid enumTypeOid, const char *newVal,
-						 const char *neighbor, bool newValIsAfter,
-						 bool skipIfExists);
-extern void RenameEnumLabel(Oid enumTypeOid,
-							const char *oldVal, const char *newVal);
-extern bool EnumBlacklisted(Oid enum_id);
-extern Size EstimateEnumBlacklistSpace(void);
-extern void SerializeEnumBlacklist(void *space, Size size);
-extern void RestoreEnumBlacklist(void *space);
-extern void AtEOXact_Enum(void);
+			 const char *neighbor, bool newValIsAfter,
+			 bool skipIfExists);
 
-#endif							/* PG_ENUM_H */
+#endif   /* PG_ENUM_H */

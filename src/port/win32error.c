@@ -3,7 +3,7 @@
  * win32error.c
  *	  Map win32 error codes to errno values
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/port/win32error.c
@@ -21,7 +21,7 @@ static const struct
 {
 	DWORD		winerr;
 	int			doserr;
-}			doserrors[] =
+}	doserrors[] =
 
 {
 	{
@@ -161,9 +161,6 @@ static const struct
 	},
 	{
 		ERROR_NOT_ENOUGH_QUOTA, ENOMEM
-	},
-	{
-		ERROR_DELETE_PENDING, ENOENT
 	}
 };
 
@@ -188,8 +185,8 @@ _dosmaperr(unsigned long e)
 			ereport(DEBUG5,
 					(errmsg_internal("mapped win32 error code %lu to %d",
 									 e, doserr)));
-#elif defined(FRONTEND_DEBUG)
-			fprintf(stderr, "mapped win32 error code %lu to %d", e, doserr);
+#elif FRONTEND_DEBUG
+			fprintf(stderr, _("mapped win32 error code %lu to %d"), e, doserr);
 #endif
 			errno = doserr;
 			return;
@@ -201,8 +198,9 @@ _dosmaperr(unsigned long e)
 			(errmsg_internal("unrecognized win32 error code: %lu",
 							 e)));
 #else
-	fprintf(stderr, "unrecognized win32 error code: %lu", e);
+	fprintf(stderr, _("unrecognized win32 error code: %lu"), e);
 #endif
 
 	errno = EINVAL;
+	return;
 }

@@ -13,11 +13,11 @@ CREATE TABLE lotest_stash_values (loid oid, fd integer);
 INSERT INTO lotest_stash_values (loid) SELECT lo_creat(42);
 
 -- Test ALTER LARGE OBJECT
-CREATE ROLE regress_lo_user;
+CREATE ROLE regresslo;
 DO $$
   BEGIN
     EXECUTE 'ALTER LARGE OBJECT ' || (select loid from lotest_stash_values)
-		|| ' OWNER TO regress_lo_user';
+		|| ' OWNER TO regresslo';
   END
 $$;
 SELECT
@@ -86,8 +86,10 @@ END;
 SELECT lo_from_bytea(0, lo_get(loid)) AS newloid FROM lotest_stash_values
 \gset
 
--- Add a comment to it, as well, for pg_dump/pg_upgrade testing.
-COMMENT ON LARGE OBJECT :newloid IS 'I Wandered Lonely as a Cloud';
+-- Ideally we'd put a comment on this object for pg_dump testing purposes.
+-- But since pg_upgrade fails to preserve large object comments, doing so
+-- would break pg_upgrade's regression test.
+-- COMMENT ON LARGE OBJECT :newloid IS 'I Wandered Lonely as a Cloud';
 
 -- Read out a portion
 BEGIN;
@@ -180,7 +182,7 @@ UPDATE lotest_stash_values SET fd=lo_open(loid, CAST(x'20000' | x'40000' AS inte
 -- verify length of large object
 SELECT lo_lseek(fd, 0, 2) FROM lotest_stash_values;
 
--- with the default BLCKSZ, LOBLKSIZE = 2048, so this positions us for a block
+-- with the default BLKSZ, LOBLKSZ = 2048, so this positions us for a block
 -- edge case
 SELECT lo_lseek(fd, 2030, 0) FROM lotest_stash_values;
 
@@ -203,12 +205,12 @@ END;
 
 SELECT lo_export(loid, '@abs_builddir@/results/lotest.txt') FROM lotest_stash_values;
 
-\lo_import '@abs_builddir@/results/lotest.txt'
+\lo_import 'results/lotest.txt'
 
 \set newloid :LASTOID
 
 -- just make sure \lo_export does not barf
-\lo_export :newloid '@abs_builddir@/results/lotest2.txt'
+\lo_export :newloid 'results/lotest2.txt'
 
 -- This is a hack to test that export/import are reversible
 -- This uses knowledge about the inner workings of large object mechanism
@@ -223,7 +225,7 @@ TRUNCATE lotest_stash_values;
 
 \lo_unlink :newloid
 
-\lo_import '@abs_builddir@/results/lotest.txt'
+\lo_import 'results/lotest.txt'
 
 \set newloid_1 :LASTOID
 
@@ -251,13 +253,6 @@ SELECT lo_from_bytea(0, E'\\xdeadbeef') AS newloid
 SET bytea_output TO hex;
 SELECT lo_get(:newloid);
 
--- Create one more object that we leave behind for testing pg_dump/pg_upgrade;
--- this one intentionally has an OID in the system range
-SELECT lo_create(2121);
-
-COMMENT ON LARGE OBJECT 2121 IS 'testing comments';
-
--- Clean up
 DROP TABLE lotest_stash_values;
 
-DROP ROLE regress_lo_user;
+DROP ROLE regresslo;

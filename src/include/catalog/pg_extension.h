@@ -1,17 +1,18 @@
 /*-------------------------------------------------------------------------
  *
  * pg_extension.h
- *	  definition of the "extension" system catalog (pg_extension)
+ *	  definition of the system "extension" relation (pg_extension)
+ *	  along with the relation's initial contents.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_extension.h
  *
  * NOTES
- *	  The Catalog.pm module reads this file and derives schema
- *	  information.
+ *	  the genbki.pl script reads this file and generates .bki
+ *	  information from the DATA() statements.
  *
  *-------------------------------------------------------------------------
  */
@@ -19,24 +20,24 @@
 #define PG_EXTENSION_H
 
 #include "catalog/genbki.h"
-#include "catalog/pg_extension_d.h"
 
 /* ----------------
  *		pg_extension definition.  cpp turns this into
  *		typedef struct FormData_pg_extension
  * ----------------
  */
-CATALOG(pg_extension,3079,ExtensionRelationId)
+#define ExtensionRelationId 3079
+
+CATALOG(pg_extension,3079)
 {
-	Oid			oid;			/* oid */
 	NameData	extname;		/* extension name */
 	Oid			extowner;		/* extension owner */
 	Oid			extnamespace;	/* namespace of contained objects */
 	bool		extrelocatable; /* if true, allow ALTER EXTENSION SET SCHEMA */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
-	/* extversion may never be null, but the others can be. */
-	text		extversion BKI_FORCE_NOT_NULL;	/* extension version name */
+	/* extversion should never be null, but the others can be. */
+	text		extversion;		/* extension version name */
 	Oid			extconfig[1];	/* dumpable configuration tables */
 	text		extcondition[1];	/* WHERE clauses for config tables */
 #endif
@@ -49,4 +50,23 @@ CATALOG(pg_extension,3079,ExtensionRelationId)
  */
 typedef FormData_pg_extension *Form_pg_extension;
 
-#endif							/* PG_EXTENSION_H */
+/* ----------------
+ *		compiler constants for pg_extension
+ * ----------------
+ */
+
+#define Natts_pg_extension					7
+#define Anum_pg_extension_extname			1
+#define Anum_pg_extension_extowner			2
+#define Anum_pg_extension_extnamespace		3
+#define Anum_pg_extension_extrelocatable	4
+#define Anum_pg_extension_extversion		5
+#define Anum_pg_extension_extconfig			6
+#define Anum_pg_extension_extcondition		7
+
+/* ----------------
+ *		pg_extension has no initial contents
+ * ----------------
+ */
+
+#endif   /* PG_EXTENSION_H */

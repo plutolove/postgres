@@ -9,7 +9,7 @@
  * See utils/resowner/README for more info.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,74 +20,13 @@
  */
 #include "postgres.h"
 
-#include "common/hashfn.h"
-#include "jit/jit.h"
-#include "storage/bufmgr.h"
-#include "storage/ipc.h"
+#include "access/hash.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/resowner_private.h"
 #include "utils/snapmgr.h"
-
-
-/*
- * All resource IDs managed by this code are required to fit into a Datum,
- * which is fine since they are generally pointers or integers.
- *
- * Provide Datum conversion macros for a couple of things that are really
- * just "int".
- */
-#define FileGetDatum(file) Int32GetDatum(file)
-#define DatumGetFile(datum) ((File) DatumGetInt32(datum))
-#define BufferGetDatum(buffer) Int32GetDatum(buffer)
-#define DatumGetBuffer(datum) ((Buffer) DatumGetInt32(datum))
-
-/*
- * ResourceArray is a common structure for storing all types of resource IDs.
- *
- * We manage small sets of resource IDs by keeping them in a simple array:
- * itemsarr[k] holds an ID, for 0 <= k < nitems <= maxitems = capacity.
- *
- * If a set grows large, we switch over to using open-addressing hashing.
- * Then, itemsarr[] is a hash table of "capacity" slots, with each
- * slot holding either an ID or "invalidval".  nitems is the number of valid
- * items present; if it would exceed maxitems, we enlarge the array and
- * re-hash.  In this mode, maxitems should be rather less than capacity so
- * that we don't waste too much time searching for empty slots.
- *
- * In either mode, lastidx remembers the location of the last item inserted
- * or returned by GetAny; this speeds up searches in ResourceArrayRemove.
- */
-typedef struct ResourceArray
-{
-	Datum	   *itemsarr;		/* buffer for storing values */
-	Datum		invalidval;		/* value that is considered invalid */
-	uint32		capacity;		/* allocated length of itemsarr[] */
-	uint32		nitems;			/* how many items are stored in items array */
-	uint32		maxitems;		/* current limit on nitems before enlarging */
-	uint32		lastidx;		/* index of last item returned by GetAny */
-} ResourceArray;
-
-/*
- * Initially allocated size of a ResourceArray.  Must be power of two since
- * we'll use (arraysize - 1) as mask for hashing.
- */
-#define RESARRAY_INIT_SIZE 16
-
-/*
- * When to switch to hashing vs. simple array logic in a ResourceArray.
- */
-#define RESARRAY_MAX_ARRAY 64
-#define RESARRAY_IS_ARRAY(resarr) ((resarr)->capacity <= RESARRAY_MAX_ARRAY)
-
-/*
- * How many items may be stored in a resource array of given capacity.
- * When this number is reached, we must resize.
- */
-#define RESARRAY_MAX_ITEMS(capacity) \
-	((capacity) <= RESARRAY_MAX_ARRAY ? (capacity) : (capacity)/4 * 3)
 
 /*
  * To speed up bulk releasing or reassigning locks from a resource owner to
@@ -117,22 +56,54 @@ typedef struct ResourceOwnerData
 	ResourceOwner nextchild;	/* next child of same parent */
 	const char *name;			/* name (just for debugging) */
 
-	/* We have built-in support for remembering: */
-	ResourceArray bufferarr;	/* owned buffers */
-	ResourceArray catrefarr;	/* catcache references */
-	ResourceArray catlistrefarr;	/* catcache-list pins */
-	ResourceArray relrefarr;	/* relcache references */
-	ResourceArray planrefarr;	/* plancache references */
-	ResourceArray tupdescarr;	/* tupdesc references */
-	ResourceArray snapshotarr;	/* snapshot references */
-	ResourceArray filearr;		/* open temporary files */
-	ResourceArray dsmarr;		/* dynamic shmem segments */
-	ResourceArray jitarr;		/* JIT contexts */
+	/* We have built-in support for remembering owned buffers */
+	int			nbuffers;		/* number of owned buffer pins */
+	Buffer	   *buffers;		/* dynamically allocated array */
+	int			maxbuffers;		/* currently allocated array size */
 
 	/* We can remember up to MAX_RESOWNER_LOCKS references to local locks. */
 	int			nlocks;			/* number of owned locks */
-	LOCALLOCK  *locks[MAX_RESOWNER_LOCKS];	/* list of owned locks */
-}			ResourceOwnerData;
+	LOCALLOCK  *locks[MAX_RESOWNER_LOCKS];		/* list of owned locks */
+
+	/* We have built-in support for remembering catcache references */
+	int			ncatrefs;		/* number of owned catcache pins */
+	HeapTuple  *catrefs;		/* dynamically allocated array */
+	int			maxcatrefs;		/* currently allocated array size */
+
+	int			ncatlistrefs;	/* number of owned catcache-list pins */
+	CatCList  **catlistrefs;	/* dynamically allocated array */
+	int			maxcatlistrefs; /* currently allocated array size */
+
+	/* We have built-in support for remembering relcache references */
+	int			nrelrefs;		/* number of owned relcache pins */
+	Relation   *relrefs;		/* dynamically allocated array */
+	int			maxrelrefs;		/* currently allocated array size */
+
+	/* We have built-in support for remembering plancache references */
+	int			nplanrefs;		/* number of owned plancache pins */
+	CachedPlan **planrefs;		/* dynamically allocated array */
+	int			maxplanrefs;	/* currently allocated array size */
+
+	/* We have built-in support for remembering tupdesc references */
+	int			ntupdescs;		/* number of owned tupdesc references */
+	TupleDesc  *tupdescs;		/* dynamically allocated array */
+	int			maxtupdescs;	/* currently allocated array size */
+
+	/* We have built-in support for remembering snapshot references */
+	int			nsnapshots;		/* number of owned snapshot references */
+	Snapshot   *snapshots;		/* dynamically allocated array */
+	int			maxsnapshots;	/* currently allocated array size */
+
+	/* We have built-in support for remembering open temporary files */
+	int			nfiles;			/* number of owned temporary files */
+	File	   *files;			/* dynamically allocated array */
+	int			maxfiles;		/* currently allocated array size */
+
+	/* We have built-in support for remembering dynamic shmem segments */
+	int			ndsms;			/* number of owned shmem segments */
+	dsm_segment **dsms;			/* dynamically allocated array */
+	int			maxdsms;		/* currently allocated array size */
+}	ResourceOwnerData;
 
 
 /*****************************************************************************
@@ -142,7 +113,6 @@ typedef struct ResourceOwnerData
 ResourceOwner CurrentResourceOwner = NULL;
 ResourceOwner CurTransactionResourceOwner = NULL;
 ResourceOwner TopTransactionResourceOwner = NULL;
-ResourceOwner AuxProcessResourceOwner = NULL;
 
 /*
  * List of add-on callbacks for resource releasing
@@ -158,252 +128,16 @@ static ResourceReleaseCallbackItem *ResourceRelease_callbacks = NULL;
 
 
 /* Internal routines */
-static void ResourceArrayInit(ResourceArray *resarr, Datum invalidval);
-static void ResourceArrayEnlarge(ResourceArray *resarr);
-static void ResourceArrayAdd(ResourceArray *resarr, Datum value);
-static bool ResourceArrayRemove(ResourceArray *resarr, Datum value);
-static bool ResourceArrayGetAny(ResourceArray *resarr, Datum *value);
-static void ResourceArrayFree(ResourceArray *resarr);
 static void ResourceOwnerReleaseInternal(ResourceOwner owner,
-										 ResourceReleasePhase phase,
-										 bool isCommit,
-										 bool isTopLevel);
-static void ReleaseAuxProcessResourcesCallback(int code, Datum arg);
+							 ResourceReleasePhase phase,
+							 bool isCommit,
+							 bool isTopLevel);
 static void PrintRelCacheLeakWarning(Relation rel);
 static void PrintPlanCacheLeakWarning(CachedPlan *plan);
 static void PrintTupleDescLeakWarning(TupleDesc tupdesc);
 static void PrintSnapshotLeakWarning(Snapshot snapshot);
 static void PrintFileLeakWarning(File file);
 static void PrintDSMLeakWarning(dsm_segment *seg);
-
-
-/*****************************************************************************
- *	  INTERNAL ROUTINES														 *
- *****************************************************************************/
-
-
-/*
- * Initialize a ResourceArray
- */
-static void
-ResourceArrayInit(ResourceArray *resarr, Datum invalidval)
-{
-	/* Assert it's empty */
-	Assert(resarr->itemsarr == NULL);
-	Assert(resarr->capacity == 0);
-	Assert(resarr->nitems == 0);
-	Assert(resarr->maxitems == 0);
-	/* Remember the appropriate "invalid" value */
-	resarr->invalidval = invalidval;
-	/* We don't allocate any storage until needed */
-}
-
-/*
- * Make sure there is room for at least one more resource in an array.
- *
- * This is separate from actually inserting a resource because if we run out
- * of memory, it's critical to do so *before* acquiring the resource.
- */
-static void
-ResourceArrayEnlarge(ResourceArray *resarr)
-{
-	uint32		i,
-				oldcap,
-				newcap;
-	Datum	   *olditemsarr;
-	Datum	   *newitemsarr;
-
-	if (resarr->nitems < resarr->maxitems)
-		return;					/* no work needed */
-
-	olditemsarr = resarr->itemsarr;
-	oldcap = resarr->capacity;
-
-	/* Double the capacity of the array (capacity must stay a power of 2!) */
-	newcap = (oldcap > 0) ? oldcap * 2 : RESARRAY_INIT_SIZE;
-	newitemsarr = (Datum *) MemoryContextAlloc(TopMemoryContext,
-											   newcap * sizeof(Datum));
-	for (i = 0; i < newcap; i++)
-		newitemsarr[i] = resarr->invalidval;
-
-	/* We assume we can't fail below this point, so OK to scribble on resarr */
-	resarr->itemsarr = newitemsarr;
-	resarr->capacity = newcap;
-	resarr->maxitems = RESARRAY_MAX_ITEMS(newcap);
-	resarr->nitems = 0;
-
-	if (olditemsarr != NULL)
-	{
-		/*
-		 * Transfer any pre-existing entries into the new array; they don't
-		 * necessarily go where they were before, so this simple logic is the
-		 * best way.  Note that if we were managing the set as a simple array,
-		 * the entries after nitems are garbage, but that shouldn't matter
-		 * because we won't get here unless nitems was equal to oldcap.
-		 */
-		for (i = 0; i < oldcap; i++)
-		{
-			if (olditemsarr[i] != resarr->invalidval)
-				ResourceArrayAdd(resarr, olditemsarr[i]);
-		}
-
-		/* And release old array. */
-		pfree(olditemsarr);
-	}
-
-	Assert(resarr->nitems < resarr->maxitems);
-}
-
-/*
- * Add a resource to ResourceArray
- *
- * Caller must have previously done ResourceArrayEnlarge()
- */
-static void
-ResourceArrayAdd(ResourceArray *resarr, Datum value)
-{
-	uint32		idx;
-
-	Assert(value != resarr->invalidval);
-	Assert(resarr->nitems < resarr->maxitems);
-
-	if (RESARRAY_IS_ARRAY(resarr))
-	{
-		/* Append to linear array. */
-		idx = resarr->nitems;
-	}
-	else
-	{
-		/* Insert into first free slot at or after hash location. */
-		uint32		mask = resarr->capacity - 1;
-
-		idx = DatumGetUInt32(hash_any((void *) &value, sizeof(value))) & mask;
-		for (;;)
-		{
-			if (resarr->itemsarr[idx] == resarr->invalidval)
-				break;
-			idx = (idx + 1) & mask;
-		}
-	}
-	resarr->lastidx = idx;
-	resarr->itemsarr[idx] = value;
-	resarr->nitems++;
-}
-
-/*
- * Remove a resource from ResourceArray
- *
- * Returns true on success, false if resource was not found.
- *
- * Note: if same resource ID appears more than once, one instance is removed.
- */
-static bool
-ResourceArrayRemove(ResourceArray *resarr, Datum value)
-{
-	uint32		i,
-				idx,
-				lastidx = resarr->lastidx;
-
-	Assert(value != resarr->invalidval);
-
-	/* Search through all items, but try lastidx first. */
-	if (RESARRAY_IS_ARRAY(resarr))
-	{
-		if (lastidx < resarr->nitems &&
-			resarr->itemsarr[lastidx] == value)
-		{
-			resarr->itemsarr[lastidx] = resarr->itemsarr[resarr->nitems - 1];
-			resarr->nitems--;
-			/* Update lastidx to make reverse-order removals fast. */
-			resarr->lastidx = resarr->nitems - 1;
-			return true;
-		}
-		for (i = 0; i < resarr->nitems; i++)
-		{
-			if (resarr->itemsarr[i] == value)
-			{
-				resarr->itemsarr[i] = resarr->itemsarr[resarr->nitems - 1];
-				resarr->nitems--;
-				/* Update lastidx to make reverse-order removals fast. */
-				resarr->lastidx = resarr->nitems - 1;
-				return true;
-			}
-		}
-	}
-	else
-	{
-		uint32		mask = resarr->capacity - 1;
-
-		if (lastidx < resarr->capacity &&
-			resarr->itemsarr[lastidx] == value)
-		{
-			resarr->itemsarr[lastidx] = resarr->invalidval;
-			resarr->nitems--;
-			return true;
-		}
-		idx = DatumGetUInt32(hash_any((void *) &value, sizeof(value))) & mask;
-		for (i = 0; i < resarr->capacity; i++)
-		{
-			if (resarr->itemsarr[idx] == value)
-			{
-				resarr->itemsarr[idx] = resarr->invalidval;
-				resarr->nitems--;
-				return true;
-			}
-			idx = (idx + 1) & mask;
-		}
-	}
-
-	return false;
-}
-
-/*
- * Get any convenient entry in a ResourceArray.
- *
- * "Convenient" is defined as "easy for ResourceArrayRemove to remove";
- * we help that along by setting lastidx to match.  This avoids O(N^2) cost
- * when removing all ResourceArray items during ResourceOwner destruction.
- *
- * Returns true if we found an element, or false if the array is empty.
- */
-static bool
-ResourceArrayGetAny(ResourceArray *resarr, Datum *value)
-{
-	if (resarr->nitems == 0)
-		return false;
-
-	if (RESARRAY_IS_ARRAY(resarr))
-	{
-		/* Linear array: just return the first element. */
-		resarr->lastidx = 0;
-	}
-	else
-	{
-		/* Hash: search forward from wherever we were last. */
-		uint32		mask = resarr->capacity - 1;
-
-		for (;;)
-		{
-			resarr->lastidx &= mask;
-			if (resarr->itemsarr[resarr->lastidx] != resarr->invalidval)
-				break;
-			resarr->lastidx++;
-		}
-	}
-
-	*value = resarr->itemsarr[resarr->lastidx];
-	return true;
-}
-
-/*
- * Trash a ResourceArray (we don't care about its state after this)
- */
-static void
-ResourceArrayFree(ResourceArray *resarr)
-{
-	if (resarr->itemsarr)
-		pfree(resarr->itemsarr);
-}
 
 
 /*****************************************************************************
@@ -433,17 +167,6 @@ ResourceOwnerCreate(ResourceOwner parent, const char *name)
 		owner->nextchild = parent->firstchild;
 		parent->firstchild = owner;
 	}
-
-	ResourceArrayInit(&(owner->bufferarr), BufferGetDatum(InvalidBuffer));
-	ResourceArrayInit(&(owner->catrefarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->catlistrefarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->relrefarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->planrefarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->tupdescarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->snapshotarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->filearr), FileGetDatum(-1));
-	ResourceArrayInit(&(owner->dsmarr), PointerGetDatum(NULL));
-	ResourceArrayInit(&(owner->jitarr), PointerGetDatum(NULL));
 
 	return owner;
 }
@@ -480,8 +203,21 @@ ResourceOwnerRelease(ResourceOwner owner,
 					 bool isCommit,
 					 bool isTopLevel)
 {
-	/* There's not currently any setup needed before recursing */
-	ResourceOwnerReleaseInternal(owner, phase, isCommit, isTopLevel);
+	/* Rather than PG_TRY at every level of recursion, set it up once */
+	ResourceOwner save;
+
+	save = CurrentResourceOwner;
+	PG_TRY();
+	{
+		ResourceOwnerReleaseInternal(owner, phase, isCommit, isTopLevel);
+	}
+	PG_CATCH();
+	{
+		CurrentResourceOwner = save;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	CurrentResourceOwner = save;
 }
 
 static void
@@ -493,7 +229,6 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 	ResourceOwner child;
 	ResourceOwner save;
 	ResourceReleaseCallbackItem *item;
-	Datum		foundres;
 
 	/* Recurse to handle descendants */
 	for (child = owner->firstchild; child != NULL; child = child->nextchild)
@@ -501,7 +236,8 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 
 	/*
 	 * Make CurrentResourceOwner point to me, so that ReleaseBuffer etc don't
-	 * get confused.
+	 * get confused.  We needn't PG_TRY here because the outermost level will
+	 * fix it on error abort.
 	 */
 	save = CurrentResourceOwner;
 	CurrentResourceOwner = owner;
@@ -510,48 +246,51 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 	{
 		/*
 		 * Release buffer pins.  Note that ReleaseBuffer will remove the
-		 * buffer entry from our array, so we just have to iterate till there
-		 * are none.
+		 * buffer entry from my list, so I just have to iterate till there are
+		 * none.
 		 *
 		 * During a commit, there shouldn't be any remaining pins --- that
 		 * would indicate failure to clean up the executor correctly --- so
 		 * issue warnings.  In the abort case, just clean up quietly.
+		 *
+		 * We are careful to do the releasing back-to-front, so as to avoid
+		 * O(N^2) behavior in ResourceOwnerForgetBuffer().
 		 */
-		while (ResourceArrayGetAny(&(owner->bufferarr), &foundres))
+		while (owner->nbuffers > 0)
 		{
-			Buffer		res = DatumGetBuffer(foundres);
-
 			if (isCommit)
-				PrintBufferLeakWarning(res);
-			ReleaseBuffer(res);
+				PrintBufferLeakWarning(owner->buffers[owner->nbuffers - 1]);
+			ReleaseBuffer(owner->buffers[owner->nbuffers - 1]);
 		}
 
-		/* Ditto for relcache references */
-		while (ResourceArrayGetAny(&(owner->relrefarr), &foundres))
+		/*
+		 * Release relcache references.  Note that RelationClose will remove
+		 * the relref entry from my list, so I just have to iterate till there
+		 * are none.
+		 *
+		 * As with buffer pins, warn if any are left at commit time, and
+		 * release back-to-front for speed.
+		 */
+		while (owner->nrelrefs > 0)
 		{
-			Relation	res = (Relation) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintRelCacheLeakWarning(res);
-			RelationClose(res);
+				PrintRelCacheLeakWarning(owner->relrefs[owner->nrelrefs - 1]);
+			RelationClose(owner->relrefs[owner->nrelrefs - 1]);
 		}
 
-		/* Ditto for dynamic shared memory segments */
-		while (ResourceArrayGetAny(&(owner->dsmarr), &foundres))
+		/*
+		 * Release dynamic shared memory segments.  Note that dsm_detach()
+		 * will remove the segment from my list, so I just have to iterate
+		 * until there are none.
+		 *
+		 * As in the preceding cases, warn if there are leftover at commit
+		 * time.
+		 */
+		while (owner->ndsms > 0)
 		{
-			dsm_segment *res = (dsm_segment *) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintDSMLeakWarning(res);
-			dsm_detach(res);
-		}
-
-		/* Ditto for JIT contexts */
-		while (ResourceArrayGetAny(&(owner->jitarr), &foundres))
-		{
-			JitContext *context = (JitContext *) PointerGetDatum(foundres);
-
-			jit_release_context(context);
+				PrintDSMLeakWarning(owner->dsms[owner->ndsms - 1]);
+			dsm_detach(owner->dsms[owner->ndsms - 1]);
 		}
 	}
 	else if (phase == RESOURCE_RELEASE_LOCKS)
@@ -566,7 +305,7 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 			if (owner == TopTransactionResourceOwner)
 			{
 				ProcReleaseLocks(isCommit);
-				ReleasePredicateLocks(isCommit, false);
+				ReleasePredicateLocks(isCommit);
 			}
 		}
 		else
@@ -606,99 +345,63 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 	{
 		/*
 		 * Release catcache references.  Note that ReleaseCatCache will remove
-		 * the catref entry from our array, so we just have to iterate till
-		 * there are none.
+		 * the catref entry from my list, so I just have to iterate till there
+		 * are none.
 		 *
-		 * As with buffer pins, warn if any are left at commit time.
+		 * As with buffer pins, warn if any are left at commit time, and
+		 * release back-to-front for speed.
 		 */
-		while (ResourceArrayGetAny(&(owner->catrefarr), &foundres))
+		while (owner->ncatrefs > 0)
 		{
-			HeapTuple	res = (HeapTuple) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintCatCacheLeakWarning(res);
-			ReleaseCatCache(res);
+				PrintCatCacheLeakWarning(owner->catrefs[owner->ncatrefs - 1]);
+			ReleaseCatCache(owner->catrefs[owner->ncatrefs - 1]);
 		}
-
 		/* Ditto for catcache lists */
-		while (ResourceArrayGetAny(&(owner->catlistrefarr), &foundres))
+		while (owner->ncatlistrefs > 0)
 		{
-			CatCList   *res = (CatCList *) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintCatCacheListLeakWarning(res);
-			ReleaseCatCacheList(res);
+				PrintCatCacheListLeakWarning(owner->catlistrefs[owner->ncatlistrefs - 1]);
+			ReleaseCatCacheList(owner->catlistrefs[owner->ncatlistrefs - 1]);
 		}
-
 		/* Ditto for plancache references */
-		while (ResourceArrayGetAny(&(owner->planrefarr), &foundres))
+		while (owner->nplanrefs > 0)
 		{
-			CachedPlan *res = (CachedPlan *) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintPlanCacheLeakWarning(res);
-			ReleaseCachedPlan(res, true);
+				PrintPlanCacheLeakWarning(owner->planrefs[owner->nplanrefs - 1]);
+			ReleaseCachedPlan(owner->planrefs[owner->nplanrefs - 1], true);
 		}
-
 		/* Ditto for tupdesc references */
-		while (ResourceArrayGetAny(&(owner->tupdescarr), &foundres))
+		while (owner->ntupdescs > 0)
 		{
-			TupleDesc	res = (TupleDesc) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintTupleDescLeakWarning(res);
-			DecrTupleDescRefCount(res);
+				PrintTupleDescLeakWarning(owner->tupdescs[owner->ntupdescs - 1]);
+			DecrTupleDescRefCount(owner->tupdescs[owner->ntupdescs - 1]);
 		}
-
 		/* Ditto for snapshot references */
-		while (ResourceArrayGetAny(&(owner->snapshotarr), &foundres))
+		while (owner->nsnapshots > 0)
 		{
-			Snapshot	res = (Snapshot) DatumGetPointer(foundres);
-
 			if (isCommit)
-				PrintSnapshotLeakWarning(res);
-			UnregisterSnapshot(res);
+				PrintSnapshotLeakWarning(owner->snapshots[owner->nsnapshots - 1]);
+			UnregisterSnapshot(owner->snapshots[owner->nsnapshots - 1]);
 		}
 
 		/* Ditto for temporary files */
-		while (ResourceArrayGetAny(&(owner->filearr), &foundres))
+		while (owner->nfiles > 0)
 		{
-			File		res = DatumGetFile(foundres);
-
 			if (isCommit)
-				PrintFileLeakWarning(res);
-			FileClose(res);
+				PrintFileLeakWarning(owner->files[owner->nfiles - 1]);
+			FileClose(owner->files[owner->nfiles - 1]);
 		}
+
+		/* Clean up index scans too */
+		ReleaseResources_hash();
 	}
 
 	/* Let add-on modules get a chance too */
 	for (item = ResourceRelease_callbacks; item; item = item->next)
-		item->callback(phase, isCommit, isTopLevel, item->arg);
+		(*item->callback) (phase, isCommit, isTopLevel, item->arg);
 
-	CurrentResourceOwner = save;
-}
-
-/*
- * ResourceOwnerReleaseAllPlanCacheRefs
- *		Release the plancache references (only) held by this owner.
- *
- * We might eventually add similar functions for other resource types,
- * but for now, only this is needed.
- */
-void
-ResourceOwnerReleaseAllPlanCacheRefs(ResourceOwner owner)
-{
-	ResourceOwner save;
-	Datum		foundres;
-
-	save = CurrentResourceOwner;
-	CurrentResourceOwner = owner;
-	while (ResourceArrayGetAny(&(owner->planrefarr), &foundres))
-	{
-		CachedPlan *res = (CachedPlan *) DatumGetPointer(foundres);
-
-		ReleaseCachedPlan(res, true);
-	}
 	CurrentResourceOwner = save;
 }
 
@@ -715,17 +418,16 @@ ResourceOwnerDelete(ResourceOwner owner)
 	Assert(owner != CurrentResourceOwner);
 
 	/* And it better not own any resources, either */
-	Assert(owner->bufferarr.nitems == 0);
-	Assert(owner->catrefarr.nitems == 0);
-	Assert(owner->catlistrefarr.nitems == 0);
-	Assert(owner->relrefarr.nitems == 0);
-	Assert(owner->planrefarr.nitems == 0);
-	Assert(owner->tupdescarr.nitems == 0);
-	Assert(owner->snapshotarr.nitems == 0);
-	Assert(owner->filearr.nitems == 0);
-	Assert(owner->dsmarr.nitems == 0);
-	Assert(owner->jitarr.nitems == 0);
+	Assert(owner->nbuffers == 0);
 	Assert(owner->nlocks == 0 || owner->nlocks == MAX_RESOWNER_LOCKS + 1);
+	Assert(owner->ncatrefs == 0);
+	Assert(owner->ncatlistrefs == 0);
+	Assert(owner->nrelrefs == 0);
+	Assert(owner->ndsms == 0);
+	Assert(owner->nplanrefs == 0);
+	Assert(owner->ntupdescs == 0);
+	Assert(owner->nsnapshots == 0);
+	Assert(owner->nfiles == 0);
 
 	/*
 	 * Delete children.  The recursive call will delink the child from me, so
@@ -742,16 +444,24 @@ ResourceOwnerDelete(ResourceOwner owner)
 	ResourceOwnerNewParent(owner, NULL);
 
 	/* And free the object. */
-	ResourceArrayFree(&(owner->bufferarr));
-	ResourceArrayFree(&(owner->catrefarr));
-	ResourceArrayFree(&(owner->catlistrefarr));
-	ResourceArrayFree(&(owner->relrefarr));
-	ResourceArrayFree(&(owner->planrefarr));
-	ResourceArrayFree(&(owner->tupdescarr));
-	ResourceArrayFree(&(owner->snapshotarr));
-	ResourceArrayFree(&(owner->filearr));
-	ResourceArrayFree(&(owner->dsmarr));
-	ResourceArrayFree(&(owner->jitarr));
+	if (owner->buffers)
+		pfree(owner->buffers);
+	if (owner->catrefs)
+		pfree(owner->catrefs);
+	if (owner->catlistrefs)
+		pfree(owner->catlistrefs);
+	if (owner->relrefs)
+		pfree(owner->relrefs);
+	if (owner->planrefs)
+		pfree(owner->planrefs);
+	if (owner->tupdescs)
+		pfree(owner->tupdescs);
+	if (owner->snapshots)
+		pfree(owner->snapshots);
+	if (owner->files)
+		pfree(owner->files);
+	if (owner->dsms)
+		pfree(owner->dsms);
 
 	pfree(owner);
 }
@@ -851,60 +561,6 @@ UnregisterResourceReleaseCallback(ResourceReleaseCallback callback, void *arg)
 	}
 }
 
-/*
- * Establish an AuxProcessResourceOwner for the current process.
- */
-void
-CreateAuxProcessResourceOwner(void)
-{
-	Assert(AuxProcessResourceOwner == NULL);
-	Assert(CurrentResourceOwner == NULL);
-	AuxProcessResourceOwner = ResourceOwnerCreate(NULL, "AuxiliaryProcess");
-	CurrentResourceOwner = AuxProcessResourceOwner;
-
-	/*
-	 * Register a shmem-exit callback for cleanup of aux-process resource
-	 * owner.  (This needs to run after, e.g., ShutdownXLOG.)
-	 */
-	on_shmem_exit(ReleaseAuxProcessResourcesCallback, 0);
-
-}
-
-/*
- * Convenience routine to release all resources tracked in
- * AuxProcessResourceOwner (but that resowner is not destroyed here).
- * Warn about leaked resources if isCommit is true.
- */
-void
-ReleaseAuxProcessResources(bool isCommit)
-{
-	/*
-	 * At this writing, the only thing that could actually get released is
-	 * buffer pins; but we may as well do the full release protocol.
-	 */
-	ResourceOwnerRelease(AuxProcessResourceOwner,
-						 RESOURCE_RELEASE_BEFORE_LOCKS,
-						 isCommit, true);
-	ResourceOwnerRelease(AuxProcessResourceOwner,
-						 RESOURCE_RELEASE_LOCKS,
-						 isCommit, true);
-	ResourceOwnerRelease(AuxProcessResourceOwner,
-						 RESOURCE_RELEASE_AFTER_LOCKS,
-						 isCommit, true);
-}
-
-/*
- * Shmem-exit callback for the same.
- * Warn about leaked resources if process exit code is zero (ie normal).
- */
-static void
-ReleaseAuxProcessResourcesCallback(int code, Datum arg)
-{
-	bool		isCommit = (code == 0);
-
-	ReleaseAuxProcessResources(isCommit);
-}
-
 
 /*
  * Make sure there is room for at least one more entry in a ResourceOwner's
@@ -912,35 +568,90 @@ ReleaseAuxProcessResourcesCallback(int code, Datum arg)
  *
  * This is separate from actually inserting an entry because if we run out
  * of memory, it's critical to do so *before* acquiring the resource.
+ *
+ * We allow the case owner == NULL because the bufmgr is sometimes invoked
+ * outside any transaction (for example, during WAL recovery).
  */
 void
 ResourceOwnerEnlargeBuffers(ResourceOwner owner)
 {
-	/* We used to allow pinning buffers without a resowner, but no more */
-	Assert(owner != NULL);
-	ResourceArrayEnlarge(&(owner->bufferarr));
+	int			newmax;
+
+	if (owner == NULL ||
+		owner->nbuffers < owner->maxbuffers)
+		return;					/* nothing to do */
+
+	if (owner->buffers == NULL)
+	{
+		newmax = 16;
+		owner->buffers = (Buffer *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(Buffer));
+		owner->maxbuffers = newmax;
+	}
+	else
+	{
+		newmax = owner->maxbuffers * 2;
+		owner->buffers = (Buffer *)
+			repalloc(owner->buffers, newmax * sizeof(Buffer));
+		owner->maxbuffers = newmax;
+	}
 }
 
 /*
  * Remember that a buffer pin is owned by a ResourceOwner
  *
  * Caller must have previously done ResourceOwnerEnlargeBuffers()
+ *
+ * We allow the case owner == NULL because the bufmgr is sometimes invoked
+ * outside any transaction (for example, during WAL recovery).
  */
 void
 ResourceOwnerRememberBuffer(ResourceOwner owner, Buffer buffer)
 {
-	ResourceArrayAdd(&(owner->bufferarr), BufferGetDatum(buffer));
+	if (owner != NULL)
+	{
+		Assert(owner->nbuffers < owner->maxbuffers);
+		owner->buffers[owner->nbuffers] = buffer;
+		owner->nbuffers++;
+	}
 }
 
 /*
  * Forget that a buffer pin is owned by a ResourceOwner
+ *
+ * We allow the case owner == NULL because the bufmgr is sometimes invoked
+ * outside any transaction (for example, during WAL recovery).
  */
 void
 ResourceOwnerForgetBuffer(ResourceOwner owner, Buffer buffer)
 {
-	if (!ResourceArrayRemove(&(owner->bufferarr), BufferGetDatum(buffer)))
+	if (owner != NULL)
+	{
+		Buffer	   *buffers = owner->buffers;
+		int			nb1 = owner->nbuffers - 1;
+		int			i;
+
+		/*
+		 * Scan back-to-front because it's more likely we are releasing a
+		 * recently pinned buffer.  This isn't always the case of course, but
+		 * it's the way to bet.
+		 */
+		for (i = nb1; i >= 0; i--)
+		{
+			if (buffers[i] == buffer)
+			{
+				while (i < nb1)
+				{
+					buffers[i] = buffers[i + 1];
+					i++;
+				}
+				owner->nbuffers = nb1;
+				return;
+			}
+		}
 		elog(ERROR, "buffer %d is not owned by resource owner %s",
 			 buffer, owner->name);
+	}
 }
 
 /*
@@ -956,8 +667,6 @@ ResourceOwnerForgetBuffer(ResourceOwner owner, Buffer buffer)
 void
 ResourceOwnerRememberLock(ResourceOwner owner, LOCALLOCK *locallock)
 {
-	Assert(locallock != NULL);
-
 	if (owner->nlocks > MAX_RESOWNER_LOCKS)
 		return;					/* we have already overflowed */
 
@@ -1005,7 +714,25 @@ ResourceOwnerForgetLock(ResourceOwner owner, LOCALLOCK *locallock)
 void
 ResourceOwnerEnlargeCatCacheRefs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->catrefarr));
+	int			newmax;
+
+	if (owner->ncatrefs < owner->maxcatrefs)
+		return;					/* nothing to do */
+
+	if (owner->catrefs == NULL)
+	{
+		newmax = 16;
+		owner->catrefs = (HeapTuple *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(HeapTuple));
+		owner->maxcatrefs = newmax;
+	}
+	else
+	{
+		newmax = owner->maxcatrefs * 2;
+		owner->catrefs = (HeapTuple *)
+			repalloc(owner->catrefs, newmax * sizeof(HeapTuple));
+		owner->maxcatrefs = newmax;
+	}
 }
 
 /*
@@ -1016,7 +743,9 @@ ResourceOwnerEnlargeCatCacheRefs(ResourceOwner owner)
 void
 ResourceOwnerRememberCatCacheRef(ResourceOwner owner, HeapTuple tuple)
 {
-	ResourceArrayAdd(&(owner->catrefarr), PointerGetDatum(tuple));
+	Assert(owner->ncatrefs < owner->maxcatrefs);
+	owner->catrefs[owner->ncatrefs] = tuple;
+	owner->ncatrefs++;
 }
 
 /*
@@ -1025,9 +754,25 @@ ResourceOwnerRememberCatCacheRef(ResourceOwner owner, HeapTuple tuple)
 void
 ResourceOwnerForgetCatCacheRef(ResourceOwner owner, HeapTuple tuple)
 {
-	if (!ResourceArrayRemove(&(owner->catrefarr), PointerGetDatum(tuple)))
-		elog(ERROR, "catcache reference %p is not owned by resource owner %s",
-			 tuple, owner->name);
+	HeapTuple  *catrefs = owner->catrefs;
+	int			nc1 = owner->ncatrefs - 1;
+	int			i;
+
+	for (i = nc1; i >= 0; i--)
+	{
+		if (catrefs[i] == tuple)
+		{
+			while (i < nc1)
+			{
+				catrefs[i] = catrefs[i + 1];
+				i++;
+			}
+			owner->ncatrefs = nc1;
+			return;
+		}
+	}
+	elog(ERROR, "catcache reference %p is not owned by resource owner %s",
+		 tuple, owner->name);
 }
 
 /*
@@ -1040,7 +785,25 @@ ResourceOwnerForgetCatCacheRef(ResourceOwner owner, HeapTuple tuple)
 void
 ResourceOwnerEnlargeCatCacheListRefs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->catlistrefarr));
+	int			newmax;
+
+	if (owner->ncatlistrefs < owner->maxcatlistrefs)
+		return;					/* nothing to do */
+
+	if (owner->catlistrefs == NULL)
+	{
+		newmax = 16;
+		owner->catlistrefs = (CatCList **)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(CatCList *));
+		owner->maxcatlistrefs = newmax;
+	}
+	else
+	{
+		newmax = owner->maxcatlistrefs * 2;
+		owner->catlistrefs = (CatCList **)
+			repalloc(owner->catlistrefs, newmax * sizeof(CatCList *));
+		owner->maxcatlistrefs = newmax;
+	}
 }
 
 /*
@@ -1051,7 +814,9 @@ ResourceOwnerEnlargeCatCacheListRefs(ResourceOwner owner)
 void
 ResourceOwnerRememberCatCacheListRef(ResourceOwner owner, CatCList *list)
 {
-	ResourceArrayAdd(&(owner->catlistrefarr), PointerGetDatum(list));
+	Assert(owner->ncatlistrefs < owner->maxcatlistrefs);
+	owner->catlistrefs[owner->ncatlistrefs] = list;
+	owner->ncatlistrefs++;
 }
 
 /*
@@ -1060,9 +825,25 @@ ResourceOwnerRememberCatCacheListRef(ResourceOwner owner, CatCList *list)
 void
 ResourceOwnerForgetCatCacheListRef(ResourceOwner owner, CatCList *list)
 {
-	if (!ResourceArrayRemove(&(owner->catlistrefarr), PointerGetDatum(list)))
-		elog(ERROR, "catcache list reference %p is not owned by resource owner %s",
-			 list, owner->name);
+	CatCList  **catlistrefs = owner->catlistrefs;
+	int			nc1 = owner->ncatlistrefs - 1;
+	int			i;
+
+	for (i = nc1; i >= 0; i--)
+	{
+		if (catlistrefs[i] == list)
+		{
+			while (i < nc1)
+			{
+				catlistrefs[i] = catlistrefs[i + 1];
+				i++;
+			}
+			owner->ncatlistrefs = nc1;
+			return;
+		}
+	}
+	elog(ERROR, "catcache list reference %p is not owned by resource owner %s",
+		 list, owner->name);
 }
 
 /*
@@ -1075,7 +856,25 @@ ResourceOwnerForgetCatCacheListRef(ResourceOwner owner, CatCList *list)
 void
 ResourceOwnerEnlargeRelationRefs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->relrefarr));
+	int			newmax;
+
+	if (owner->nrelrefs < owner->maxrelrefs)
+		return;					/* nothing to do */
+
+	if (owner->relrefs == NULL)
+	{
+		newmax = 16;
+		owner->relrefs = (Relation *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(Relation));
+		owner->maxrelrefs = newmax;
+	}
+	else
+	{
+		newmax = owner->maxrelrefs * 2;
+		owner->relrefs = (Relation *)
+			repalloc(owner->relrefs, newmax * sizeof(Relation));
+		owner->maxrelrefs = newmax;
+	}
 }
 
 /*
@@ -1086,7 +885,9 @@ ResourceOwnerEnlargeRelationRefs(ResourceOwner owner)
 void
 ResourceOwnerRememberRelationRef(ResourceOwner owner, Relation rel)
 {
-	ResourceArrayAdd(&(owner->relrefarr), PointerGetDatum(rel));
+	Assert(owner->nrelrefs < owner->maxrelrefs);
+	owner->relrefs[owner->nrelrefs] = rel;
+	owner->nrelrefs++;
 }
 
 /*
@@ -1095,9 +896,25 @@ ResourceOwnerRememberRelationRef(ResourceOwner owner, Relation rel)
 void
 ResourceOwnerForgetRelationRef(ResourceOwner owner, Relation rel)
 {
-	if (!ResourceArrayRemove(&(owner->relrefarr), PointerGetDatum(rel)))
-		elog(ERROR, "relcache reference %s is not owned by resource owner %s",
-			 RelationGetRelationName(rel), owner->name);
+	Relation   *relrefs = owner->relrefs;
+	int			nr1 = owner->nrelrefs - 1;
+	int			i;
+
+	for (i = nr1; i >= 0; i--)
+	{
+		if (relrefs[i] == rel)
+		{
+			while (i < nr1)
+			{
+				relrefs[i] = relrefs[i + 1];
+				i++;
+			}
+			owner->nrelrefs = nr1;
+			return;
+		}
+	}
+	elog(ERROR, "relcache reference %s is not owned by resource owner %s",
+		 RelationGetRelationName(rel), owner->name);
 }
 
 /*
@@ -1120,7 +937,25 @@ PrintRelCacheLeakWarning(Relation rel)
 void
 ResourceOwnerEnlargePlanCacheRefs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->planrefarr));
+	int			newmax;
+
+	if (owner->nplanrefs < owner->maxplanrefs)
+		return;					/* nothing to do */
+
+	if (owner->planrefs == NULL)
+	{
+		newmax = 16;
+		owner->planrefs = (CachedPlan **)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(CachedPlan *));
+		owner->maxplanrefs = newmax;
+	}
+	else
+	{
+		newmax = owner->maxplanrefs * 2;
+		owner->planrefs = (CachedPlan **)
+			repalloc(owner->planrefs, newmax * sizeof(CachedPlan *));
+		owner->maxplanrefs = newmax;
+	}
 }
 
 /*
@@ -1131,7 +966,9 @@ ResourceOwnerEnlargePlanCacheRefs(ResourceOwner owner)
 void
 ResourceOwnerRememberPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 {
-	ResourceArrayAdd(&(owner->planrefarr), PointerGetDatum(plan));
+	Assert(owner->nplanrefs < owner->maxplanrefs);
+	owner->planrefs[owner->nplanrefs] = plan;
+	owner->nplanrefs++;
 }
 
 /*
@@ -1140,9 +977,25 @@ ResourceOwnerRememberPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 void
 ResourceOwnerForgetPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 {
-	if (!ResourceArrayRemove(&(owner->planrefarr), PointerGetDatum(plan)))
-		elog(ERROR, "plancache reference %p is not owned by resource owner %s",
-			 plan, owner->name);
+	CachedPlan **planrefs = owner->planrefs;
+	int			np1 = owner->nplanrefs - 1;
+	int			i;
+
+	for (i = np1; i >= 0; i--)
+	{
+		if (planrefs[i] == plan)
+		{
+			while (i < np1)
+			{
+				planrefs[i] = planrefs[i + 1];
+				i++;
+			}
+			owner->nplanrefs = np1;
+			return;
+		}
+	}
+	elog(ERROR, "plancache reference %p is not owned by resource owner %s",
+		 plan, owner->name);
 }
 
 /*
@@ -1164,7 +1017,25 @@ PrintPlanCacheLeakWarning(CachedPlan *plan)
 void
 ResourceOwnerEnlargeTupleDescs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->tupdescarr));
+	int			newmax;
+
+	if (owner->ntupdescs < owner->maxtupdescs)
+		return;					/* nothing to do */
+
+	if (owner->tupdescs == NULL)
+	{
+		newmax = 16;
+		owner->tupdescs = (TupleDesc *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(TupleDesc));
+		owner->maxtupdescs = newmax;
+	}
+	else
+	{
+		newmax = owner->maxtupdescs * 2;
+		owner->tupdescs = (TupleDesc *)
+			repalloc(owner->tupdescs, newmax * sizeof(TupleDesc));
+		owner->maxtupdescs = newmax;
+	}
 }
 
 /*
@@ -1175,7 +1046,9 @@ ResourceOwnerEnlargeTupleDescs(ResourceOwner owner)
 void
 ResourceOwnerRememberTupleDesc(ResourceOwner owner, TupleDesc tupdesc)
 {
-	ResourceArrayAdd(&(owner->tupdescarr), PointerGetDatum(tupdesc));
+	Assert(owner->ntupdescs < owner->maxtupdescs);
+	owner->tupdescs[owner->ntupdescs] = tupdesc;
+	owner->ntupdescs++;
 }
 
 /*
@@ -1184,9 +1057,25 @@ ResourceOwnerRememberTupleDesc(ResourceOwner owner, TupleDesc tupdesc)
 void
 ResourceOwnerForgetTupleDesc(ResourceOwner owner, TupleDesc tupdesc)
 {
-	if (!ResourceArrayRemove(&(owner->tupdescarr), PointerGetDatum(tupdesc)))
-		elog(ERROR, "tupdesc reference %p is not owned by resource owner %s",
-			 tupdesc, owner->name);
+	TupleDesc  *tupdescs = owner->tupdescs;
+	int			nt1 = owner->ntupdescs - 1;
+	int			i;
+
+	for (i = nt1; i >= 0; i--)
+	{
+		if (tupdescs[i] == tupdesc)
+		{
+			while (i < nt1)
+			{
+				tupdescs[i] = tupdescs[i + 1];
+				i++;
+			}
+			owner->ntupdescs = nt1;
+			return;
+		}
+	}
+	elog(ERROR, "tupdesc reference %p is not owned by resource owner %s",
+		 tupdesc, owner->name);
 }
 
 /*
@@ -1210,7 +1099,25 @@ PrintTupleDescLeakWarning(TupleDesc tupdesc)
 void
 ResourceOwnerEnlargeSnapshots(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->snapshotarr));
+	int			newmax;
+
+	if (owner->nsnapshots < owner->maxsnapshots)
+		return;					/* nothing to do */
+
+	if (owner->snapshots == NULL)
+	{
+		newmax = 16;
+		owner->snapshots = (Snapshot *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(Snapshot));
+		owner->maxsnapshots = newmax;
+	}
+	else
+	{
+		newmax = owner->maxsnapshots * 2;
+		owner->snapshots = (Snapshot *)
+			repalloc(owner->snapshots, newmax * sizeof(Snapshot));
+		owner->maxsnapshots = newmax;
+	}
 }
 
 /*
@@ -1221,7 +1128,9 @@ ResourceOwnerEnlargeSnapshots(ResourceOwner owner)
 void
 ResourceOwnerRememberSnapshot(ResourceOwner owner, Snapshot snapshot)
 {
-	ResourceArrayAdd(&(owner->snapshotarr), PointerGetDatum(snapshot));
+	Assert(owner->nsnapshots < owner->maxsnapshots);
+	owner->snapshots[owner->nsnapshots] = snapshot;
+	owner->nsnapshots++;
 }
 
 /*
@@ -1230,9 +1139,25 @@ ResourceOwnerRememberSnapshot(ResourceOwner owner, Snapshot snapshot)
 void
 ResourceOwnerForgetSnapshot(ResourceOwner owner, Snapshot snapshot)
 {
-	if (!ResourceArrayRemove(&(owner->snapshotarr), PointerGetDatum(snapshot)))
-		elog(ERROR, "snapshot reference %p is not owned by resource owner %s",
-			 snapshot, owner->name);
+	Snapshot   *snapshots = owner->snapshots;
+	int			ns1 = owner->nsnapshots - 1;
+	int			i;
+
+	for (i = ns1; i >= 0; i--)
+	{
+		if (snapshots[i] == snapshot)
+		{
+			while (i < ns1)
+			{
+				snapshots[i] = snapshots[i + 1];
+				i++;
+			}
+			owner->nsnapshots = ns1;
+			return;
+		}
+	}
+	elog(ERROR, "snapshot reference %p is not owned by resource owner %s",
+		 snapshot, owner->name);
 }
 
 /*
@@ -1241,7 +1166,8 @@ ResourceOwnerForgetSnapshot(ResourceOwner owner, Snapshot snapshot)
 static void
 PrintSnapshotLeakWarning(Snapshot snapshot)
 {
-	elog(WARNING, "Snapshot reference leak: Snapshot %p still referenced",
+	elog(WARNING,
+		 "Snapshot reference leak: Snapshot %p still referenced",
 		 snapshot);
 }
 
@@ -1256,7 +1182,25 @@ PrintSnapshotLeakWarning(Snapshot snapshot)
 void
 ResourceOwnerEnlargeFiles(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->filearr));
+	int			newmax;
+
+	if (owner->nfiles < owner->maxfiles)
+		return;					/* nothing to do */
+
+	if (owner->files == NULL)
+	{
+		newmax = 16;
+		owner->files = (File *)
+			MemoryContextAlloc(TopMemoryContext, newmax * sizeof(File));
+		owner->maxfiles = newmax;
+	}
+	else
+	{
+		newmax = owner->maxfiles * 2;
+		owner->files = (File *)
+			repalloc(owner->files, newmax * sizeof(File));
+		owner->maxfiles = newmax;
+	}
 }
 
 /*
@@ -1267,7 +1211,9 @@ ResourceOwnerEnlargeFiles(ResourceOwner owner)
 void
 ResourceOwnerRememberFile(ResourceOwner owner, File file)
 {
-	ResourceArrayAdd(&(owner->filearr), FileGetDatum(file));
+	Assert(owner->nfiles < owner->maxfiles);
+	owner->files[owner->nfiles] = file;
+	owner->nfiles++;
 }
 
 /*
@@ -1276,10 +1222,27 @@ ResourceOwnerRememberFile(ResourceOwner owner, File file)
 void
 ResourceOwnerForgetFile(ResourceOwner owner, File file)
 {
-	if (!ResourceArrayRemove(&(owner->filearr), FileGetDatum(file)))
-		elog(ERROR, "temporary file %d is not owned by resource owner %s",
-			 file, owner->name);
+	File	   *files = owner->files;
+	int			ns1 = owner->nfiles - 1;
+	int			i;
+
+	for (i = ns1; i >= 0; i--)
+	{
+		if (files[i] == file)
+		{
+			while (i < ns1)
+			{
+				files[i] = files[i + 1];
+				i++;
+			}
+			owner->nfiles = ns1;
+			return;
+		}
+	}
+	elog(ERROR, "temporery file %d is not owned by resource owner %s",
+		 file, owner->name);
 }
+
 
 /*
  * Debugging subroutine
@@ -1287,7 +1250,8 @@ ResourceOwnerForgetFile(ResourceOwner owner, File file)
 static void
 PrintFileLeakWarning(File file)
 {
-	elog(WARNING, "temporary file leak: File %d still referenced",
+	elog(WARNING,
+		 "temporary file leak: File %d still referenced",
 		 file);
 }
 
@@ -1301,7 +1265,26 @@ PrintFileLeakWarning(File file)
 void
 ResourceOwnerEnlargeDSMs(ResourceOwner owner)
 {
-	ResourceArrayEnlarge(&(owner->dsmarr));
+	int			newmax;
+
+	if (owner->ndsms < owner->maxdsms)
+		return;					/* nothing to do */
+
+	if (owner->dsms == NULL)
+	{
+		newmax = 16;
+		owner->dsms = (dsm_segment **)
+			MemoryContextAlloc(TopMemoryContext,
+							   newmax * sizeof(dsm_segment *));
+		owner->maxdsms = newmax;
+	}
+	else
+	{
+		newmax = owner->maxdsms * 2;
+		owner->dsms = (dsm_segment **)
+			repalloc(owner->dsms, newmax * sizeof(dsm_segment *));
+		owner->maxdsms = newmax;
+	}
 }
 
 /*
@@ -1312,7 +1295,9 @@ ResourceOwnerEnlargeDSMs(ResourceOwner owner)
 void
 ResourceOwnerRememberDSM(ResourceOwner owner, dsm_segment *seg)
 {
-	ResourceArrayAdd(&(owner->dsmarr), PointerGetDatum(seg));
+	Assert(owner->ndsms < owner->maxdsms);
+	owner->dsms[owner->ndsms] = seg;
+	owner->ndsms++;
 }
 
 /*
@@ -1321,10 +1306,28 @@ ResourceOwnerRememberDSM(ResourceOwner owner, dsm_segment *seg)
 void
 ResourceOwnerForgetDSM(ResourceOwner owner, dsm_segment *seg)
 {
-	if (!ResourceArrayRemove(&(owner->dsmarr), PointerGetDatum(seg)))
-		elog(ERROR, "dynamic shared memory segment %u is not owned by resource owner %s",
-			 dsm_segment_handle(seg), owner->name);
+	dsm_segment **dsms = owner->dsms;
+	int			ns1 = owner->ndsms - 1;
+	int			i;
+
+	for (i = ns1; i >= 0; i--)
+	{
+		if (dsms[i] == seg)
+		{
+			while (i < ns1)
+			{
+				dsms[i] = dsms[i + 1];
+				i++;
+			}
+			owner->ndsms = ns1;
+			return;
+		}
+	}
+	elog(ERROR,
+		 "dynamic shared memory segment %u is not owned by resource owner %s",
+		 dsm_segment_handle(seg), owner->name);
 }
+
 
 /*
  * Debugging subroutine
@@ -1332,41 +1335,7 @@ ResourceOwnerForgetDSM(ResourceOwner owner, dsm_segment *seg)
 static void
 PrintDSMLeakWarning(dsm_segment *seg)
 {
-	elog(WARNING, "dynamic shared memory leak: segment %u still referenced",
+	elog(WARNING,
+		 "dynamic shared memory leak: segment %u still referenced",
 		 dsm_segment_handle(seg));
-}
-
-/*
- * Make sure there is room for at least one more entry in a ResourceOwner's
- * JIT context reference array.
- *
- * This is separate from actually inserting an entry because if we run out of
- * memory, it's critical to do so *before* acquiring the resource.
- */
-void
-ResourceOwnerEnlargeJIT(ResourceOwner owner)
-{
-	ResourceArrayEnlarge(&(owner->jitarr));
-}
-
-/*
- * Remember that a JIT context is owned by a ResourceOwner
- *
- * Caller must have previously done ResourceOwnerEnlargeJIT()
- */
-void
-ResourceOwnerRememberJIT(ResourceOwner owner, Datum handle)
-{
-	ResourceArrayAdd(&(owner->jitarr), handle);
-}
-
-/*
- * Forget that a JIT context is owned by a ResourceOwner
- */
-void
-ResourceOwnerForgetJIT(ResourceOwner owner, Datum handle)
-{
-	if (!ResourceArrayRemove(&(owner->jitarr), handle))
-		elog(ERROR, "JIT context %p is not owned by resource owner %s",
-			 DatumGetPointer(handle), owner->name);
 }

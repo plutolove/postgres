@@ -12,6 +12,9 @@
 <!ENTITY query      SYSTEM "query.sgml">
 <!ENTITY start      SYSTEM "start.sgml">
 
+<!-- currently unused, but contains some interesting information -->
+<!ENTITY sql        SYSTEM "sql.sgml">
+
 <!-- user's guide -->
 <!ENTITY array      SYSTEM "array.sgml">
 <!ENTITY datatype   SYSTEM "datatype.sgml">
@@ -21,7 +24,6 @@
 <!ENTITY indices    SYSTEM "indices.sgml">
 <!ENTITY json       SYSTEM "json.sgml">
 <!ENTITY mvcc       SYSTEM "mvcc.sgml">
-<!ENTITY parallel   SYSTEM "parallel.sgml">
 <!ENTITY perform    SYSTEM "perform.sgml">
 <!ENTITY queries    SYSTEM "queries.sgml">
 <!ENTITY rangetypes SYSTEM "rangetypes.sgml">
@@ -42,12 +44,11 @@
 <!ENTITY manage-ag     SYSTEM "manage-ag.sgml">
 <!ENTITY monitoring    SYSTEM "monitoring.sgml">
 <!ENTITY regress       SYSTEM "regress.sgml">
+<!ENTITY recovery-config SYSTEM "recovery-config.sgml">
 <!ENTITY runtime       SYSTEM "runtime.sgml">
 <!ENTITY config        SYSTEM "config.sgml">
 <!ENTITY user-manag    SYSTEM "user-manag.sgml">
 <!ENTITY wal           SYSTEM "wal.sgml">
-<!ENTITY logical-replication    SYSTEM "logical-replication.sgml">
-<!ENTITY jit    SYSTEM "jit.sgml">
 
 <!-- programmer's guide -->
 <!ENTITY bgworker   SYSTEM "bgworker.sgml">
@@ -83,36 +84,27 @@
 <!ENTITY bki        SYSTEM "bki.sgml">
 <!ENTITY catalogs   SYSTEM "catalogs.sgml">
 <!ENTITY geqo       SYSTEM "geqo.sgml">
-<!ENTITY btree      SYSTEM "btree.sgml">
 <!ENTITY gist       SYSTEM "gist.sgml">
 <!ENTITY spgist     SYSTEM "spgist.sgml">
 <!ENTITY gin        SYSTEM "gin.sgml">
-<!ENTITY brin       SYSTEM "brin.sgml">
 <!ENTITY planstats    SYSTEM "planstats.sgml">
-<!ENTITY tableam    SYSTEM "tableam.sgml">
 <!ENTITY indexam    SYSTEM "indexam.sgml">
 <!ENTITY nls        SYSTEM "nls.sgml">
 <!ENTITY plhandler  SYSTEM "plhandler.sgml">
 <!ENTITY fdwhandler SYSTEM "fdwhandler.sgml">
-<!ENTITY custom-scan SYSTEM "custom-scan.sgml">
 <!ENTITY logicaldecoding SYSTEM "logicaldecoding.sgml">
-<!ENTITY replication-origins SYSTEM "replication-origins.sgml">
 <!ENTITY protocol   SYSTEM "protocol.sgml">
 <!ENTITY sources    SYSTEM "sources.sgml">
 <!ENTITY storage    SYSTEM "storage.sgml">
-<!ENTITY tablesample-method SYSTEM "tablesample-method.sgml">
-<!ENTITY generic-wal SYSTEM "generic-wal.sgml">
-<!ENTITY backup-manifest SYSTEM "backup-manifest.sgml">
 
 <!-- contrib information -->
 <!ENTITY contrib         SYSTEM "contrib.sgml">
 <!ENTITY adminpack       SYSTEM "adminpack.sgml">
-<!ENTITY amcheck         SYSTEM "amcheck.sgml">
 <!ENTITY auth-delay      SYSTEM "auth-delay.sgml">
 <!ENTITY auto-explain    SYSTEM "auto-explain.sgml">
-<!ENTITY bloom           SYSTEM "bloom.sgml">
 <!ENTITY btree-gin       SYSTEM "btree-gin.sgml">
 <!ENTITY btree-gist      SYSTEM "btree-gist.sgml">
+<!ENTITY chkpass         SYSTEM "chkpass.sgml">
 <!ENTITY citext          SYSTEM "citext.sgml">
 <!ENTITY cube            SYSTEM "cube.sgml">
 <!ENTITY dblink          SYSTEM "dblink.sgml">
@@ -131,6 +123,8 @@
 <!ENTITY oid2name        SYSTEM "oid2name.sgml">
 <!ENTITY pageinspect     SYSTEM "pageinspect.sgml">
 <!ENTITY passwordcheck   SYSTEM "passwordcheck.sgml">
+<!ENTITY pgbench         SYSTEM "pgbench.sgml">
+<!ENTITY pgarchivecleanup SYSTEM "pgarchivecleanup.sgml">
 <!ENTITY pgbuffercache   SYSTEM "pgbuffercache.sgml">
 <!ENTITY pgcrypto        SYSTEM "pgcrypto.sgml">
 <!ENTITY pgfreespacemap  SYSTEM "pgfreespacemap.sgml">
@@ -139,8 +133,11 @@
 <!ENTITY pgstandby       SYSTEM "pgstandby.sgml">
 <!ENTITY pgstatstatements SYSTEM "pgstatstatements.sgml">
 <!ENTITY pgstattuple     SYSTEM "pgstattuple.sgml">
+<!ENTITY pgtestfsync     SYSTEM "pgtestfsync.sgml">
+<!ENTITY pgtesttiming    SYSTEM "pgtesttiming.sgml">
 <!ENTITY pgtrgm          SYSTEM "pgtrgm.sgml">
-<!ENTITY pgvisibility    SYSTEM "pgvisibility.sgml">
+<!ENTITY pgupgrade       SYSTEM "pgupgrade.sgml">
+<!ENTITY pgxlogdump      SYSTEM "pg_xlogdump.sgml">
 <!ENTITY postgres-fdw    SYSTEM "postgres-fdw.sgml">
 <!ENTITY seg             SYSTEM "seg.sgml">
 <!ENTITY contrib-spi     SYSTEM "contrib-spi.sgml">
@@ -151,14 +148,14 @@
 <!ENTITY test-decoding   SYSTEM "test-decoding.sgml">
 <!ENTITY test-parser     SYSTEM "test-parser.sgml">
 <!ENTITY test-shm-mq     SYSTEM "test-shm-mq.sgml">
-<!ENTITY tsm-system-rows SYSTEM "tsm-system-rows.sgml">
-<!ENTITY tsm-system-time SYSTEM "tsm-system-time.sgml">
+<!ENTITY tsearch2        SYSTEM "tsearch2.sgml">
 <!ENTITY unaccent      SYSTEM "unaccent.sgml">
 <!ENTITY uuid-ossp       SYSTEM "uuid-ossp.sgml">
 <!ENTITY vacuumlo        SYSTEM "vacuumlo.sgml">
 <!ENTITY xml2            SYSTEM "xml2.sgml">
 
 <!-- appendixes -->
+<!ENTITY contacts   SYSTEM "contacts.sgml">
 <!ENTITY datetime   SYSTEM "datetime.sgml">
 <!ENTITY docguide   SYSTEM "docguide.sgml">
 <!ENTITY errcodes   SYSTEM "errcodes.sgml">
@@ -167,25 +164,46 @@
 <!ENTITY sourcerepo SYSTEM "sourcerepo.sgml">
 
 <!ENTITY release    SYSTEM "release.sgml">
-<!ENTITY release-13     SYSTEM "release-13.sgml">
+<!ENTITY release-9.4    SYSTEM "release-9.4.sgml">
+<!ENTITY release-9.3    SYSTEM "release-9.3.sgml">
+<!ENTITY release-9.2    SYSTEM "release-9.2.sgml">
+<!ENTITY release-9.1    SYSTEM "release-9.1.sgml">
+<!ENTITY release-9.0    SYSTEM "release-9.0.sgml">
+<!ENTITY release-8.4    SYSTEM "release-8.4.sgml">
+<!ENTITY release-8.3    SYSTEM "release-8.3.sgml">
+<!ENTITY release-8.2    SYSTEM "release-8.2.sgml">
+<!ENTITY release-8.1    SYSTEM "release-8.1.sgml">
+<!ENTITY release-8.0    SYSTEM "release-8.0.sgml">
+<!ENTITY release-7.4    SYSTEM "release-7.4.sgml">
+<!ENTITY release-old    SYSTEM "release-old.sgml">
 
-<!ENTITY limits     SYSTEM "limits.sgml">
 <!ENTITY acronyms   SYSTEM "acronyms.sgml">
-<!ENTITY glossary   SYSTEM "glossary.sgml">
-<!ENTITY color      SYSTEM "color.sgml">
 
 <!ENTITY features-supported   SYSTEM "features-supported.sgml">
 <!ENTITY features-unsupported SYSTEM "features-unsupported.sgml">
 
 <!ENTITY errcodes-table SYSTEM "errcodes-table.sgml">
-<!ENTITY keywords-table SYSTEM "keywords-table.sgml">
 
 <!-- back matter -->
 <!ENTITY biblio     SYSTEM "biblio.sgml">
+<!ENTITY bookindex  SYSTEM "bookindex.sgml">
 
-<!-- Stubs for removed entries to preserve public links -->
-<!ENTITY obsolete SYSTEM "appendix-obsolete.sgml">
-<!ENTITY obsolete-recovery-config SYSTEM "appendix-obsolete-recovery-config.sgml">
-<!ENTITY obsolete-pgxlogdump SYSTEM "appendix-obsolete-pgxlogdump.sgml">
-<!ENTITY obsolete-pgresetxlog SYSTEM "appendix-obsolete-pgresetxlog.sgml">
-<!ENTITY obsolete-pgreceivexlog SYSTEM "appendix-obsolete-pgreceivexlog.sgml">
+<!--
+ Some parts of the documentation are also source for some plain-text
+ files used during installation.  To selectively ignore or include
+ some parts (e.g., external xref's) when generating these files we use
+ these parameter entities.  See also standalone-install.sgml.
+ -->
+<!ENTITY % standalone-ignore  "INCLUDE">
+<!ENTITY % standalone-include "IGNORE">
+
+<!--
+ By default, no index is included.  Use -i include-index on the command line
+ to include it.
+ -->
+<!ENTITY % include-index "IGNORE">
+
+<!--
+ Create empty index element for processing by XSLT stylesheet.
+ -->
+<!ENTITY % include-xslt-index "IGNORE">

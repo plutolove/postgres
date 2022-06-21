@@ -3,197 +3,171 @@
 # This file is distributed under the same license as the PostgreSQL package.
 #
 # Tomáš Vondra <tv@fuzzy.cz>, 2012, 2013.
+
 msgid ""
 msgstr ""
 "Project-Id-Version: ecpglib-cs (PostgreSQL 9.3)\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@postgresql.org\n"
-"POT-Creation-Date: 2018-07-13 19:38+0000\n"
-"PO-Revision-Date: 2018-07-13 23:44+0200\n"
+"POT-Creation-Date: 2012-09-18 16:40+0000\n"
+"PO-Revision-Date: 2012-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Tomas Vondra <tv@fuzzy.cz>\n"
 "Language-Team: Czech <info@cspug.cx>\n"
 "Language: cs\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"X-Generator: Poedit 2.0.7\n"
 
-#: connect.c:237
+#: connect.c:231
 msgid "empty message text"
 msgstr "prázdný text zprávy"
 
-#: connect.c:401 connect.c:430 connect.c:638
+#: connect.c:384 connect.c:413 connect.c:618
 msgid "<DEFAULT>"
 msgstr "<VÝCHOZÍ>"
 
-#: descriptor.c:834 misc.c:120
+#: descriptor.c:807 misc.c:113
 msgid "NULL"
 msgstr "NULL"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:33
+#: error.c:29
 #, c-format
 msgid "no data found on line %d"
 msgstr "na řádce %d nenalezena žádná data"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:40
+#: error.c:39
 #, c-format
 msgid "out of memory on line %d"
 msgstr "nedostatek paměti na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:47
+#: error.c:49
 #, c-format
 msgid "unsupported type \"%s\" on line %d"
 msgstr "nepodporovaný typ \"%s\" na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:54
+#: error.c:59
 #, c-format
 msgid "too many arguments on line %d"
 msgstr "příliš mnoho argumentů na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:61
+#: error.c:69
 #, c-format
 msgid "too few arguments on line %d"
 msgstr "příliš málo argumentů na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:68
+#: error.c:79
 #, c-format
 msgid "invalid input syntax for type int: \"%s\", on line %d"
 msgstr "chybná vstupní syntaxe pro typ int: \"%s\", na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:75
+#: error.c:89
 #, c-format
 msgid "invalid input syntax for type unsigned int: \"%s\", on line %d"
 msgstr "chybná vstupní syntaxe pro typ unsigned int: \"%s\", na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:82
+#: error.c:99
 #, c-format
 msgid "invalid input syntax for floating-point type: \"%s\", on line %d"
 msgstr "chybná vstupní syntaxe pro typ floating-point: \"%s\", na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:90
+#: error.c:110
 #, c-format
 msgid "invalid syntax for type boolean: \"%s\", on line %d"
 msgstr "chybná vstupní syntaxe pro typ boolean: \"%s\", na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:95
+#: error.c:118
 #, c-format
 msgid "could not convert boolean value: size mismatch, on line %d"
 msgstr "nelze zkonvertovat boolean hodnotu: nesprávná velikost, na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:102
+#: error.c:128
 #, c-format
 msgid "empty query on line %d"
 msgstr "prázdný dotaz na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:109
+#: error.c:138
 #, c-format
 msgid "null value without indicator on line %d"
 msgstr "null hodnota bez indikátoru na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:116
+#: error.c:148
 #, c-format
 msgid "variable does not have an array type on line %d"
 msgstr "proměnná nemá datový typ pole na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:123
+#: error.c:158
 #, c-format
 msgid "data read from server is not an array on line %d"
 msgstr "data načtená ze serveru nejsou pole na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:130
+#: error.c:168
 #, c-format
 msgid "inserting an array of variables is not supported on line %d"
 msgstr "vkládání pole proměnných není podporováno na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:137
+#: error.c:178
 #, c-format
 msgid "connection \"%s\" does not exist on line %d"
 msgstr "spojení \"%s\" neexistuje na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:144
+#: error.c:188
 #, c-format
 msgid "not connected to connection \"%s\" on line %d"
 msgstr "neotevřené spojení \"%s\" na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:151
+#: error.c:198
 #, c-format
 msgid "invalid statement name \"%s\" on line %d"
 msgstr "neplatný název příkazu \"%s\" na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:158
+#: error.c:208
 #, c-format
 msgid "descriptor \"%s\" not found on line %d"
 msgstr "deskriptor \"%s\" nenalezen na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:165
+#: error.c:218
 #, c-format
 msgid "descriptor index out of range on line %d"
 msgstr "index deskriptoru mimo rozsah na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:172
+#: error.c:228
 #, c-format
 msgid "unrecognized descriptor item \"%s\" on line %d"
 msgstr "nerozpoznaná položka deskriptoru \"%s\" na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:179
+#: error.c:238
 #, c-format
 msgid "variable does not have a numeric type on line %d"
 msgstr "proměnná nemá číselný datový typ na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:186
+#: error.c:248
 #, c-format
 msgid "variable does not have a character type on line %d"
 msgstr "proměnná nemá znakový datový typ na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:193
+#: error.c:258
 #, c-format
 msgid "error in transaction processing on line %d"
 msgstr "chyba v transakčním zpracování na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:200
+#: error.c:268
 #, c-format
 msgid "could not connect to database \"%s\" on line %d"
 msgstr "nelze se spojit s databází \"%s\" na řádce %d"
 
-#. translator: this string will be truncated at 149 characters expanded.
-#: error.c:207
+#: error.c:278
 #, c-format
 msgid "SQL error %d on line %d"
 msgstr "SQL chyba %d na řádce %d"
 
-#: error.c:254
+#: error.c:318
 msgid "the connection to the server was lost"
 msgstr "spojení se serverem bylo ztraceno"
 
-#: error.c:347
+#: error.c:405
 #, c-format
 msgid "SQL error: %s\n"
 msgstr "SQL chyba: %s\n"
 
-#: execute.c:1968
+#: execute.c:1921
 msgid "<empty>"
 msgstr "<prázdný>"

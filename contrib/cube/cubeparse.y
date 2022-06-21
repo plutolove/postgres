@@ -4,13 +4,12 @@
 /* NdBox = [(lowerleft),(upperright)] */
 /* [(xLL(1)...xLL(N)),(xUR(1)...xUR(n))] */
 
+#define YYSTYPE char *
+#define YYDEBUG 1
+
 #include "postgres.h"
 
 #include "cubedata.h"
-#include "utils/float.h"
-
-/* All grammar constructs return strings */
-#define YYSTYPE char *
 
 /*
  * Bison doesn't allocate anything that needs to live across parser calls,
@@ -23,12 +22,17 @@
 #define YYMALLOC palloc
 #define YYFREE   pfree
 
+extern int cube_yylex(void);
+
 static char *scanbuf;
 static int	scanbuflen;
 
-static int item_count(const char *s, char delim);
-static NDBOX *write_box(int dim, char *str1, char *str2);
-static NDBOX *write_point_as_box(int dim, char *str);
+extern int	cube_yyparse(NDBOX **result);
+extern void cube_yyerror(NDBOX **result, const char *message);
+
+static int delim_count(char *s, char delim);
+static NDBOX * write_box(unsigned int dim, char *str1, char *str2);
+static NDBOX * write_point_as_box(char *s, int dim);
 
 %}
 
@@ -47,48 +51,47 @@ box: O_BRACKET paren_list COMMA paren_list C_BRACKET
 	{
 		int dim;
 
-		dim = item_count($2, ',');
-		if (item_count($4, ',') != dim)
+		dim = delim_count($2, ',') + 1;
+		if ((delim_count($4, ',') + 1) != dim)
 		{
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("Different point dimensions in (%s) and (%s).",
 							   $2, $4)));
 			YYABORT;
 		}
-		if (dim > CUBE_MAX_DIM)
-		{
+		if (dim > CUBE_MAX_DIM) {
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("A cube cannot have more than %d dimensions.",
 							   CUBE_MAX_DIM)));
 			YYABORT;
 		}
 
 		*result = write_box( dim, $2, $4 );
+
 	}
 
 	| paren_list COMMA paren_list
 	{
 		int dim;
 
-		dim = item_count($1, ',');
-		if (item_count($3, ',') != dim)
-		{
+		dim = delim_count($1, ',') + 1;
+
+		if ( (delim_count($3, ',') + 1) != dim ) {
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("Different point dimensions in (%s) and (%s).",
 							   $1, $3)));
 			YYABORT;
 		}
-		if (dim > CUBE_MAX_DIM)
-		{
+		if (dim > CUBE_MAX_DIM) {
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("A cube cannot have more than %d dimensions.",
 							   CUBE_MAX_DIM)));
 			YYABORT;
@@ -101,46 +104,39 @@ box: O_BRACKET paren_list COMMA paren_list C_BRACKET
 	{
 		int dim;
 
-		dim = item_count($1, ',');
-		if (dim > CUBE_MAX_DIM)
-		{
+		dim = delim_count($1, ',') + 1;
+		if (dim > CUBE_MAX_DIM) {
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("A cube cannot have more than %d dimensions.",
 							   CUBE_MAX_DIM)));
 			YYABORT;
 		}
 
-		*result = write_point_as_box(dim, $1);
+		*result = write_point_as_box($1, dim);
 	}
 
 	| list
 	{
 		int dim;
 
-		dim = item_count($1, ',');
-		if (dim > CUBE_MAX_DIM)
-		{
+		dim = delim_count($1, ',') + 1;
+		if (dim > CUBE_MAX_DIM) {
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for cube"),
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("bad cube representation"),
 					 errdetail("A cube cannot have more than %d dimensions.",
 							   CUBE_MAX_DIM)));
 			YYABORT;
 		}
-
-		*result = write_point_as_box(dim, $1);
+		*result = write_point_as_box($1, dim);
 	}
 	;
 
 paren_list: O_PAREN list C_PAREN
 	{
 		$$ = $2;
-	}
-	| O_PAREN C_PAREN
-	{
-		$$ = pstrdup("");
 	}
 	;
 
@@ -160,30 +156,24 @@ list: CUBEFLOAT
 
 %%
 
-/* This assumes the string has been normalized by productions above */
 static int
-item_count(const char *s, char delim)
+delim_count(char *s, char delim)
 {
-	int			nitems = 0;
+	int			ndelim = 0;
 
-	if (s[0] != '\0')
+	while ((s = strchr(s, delim)) != NULL)
 	{
-		nitems++;
-		while ((s = strchr(s, delim)) != NULL)
-		{
-			nitems++;
-			s++;
-		}
+		ndelim++;
+		s++;
 	}
-	return nitems;
+	return (ndelim);
 }
 
 static NDBOX *
-write_box(int dim, char *str1, char *str2)
+write_box(unsigned int dim, char *str1, char *str2)
 {
 	NDBOX	   *bp;
 	char	   *s;
-	char	   *endptr;
 	int			i;
 	int			size = CUBE_SIZE(dim);
 	bool		point = true;
@@ -193,58 +183,50 @@ write_box(int dim, char *str1, char *str2)
 	SET_DIM(bp, dim);
 
 	s = str1;
-	i = 0;
-	if (dim > 0)
-		bp->x[i++] = float8in_internal(s, &endptr, "cube", str1);
+	bp->x[i=0] = strtod(s, NULL);
 	while ((s = strchr(s, ',')) != NULL)
 	{
-		s++;
-		bp->x[i++] = float8in_internal(s, &endptr, "cube", str1);
+		s++; i++;
+		bp->x[i] = strtod(s, NULL);
 	}
-	Assert(i == dim);
 
 	s = str2;
-	if (dim > 0)
-	{
-		bp->x[i] = float8in_internal(s, &endptr, "cube", str2);
-		/* code this way to do right thing with NaN */
-		point &= (bp->x[i] == bp->x[0]);
-		i++;
-	}
+	bp->x[i=dim] = strtod(s, NULL);
+	if (bp->x[dim] != bp->x[0])
+		point = false;
 	while ((s = strchr(s, ',')) != NULL)
 	{
-		s++;
-		bp->x[i] = float8in_internal(s, &endptr, "cube", str2);
-		point &= (bp->x[i] == bp->x[i - dim]);
-		i++;
+		s++; i++;
+		bp->x[i] = strtod(s, NULL);
+		if (bp->x[i] != bp->x[i-dim])
+			point = false;
 	}
-	Assert(i == dim * 2);
 
 	if (point)
 	{
 		/*
 		 * The value turned out to be a point, ie. all the upper-right
 		 * coordinates were equal to the lower-left coordinates. Resize the
-		 * cube we constructed.  Note: we don't bother to repalloc() it
-		 * smaller, as it's unlikely that the tiny amount of memory freed
-		 * that way would be useful, and the output is always short-lived.
+		 * the cube we constructed. Note: we don't bother to repalloc() it
+		 * smaller, it's unlikely that the tiny amount of memory free'd that
+		 * way would be useful.
 		 */
 		size = POINT_SIZE(dim);
 		SET_VARSIZE(bp, size);
 		SET_POINT_BIT(bp);
 	}
 
-	return bp;
+	return(bp);
 }
 
 static NDBOX *
-write_point_as_box(int dim, char *str)
+write_point_as_box(char *str, int dim)
 {
 	NDBOX		*bp;
 	int			i,
 				size;
-	char	   *s;
-	char	   *endptr;
+	double		x;
+	char		*s = str;
 
 	size = POINT_SIZE(dim);
 	bp = palloc0(size);
@@ -252,18 +234,17 @@ write_point_as_box(int dim, char *str)
 	SET_DIM(bp, dim);
 	SET_POINT_BIT(bp);
 
-	s = str;
 	i = 0;
-	if (dim > 0)
-		bp->x[i++] = float8in_internal(s, &endptr, "cube", str);
+	x = strtod(s, NULL);
+	bp->x[0] = x;
 	while ((s = strchr(s, ',')) != NULL)
 	{
-		s++;
-		bp->x[i++] = float8in_internal(s, &endptr, "cube", str);
+		s++; i++;
+		x = strtod(s, NULL);
+		bp->x[i] = x;
 	}
-	Assert(i == dim);
 
-	return bp;
+	return(bp);
 }
 
 #include "cubescan.c"

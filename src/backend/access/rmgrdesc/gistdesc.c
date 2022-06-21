@@ -3,7 +3,7 @@
  * gistdesc.c
  *	  rmgr descriptor routines for access/gist/gistxlog.c
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,104 +14,55 @@
  */
 #include "postgres.h"
 
-#include "access/gistxlog.h"
+#include "access/gist_private.h"
 #include "lib/stringinfo.h"
 #include "storage/relfilenode.h"
 
 static void
+out_target(StringInfo buf, RelFileNode node)
+{
+	appendStringInfo(buf, "rel %u/%u/%u",
+					 node.spcNode, node.dbNode, node.relNode);
+}
+
+static void
 out_gistxlogPageUpdate(StringInfo buf, gistxlogPageUpdate *xlrec)
 {
-}
-
-static void
-out_gistxlogPageReuse(StringInfo buf, gistxlogPageReuse *xlrec)
-{
-	appendStringInfo(buf, "rel %u/%u/%u; blk %u; latestRemovedXid %u:%u",
-					 xlrec->node.spcNode, xlrec->node.dbNode,
-					 xlrec->node.relNode, xlrec->block,
-					 EpochFromFullTransactionId(xlrec->latestRemovedFullXid),
-					 XidFromFullTransactionId(xlrec->latestRemovedFullXid));
-}
-
-static void
-out_gistxlogDelete(StringInfo buf, gistxlogDelete *xlrec)
-{
-	appendStringInfo(buf, "delete: latestRemovedXid %u, nitems: %u",
-					 xlrec->latestRemovedXid, xlrec->ntodelete);
-
+	out_target(buf, xlrec->node);
+	appendStringInfo(buf, "; block number %u", xlrec->blkno);
 }
 
 static void
 out_gistxlogPageSplit(StringInfo buf, gistxlogPageSplit *xlrec)
 {
-	appendStringInfo(buf, "page_split: splits to %d pages",
-					 xlrec->npage);
-}
-
-static void
-out_gistxlogPageDelete(StringInfo buf, gistxlogPageDelete *xlrec)
-{
-	appendStringInfo(buf, "deleteXid %u:%u; downlink %u",
-					 EpochFromFullTransactionId(xlrec->deleteXid),
-					 XidFromFullTransactionId(xlrec->deleteXid),
-					 xlrec->downlinkOffset);
+	appendStringInfoString(buf, "page_split: ");
+	out_target(buf, xlrec->node);
+	appendStringInfo(buf, "; block number %u splits to %d pages",
+					 xlrec->origblkno, xlrec->npage);
 }
 
 void
-gist_desc(StringInfo buf, XLogReaderState *record)
+gist_desc(StringInfo buf, uint8 xl_info, char *rec)
 {
-	char	   *rec = XLogRecGetData(record);
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = xl_info & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
 		case XLOG_GIST_PAGE_UPDATE:
+			appendStringInfoString(buf, "page_update: ");
 			out_gistxlogPageUpdate(buf, (gistxlogPageUpdate *) rec);
-			break;
-		case XLOG_GIST_PAGE_REUSE:
-			out_gistxlogPageReuse(buf, (gistxlogPageReuse *) rec);
-			break;
-		case XLOG_GIST_DELETE:
-			out_gistxlogDelete(buf, (gistxlogDelete *) rec);
 			break;
 		case XLOG_GIST_PAGE_SPLIT:
 			out_gistxlogPageSplit(buf, (gistxlogPageSplit *) rec);
 			break;
-		case XLOG_GIST_PAGE_DELETE:
-			out_gistxlogPageDelete(buf, (gistxlogPageDelete *) rec);
+		case XLOG_GIST_CREATE_INDEX:
+			appendStringInfo(buf, "create_index: rel %u/%u/%u",
+							 ((RelFileNode *) rec)->spcNode,
+							 ((RelFileNode *) rec)->dbNode,
+							 ((RelFileNode *) rec)->relNode);
 			break;
-		case XLOG_GIST_ASSIGN_LSN:
-			/* No details to write out */
-			break;
-	}
-}
-
-const char *
-gist_identify(uint8 info)
-{
-	const char *id = NULL;
-
-	switch (info & ~XLR_INFO_MASK)
-	{
-		case XLOG_GIST_PAGE_UPDATE:
-			id = "PAGE_UPDATE";
-			break;
-		case XLOG_GIST_DELETE:
-			id = "DELETE";
-			break;
-		case XLOG_GIST_PAGE_REUSE:
-			id = "PAGE_REUSE";
-			break;
-		case XLOG_GIST_PAGE_SPLIT:
-			id = "PAGE_SPLIT";
-			break;
-		case XLOG_GIST_PAGE_DELETE:
-			id = "PAGE_DELETE";
-			break;
-		case XLOG_GIST_ASSIGN_LSN:
-			id = "ASSIGN_LSN";
+		default:
+			appendStringInfo(buf, "unknown gist op code %u", info);
 			break;
 	}
-
-	return id;
 }

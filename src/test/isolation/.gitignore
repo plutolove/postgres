@@ -8,5 +8,5 @@
 
 # Generated subdirectories
 /results/
-/output_iso/
-/tmp_check_iso/
+/log/
+/tmp_check/

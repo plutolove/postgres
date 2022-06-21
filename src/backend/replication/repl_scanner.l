@@ -4,7 +4,7 @@
  * repl_scanner.l
  *	  a lexical scanner for the replication commands
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -37,8 +37,6 @@ static void startlit(void);
 static char *litbufdup(void);
 static void addlit(char *ytext, int yleng);
 static void addlitchar(unsigned char ychar);
-
-/* LCOV_EXCL_START */
 
 %}
 
@@ -85,30 +83,19 @@ identifier		{ident_start}{ident_cont}*
 BASE_BACKUP			{ return K_BASE_BACKUP; }
 FAST			{ return K_FAST; }
 IDENTIFY_SYSTEM		{ return K_IDENTIFY_SYSTEM; }
-SHOW		{ return K_SHOW; }
 LABEL			{ return K_LABEL; }
 NOWAIT			{ return K_NOWAIT; }
 PROGRESS			{ return K_PROGRESS; }
 MAX_RATE		{ return K_MAX_RATE; }
 WAL			{ return K_WAL; }
-TABLESPACE_MAP			{ return K_TABLESPACE_MAP; }
-NOVERIFY_CHECKSUMS	{ return K_NOVERIFY_CHECKSUMS; }
 TIMELINE			{ return K_TIMELINE; }
 START_REPLICATION	{ return K_START_REPLICATION; }
 CREATE_REPLICATION_SLOT		{ return K_CREATE_REPLICATION_SLOT; }
 DROP_REPLICATION_SLOT		{ return K_DROP_REPLICATION_SLOT; }
 TIMELINE_HISTORY	{ return K_TIMELINE_HISTORY; }
 PHYSICAL			{ return K_PHYSICAL; }
-RESERVE_WAL			{ return K_RESERVE_WAL; }
 LOGICAL				{ return K_LOGICAL; }
 SLOT				{ return K_SLOT; }
-TEMPORARY			{ return K_TEMPORARY; }
-EXPORT_SNAPSHOT		{ return K_EXPORT_SNAPSHOT; }
-NOEXPORT_SNAPSHOT	{ return K_NOEXPORT_SNAPSHOT; }
-USE_SNAPSHOT		{ return K_USE_SNAPSHOT; }
-WAIT				{ return K_WAIT; }
-MANIFEST			{ return K_MANIFEST; }
-MANIFEST_CHECKSUMS	{ return K_MANIFEST_CHECKSUMS; }
 
 ","				{ return ','; }
 ";"				{ return ';'; }
@@ -187,11 +174,12 @@ MANIFEST_CHECKSUMS	{ return K_MANIFEST_CHECKSUMS; }
 				}
 
 .				{
-					return T_WORD;
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("syntax error: unexpected character \"%s\"", yytext)));
 				}
 %%
 
-/* LCOV_EXCL_STOP */
 
 static void
 startlit(void)
@@ -217,7 +205,7 @@ addlitchar(unsigned char ychar)
 	appendStringInfoChar(&litbuf, ychar);
 }
 
-void
+void __attribute__((noreturn))
 yyerror(const char *message)
 {
 	ereport(ERROR,
@@ -248,7 +236,7 @@ replication_scanner_init(const char *str)
 }
 
 void
-replication_scanner_finish(void)
+replication_scanner_finish()
 {
 	yy_delete_buffer(scanbufhandle);
 	scanbufhandle = NULL;

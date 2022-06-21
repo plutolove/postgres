@@ -4,7 +4,7 @@
  *
  *	Parallel support for pg_dump and pg_restore
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -20,101 +20,59 @@
  * the desired number of worker processes, which each enter WaitForCommands().
  *
  * The master process dispatches an individual work item to one of the worker
- * processes in DispatchJobForTocEntry().  We send a command string such as
- * "DUMP 1234" or "RESTORE 1234", where 1234 is the TocEntry ID.
+ * processes in DispatchJobForTocEntry().  That calls
+ * AH->MasterStartParallelItemPtr, a routine of the output format.  This
+ * function's arguments are the parents archive handle AH (containing the full
+ * catalog information), the TocEntry that the worker should work on and a
+ * T_Action value indicating whether this is a backup or a restore task.  The
+ * function simply converts the TocEntry assignment into a command string that
+ * is then sent over to the worker process. In the simplest case that would be
+ * something like "DUMP 1234", with 1234 being the TocEntry id.
+ *
  * The worker process receives and decodes the command and passes it to the
  * routine pointed to by AH->WorkerJobDumpPtr or AH->WorkerJobRestorePtr,
  * which are routines of the current archive format.  That routine performs
- * the required action (dump or restore) and returns an integer status code.
- * This is passed back to the master where we pass it to the
- * ParallelCompletionPtr callback function that was passed to
- * DispatchJobForTocEntry().  The callback function does state updating
- * for the master control logic in pg_backup_archiver.c.
+ * the required action (dump or restore) and returns a malloc'd status string.
+ * The status string is passed back to the master where it is interpreted by
+ * AH->MasterEndParallelItemPtr, another format-specific routine.  That
+ * function can update state or catalog information on the master's side,
+ * depending on the reply from the worker process.  In the end it returns a
+ * status code, which is 0 for successful execution.
  *
- * In principle additional archive-format-specific information might be needed
- * in commands or worker status responses, but so far that hasn't proved
- * necessary, since workers have full copies of the ArchiveHandle/TocEntry
- * data structures.  Remember that we have forked off the workers only after
- * we have read in the catalog.  That's why our worker processes can also
- * access the catalog information.  (In the Windows case, the workers are
- * threads in the same process.  To avoid problems, they work with cloned
- * copies of the Archive data structure; see RunWorker().)
+ * Remember that we have forked off the workers only after we have read in
+ * the catalog.  That's why our worker processes can also access the catalog
+ * information.  (In the Windows case, the workers are threads in the same
+ * process.  To avoid problems, they work with cloned copies of the Archive
+ * data structure; see RunWorker().)
  *
  * In the master process, the workerStatus field for each worker has one of
  * the following values:
- *		WRKR_NOT_STARTED: we've not yet forked this worker
  *		WRKR_IDLE: it's waiting for a command
- *		WRKR_WORKING: it's working on a command
+ *		WRKR_WORKING: it's been sent a command
+ *		WRKR_FINISHED: it's returned a result
  *		WRKR_TERMINATED: process ended
- * The pstate->te[] entry for each worker is valid when it's in WRKR_WORKING
- * state, and must be NULL in other states.
+ * The FINISHED state indicates that the worker is idle, but we've not yet
+ * dealt with the status code it returned from the prior command.
+ * ReapWorkerStatus() extracts the unhandled command status value and sets
+ * the workerStatus back to WRKR_IDLE.
  */
 
 #include "postgres_fe.h"
 
+#include "pg_backup_utils.h"
+#include "parallel.h"
+
 #ifndef WIN32
+#include <sys/types.h>
 #include <sys/wait.h>
-#include <signal.h>
+#include "signal.h"
 #include <unistd.h>
 #include <fcntl.h>
 #endif
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
-
-#include "fe_utils/string_utils.h"
-#include "parallel.h"
-#include "pg_backup_utils.h"
-#include "port/pg_bswap.h"
 
 /* Mnemonic macros for indexing the fd array returned by pipe(2) */
 #define PIPE_READ							0
 #define PIPE_WRITE							1
-
-#define NO_SLOT (-1)			/* Failure result for GetIdleWorker() */
-
-/* Worker process statuses */
-typedef enum
-{
-	WRKR_NOT_STARTED = 0,
-	WRKR_IDLE,
-	WRKR_WORKING,
-	WRKR_TERMINATED
-} T_WorkerStatus;
-
-#define WORKER_IS_RUNNING(workerStatus) \
-	((workerStatus) == WRKR_IDLE || (workerStatus) == WRKR_WORKING)
-
-/*
- * Private per-parallel-worker state (typedef for this is in parallel.h).
- *
- * Much of this is valid only in the master process (or, on Windows, should
- * be touched only by the master thread).  But the AH field should be touched
- * only by workers.  The pipe descriptors are valid everywhere.
- */
-struct ParallelSlot
-{
-	T_WorkerStatus workerStatus;	/* see enum above */
-
-	/* These fields are valid if workerStatus == WRKR_WORKING: */
-	ParallelCompletionPtr callback; /* function to call on completion */
-	void	   *callback_data;	/* passthrough data for it */
-
-	ArchiveHandle *AH;			/* Archive data worker is using */
-
-	int			pipeRead;		/* master's end of the pipes */
-	int			pipeWrite;
-	int			pipeRevRead;	/* child's end of the pipes */
-	int			pipeRevWrite;
-
-	/* Child process/thread identity info: */
-#ifdef WIN32
-	uintptr_t	hThread;
-	unsigned int threadId;
-#else
-	pid_t		pid;
-#endif
-};
 
 #ifdef WIN32
 
@@ -124,8 +82,9 @@ struct ParallelSlot
  */
 typedef struct
 {
-	ArchiveHandle *AH;			/* master database connection */
-	ParallelSlot *slot;			/* this worker's parallel slot */
+	ArchiveHandle *AH;
+	ParallelSlot *slot;
+	RestoreOptions *ropt;
 } WorkerInfo;
 
 /* Windows implementation of pipe access */
@@ -140,7 +99,7 @@ static int	piperead(int s, char *buf, int len);
 #define piperead(a,b,c)		read(a,b,c)
 #define pipewrite(a,b,c)	write(a,b,c)
 
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 /*
  * State info for archive_close_connection() shutdown callback.
@@ -199,7 +158,9 @@ static DWORD tls_index;
 /* globally visible variables (needed by exit_nicely) */
 bool		parallel_init_done = false;
 DWORD		mainThreadId;
-#endif							/* WIN32 */
+#endif   /* WIN32 */
+
+static const char *modulename = gettext_noop("parallel archiver");
 
 /* Local function prototypes */
 static ParallelSlot *GetMyPSlot(ParallelState *pstate);
@@ -209,25 +170,37 @@ static void WaitForTerminatingWorkers(ParallelState *pstate);
 static void setup_cancel_handler(void);
 static void set_cancel_pstate(ParallelState *pstate);
 static void set_cancel_slot_archive(ParallelSlot *slot, ArchiveHandle *AH);
-static void RunWorker(ArchiveHandle *AH, ParallelSlot *slot);
-static int	GetIdleWorker(ParallelState *pstate);
+static void RunWorker(ArchiveHandle *AH, ParallelSlot *slot, RestoreOptions *ropt);
 static bool HasEveryWorkerTerminated(ParallelState *pstate);
 static void lockTableForWorker(ArchiveHandle *AH, TocEntry *te);
 static void WaitForCommands(ArchiveHandle *AH, int pipefd[2]);
-static bool ListenToWorkers(ArchiveHandle *AH, ParallelState *pstate,
-							bool do_wait);
 static char *getMessageFromMaster(int pipefd[2]);
 static void sendMessageToMaster(int pipefd[2], const char *str);
 static int	select_loop(int maxFd, fd_set *workerset);
 static char *getMessageFromWorker(ParallelState *pstate,
-								  bool do_wait, int *worker);
+					 bool do_wait, int *worker);
 static void sendMessageToWorker(ParallelState *pstate,
-								int worker, const char *str);
+					int worker, const char *str);
 static char *readMessageFromPipe(int fd);
 
 #define messageStartsWith(msg, prefix) \
 	(strncmp(msg, prefix, strlen(prefix)) == 0)
+#define messageEquals(msg, pattern) \
+	(strcmp(msg, pattern) == 0)
 
+
+/*
+ * Shutdown callback to clean up socket access
+ */
+#ifdef WIN32
+static void
+shutdown_parallel_dump_utils(int code, void *unused)
+{
+	/* Call the cleanup function only from the main thread */
+	if (mainThreadId == GetCurrentThreadId())
+		WSACleanup();
+}
+#endif
 
 /*
  * Initialize parallel dump support --- should be called early in process
@@ -251,10 +224,11 @@ init_parallel_dump_utils(void)
 		err = WSAStartup(MAKEWORD(2, 2), &wsaData);
 		if (err != 0)
 		{
-			pg_log_error("WSAStartup failed: %d", err);
+			fprintf(stderr, _("%s: WSAStartup failed: %d\n"), progname, err);
 			exit_nicely(1);
 		}
-
+		/* ... and arrange to shut it down at exit */
+		on_exit_nicely(shutdown_parallel_dump_utils, NULL);
 		parallel_init_done = true;
 	}
 #endif
@@ -323,7 +297,7 @@ getThreadLocalPQExpBuffer(void)
 
 	return id_return;
 }
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 /*
  * pg_dump and pg_restore call this to register the cleanup handler
@@ -371,8 +345,8 @@ archive_close_connection(int code, void *arg)
 			 * fail to detect it because there would be no EOF condition on
 			 * the other end of the pipe.)
 			 */
-			if (slot->AH)
-				DisconnectDatabase(&(slot->AH->public));
+			if (slot->args->AH)
+				DisconnectDatabase(&(slot->args->AH->public));
 
 #ifdef WIN32
 			closesocket(slot->pipeRevRead);
@@ -392,8 +366,8 @@ archive_close_connection(int code, void *arg)
  * Forcibly shut down any remaining workers, waiting for them to finish.
  *
  * Note that we don't expect to come here during normal exit (the workers
- * should be long gone, and the ParallelState too).  We're only here in a
- * fatal() situation, so intervening to cancel active commands is
+ * should be long gone, and the ParallelState too).  We're only here in an
+ * exit_horribly() situation, so intervening to cancel active commands is
  * appropriate.
  */
 static void
@@ -403,9 +377,7 @@ ShutdownWorkersHard(ParallelState *pstate)
 
 	/*
 	 * Close our write end of the sockets so that any workers waiting for
-	 * commands know they can exit.  (Note: some of the pipeWrite fields might
-	 * still be zero, if we failed to initialize all the workers.  Hence, just
-	 * ignore errors here.)
+	 * commands know they can exit.
 	 */
 	for (i = 0; i < pstate->numWorkers; i++)
 		closesocket(pstate->parallelSlot[i].pipeWrite);
@@ -431,7 +403,7 @@ ShutdownWorkersHard(ParallelState *pstate)
 	EnterCriticalSection(&signal_info_lock);
 	for (i = 0; i < pstate->numWorkers; i++)
 	{
-		ArchiveHandle *AH = pstate->parallelSlot[i].AH;
+		ArchiveHandle *AH = pstate->parallelSlot[i].args->AH;
 		char		errbuf[1];
 
 		if (AH != NULL && AH->connCancel != NULL)
@@ -479,7 +451,7 @@ WaitForTerminatingWorkers(ParallelState *pstate)
 
 		for (j = 0; j < pstate->numWorkers; j++)
 		{
-			if (WORKER_IS_RUNNING(pstate->parallelSlot[j].workerStatus))
+			if (pstate->parallelSlot[j].workerStatus != WRKR_TERMINATED)
 			{
 				lpHandles[nrun] = (HANDLE) pstate->parallelSlot[j].hThread;
 				nrun++;
@@ -502,12 +474,11 @@ WaitForTerminatingWorkers(ParallelState *pstate)
 				break;
 			}
 		}
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
-		/* On all platforms, update workerStatus and te[] as well */
+		/* On all platforms, update workerStatus as well */
 		Assert(j < pstate->numWorkers);
 		slot->workerStatus = WRKR_TERMINATED;
-		pstate->te[j] = NULL;
 	}
 }
 
@@ -599,11 +570,8 @@ sigTermHandler(SIGNAL_ARGS)
 		write_stderr("terminated by user\n");
 	}
 
-	/*
-	 * And die, using _exit() not exit() because the latter will invoke atexit
-	 * handlers that can fail if we interrupted related code.
-	 */
-	_exit(1);
+	/* And die. */
+	exit(1);
 }
 
 /*
@@ -662,7 +630,7 @@ consoleHandler(DWORD dwCtrlType)
 			for (i = 0; i < signal_info.pstate->numWorkers; i++)
 			{
 				ParallelSlot *slot = &(signal_info.pstate->parallelSlot[i]);
-				ArchiveHandle *AH = slot->AH;
+				ArchiveHandle *AH = slot->args->AH;
 				HANDLE		hThread = (HANDLE) slot->hThread;
 
 				/*
@@ -690,7 +658,7 @@ consoleHandler(DWORD dwCtrlType)
 
 		/*
 		 * Report we're quitting, using nothing more complicated than
-		 * write(2).  (We might be able to get away with using pg_log_*()
+		 * write(2).  (We might be able to get away with using write_msg()
 		 * here, but since we terminated other threads uncleanly above, it
 		 * seems better to assume as little as possible.)
 		 */
@@ -722,7 +690,7 @@ setup_cancel_handler(void)
 	}
 }
 
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 
 /*
@@ -817,7 +785,7 @@ set_cancel_slot_archive(ParallelSlot *slot, ArchiveHandle *AH)
 	EnterCriticalSection(&signal_info_lock);
 #endif
 
-	slot->AH = AH;
+	slot->args->AH = AH;
 
 #ifdef WIN32
 	LeaveCriticalSection(&signal_info_lock);
@@ -831,7 +799,7 @@ set_cancel_slot_archive(ParallelSlot *slot, ArchiveHandle *AH)
  * upon return.
  */
 static void
-RunWorker(ArchiveHandle *AH, ParallelSlot *slot)
+RunWorker(ArchiveHandle *AH, ParallelSlot *slot, RestoreOptions *ropt)
 {
 	int			pipefd[2];
 
@@ -856,7 +824,7 @@ RunWorker(ArchiveHandle *AH, ParallelSlot *slot)
 	/*
 	 * Call the setup worker function that's defined in the ArchiveHandle.
 	 */
-	(AH->SetupWorkerPtr) ((Archive *) AH);
+	(AH->SetupWorkerPtr) ((Archive *) AH, ropt);
 
 	/*
 	 * Execute commands until done.
@@ -880,18 +848,19 @@ init_spawned_worker_win32(WorkerInfo *wi)
 {
 	ArchiveHandle *AH = wi->AH;
 	ParallelSlot *slot = wi->slot;
+	RestoreOptions *ropt = wi->ropt;
 
 	/* Don't need WorkerInfo anymore */
 	free(wi);
 
 	/* Run the worker ... */
-	RunWorker(AH, slot);
+	RunWorker(AH, slot, ropt);
 
 	/* Exit the thread */
 	_endthreadex(0);
 	return 0;
 }
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 /*
  * This function starts a parallel dump or restore by spawning off the worker
@@ -899,27 +868,24 @@ init_spawned_worker_win32(WorkerInfo *wi)
  * workers are created with fork().
  */
 ParallelState *
-ParallelBackupStart(ArchiveHandle *AH)
+ParallelBackupStart(ArchiveHandle *AH, RestoreOptions *ropt)
 {
 	ParallelState *pstate;
 	int			i;
+	const size_t slotSize = AH->public.numWorkers * sizeof(ParallelSlot);
 
 	Assert(AH->public.numWorkers > 0);
 
 	pstate = (ParallelState *) pg_malloc(sizeof(ParallelState));
 
 	pstate->numWorkers = AH->public.numWorkers;
-	pstate->te = NULL;
 	pstate->parallelSlot = NULL;
 
 	if (AH->public.numWorkers == 1)
 		return pstate;
 
-	/* Create status arrays, being sure to initialize all fields to 0 */
-	pstate->te = (TocEntry **)
-		pg_malloc0(pstate->numWorkers * sizeof(TocEntry *));
-	pstate->parallelSlot = (ParallelSlot *)
-		pg_malloc0(pstate->numWorkers * sizeof(ParallelSlot));
+	pstate->parallelSlot = (ParallelSlot *) pg_malloc(slotSize);
+	memset((void *) pstate->parallelSlot, 0, slotSize);
 
 #ifdef WIN32
 	/* Make fmtId() and fmtQualifiedId() use thread-local storage */
@@ -961,7 +927,14 @@ ParallelBackupStart(ArchiveHandle *AH)
 
 		/* Create communication pipes for this worker */
 		if (pgpipe(pipeMW) < 0 || pgpipe(pipeWM) < 0)
-			fatal("could not create communication channels: %m");
+			exit_horribly(modulename,
+						  "could not create communication channels: %s\n",
+						  strerror(errno));
+
+		slot->workerStatus = WRKR_IDLE;
+		slot->args = (ParallelArgs *) pg_malloc(sizeof(ParallelArgs));
+		slot->args->AH = NULL;
+		slot->args->te = NULL;
 
 		/* master's ends of the pipes */
 		slot->pipeRead = pipeWM[PIPE_READ];
@@ -976,11 +949,11 @@ ParallelBackupStart(ArchiveHandle *AH)
 
 		wi->AH = AH;
 		wi->slot = slot;
+		wi->ropt = ropt;
 
 		handle = _beginthreadex(NULL, 0, (void *) &init_spawned_worker_win32,
 								wi, 0, &(slot->threadId));
 		slot->hThread = handle;
-		slot->workerStatus = WRKR_IDLE;
 #else							/* !WIN32 */
 		pid = fork();
 		if (pid == 0)
@@ -1010,7 +983,7 @@ ParallelBackupStart(ArchiveHandle *AH)
 			}
 
 			/* Run the worker ... */
-			RunWorker(AH, slot);
+			RunWorker(AH, slot, ropt);
 
 			/* We can just exit(0) when done */
 			exit(0);
@@ -1018,18 +991,19 @@ ParallelBackupStart(ArchiveHandle *AH)
 		else if (pid < 0)
 		{
 			/* fork failed */
-			fatal("could not create worker process: %m");
+			exit_horribly(modulename,
+						  "could not create worker process: %s\n",
+						  strerror(errno));
 		}
 
 		/* In Master after successful fork */
 		slot->pid = pid;
-		slot->workerStatus = WRKR_IDLE;
 
 		/* close read end of Master -> Worker */
 		closesocket(pipeMW[PIPE_READ]);
 		/* close write end of Worker -> Master */
 		closesocket(pipeWM[PIPE_WRITE]);
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 	}
 
 	/*
@@ -1090,154 +1064,43 @@ ParallelBackupEnd(ArchiveHandle *AH, ParallelState *pstate)
 	set_cancel_pstate(NULL);
 
 	/* Release state (mere neatnik-ism, since we're about to terminate) */
-	free(pstate->te);
 	free(pstate->parallelSlot);
 	free(pstate);
 }
 
 /*
- * These next four functions handle construction and parsing of the command
- * strings and response strings for parallel workers.
- *
- * Currently, these can be the same regardless of which archive format we are
- * processing.  In future, we might want to let format modules override these
- * functions to add format-specific data to a command or response.
- */
-
-/*
- * buildWorkerCommand: format a command string to send to a worker.
- *
- * The string is built in the caller-supplied buffer of size buflen.
- */
-static void
-buildWorkerCommand(ArchiveHandle *AH, TocEntry *te, T_Action act,
-				   char *buf, int buflen)
-{
-	if (act == ACT_DUMP)
-		snprintf(buf, buflen, "DUMP %d", te->dumpId);
-	else if (act == ACT_RESTORE)
-		snprintf(buf, buflen, "RESTORE %d", te->dumpId);
-	else
-		Assert(false);
-}
-
-/*
- * parseWorkerCommand: interpret a command string in a worker.
- */
-static void
-parseWorkerCommand(ArchiveHandle *AH, TocEntry **te, T_Action *act,
-				   const char *msg)
-{
-	DumpId		dumpId;
-	int			nBytes;
-
-	if (messageStartsWith(msg, "DUMP "))
-	{
-		*act = ACT_DUMP;
-		sscanf(msg, "DUMP %d%n", &dumpId, &nBytes);
-		Assert(nBytes == strlen(msg));
-		*te = getTocEntryByDumpId(AH, dumpId);
-		Assert(*te != NULL);
-	}
-	else if (messageStartsWith(msg, "RESTORE "))
-	{
-		*act = ACT_RESTORE;
-		sscanf(msg, "RESTORE %d%n", &dumpId, &nBytes);
-		Assert(nBytes == strlen(msg));
-		*te = getTocEntryByDumpId(AH, dumpId);
-		Assert(*te != NULL);
-	}
-	else
-		fatal("unrecognized command received from master: \"%s\"",
-			  msg);
-}
-
-/*
- * buildWorkerResponse: format a response string to send to the master.
- *
- * The string is built in the caller-supplied buffer of size buflen.
- */
-static void
-buildWorkerResponse(ArchiveHandle *AH, TocEntry *te, T_Action act, int status,
-					char *buf, int buflen)
-{
-	snprintf(buf, buflen, "OK %d %d %d",
-			 te->dumpId,
-			 status,
-			 status == WORKER_IGNORED_ERRORS ? AH->public.n_errors : 0);
-}
-
-/*
- * parseWorkerResponse: parse the status message returned by a worker.
- *
- * Returns the integer status code, and may update fields of AH and/or te.
- */
-static int
-parseWorkerResponse(ArchiveHandle *AH, TocEntry *te,
-					const char *msg)
-{
-	DumpId		dumpId;
-	int			nBytes,
-				n_errors;
-	int			status = 0;
-
-	if (messageStartsWith(msg, "OK "))
-	{
-		sscanf(msg, "OK %d %d %d%n", &dumpId, &status, &n_errors, &nBytes);
-
-		Assert(dumpId == te->dumpId);
-		Assert(nBytes == strlen(msg));
-
-		AH->public.n_errors += n_errors;
-	}
-	else
-		fatal("invalid message received from worker: \"%s\"",
-			  msg);
-
-	return status;
-}
-
-/*
- * Dispatch a job to some free worker.
+ * Dispatch a job to some free worker (caller must ensure there is one!)
  *
  * te is the TocEntry to be processed, act is the action to be taken on it.
- * callback is the function to call on completion of the job.
- *
- * If no worker is currently available, this will block, and previously
- * registered callback functions may be called.
  */
 void
-DispatchJobForTocEntry(ArchiveHandle *AH,
-					   ParallelState *pstate,
-					   TocEntry *te,
-					   T_Action act,
-					   ParallelCompletionPtr callback,
-					   void *callback_data)
+DispatchJobForTocEntry(ArchiveHandle *AH, ParallelState *pstate, TocEntry *te,
+					   T_Action act)
 {
 	int			worker;
-	char		buf[256];
+	char	   *arg;
 
-	/* Get a worker, waiting if none are idle */
-	while ((worker = GetIdleWorker(pstate)) == NO_SLOT)
-		WaitForWorkers(AH, pstate, WFW_ONE_IDLE);
+	/* our caller makes sure that at least one worker is idle */
+	worker = GetIdleWorker(pstate);
+	Assert(worker != NO_SLOT);
 
 	/* Construct and send command string */
-	buildWorkerCommand(AH, te, act, buf, sizeof(buf));
+	arg = (AH->MasterStartParallelItemPtr) (AH, te, act);
 
-	sendMessageToWorker(pstate, worker, buf);
+	sendMessageToWorker(pstate, worker, arg);
+
+	/* XXX aren't we leaking string here? (no, because it's static. Ick.) */
 
 	/* Remember worker is busy, and which TocEntry it's working on */
 	pstate->parallelSlot[worker].workerStatus = WRKR_WORKING;
-	pstate->parallelSlot[worker].callback = callback;
-	pstate->parallelSlot[worker].callback_data = callback_data;
-	pstate->te[worker] = te;
+	pstate->parallelSlot[worker].args->te = te;
 }
 
 /*
  * Find an idle worker and return its slot number.
  * Return NO_SLOT if none are idle.
  */
-static int
+int
 GetIdleWorker(ParallelState *pstate)
 {
 	int			i;
@@ -1251,7 +1114,7 @@ GetIdleWorker(ParallelState *pstate)
 }
 
 /*
- * Return true iff no worker is running.
+ * Return true iff every worker is in the WRKR_TERMINATED state.
  */
 static bool
 HasEveryWorkerTerminated(ParallelState *pstate)
@@ -1260,7 +1123,7 @@ HasEveryWorkerTerminated(ParallelState *pstate)
 
 	for (i = 0; i < pstate->numWorkers; i++)
 	{
-		if (WORKER_IS_RUNNING(pstate->parallelSlot[i].workerStatus))
+		if (pstate->parallelSlot[i].workerStatus != WRKR_TERMINATED)
 			return false;
 	}
 	return true;
@@ -1315,7 +1178,7 @@ lockTableForWorker(ArchiveHandle *AH, TocEntry *te)
 
 	query = createPQExpBuffer();
 
-	qualId = fmtQualifiedId(te->namespace, te->tag);
+	qualId = fmtQualifiedId(AH->public.remoteVersion, te->namespace, te->tag);
 
 	appendPQExpBuffer(query, "LOCK TABLE %s IN ACCESS SHARE MODE NOWAIT",
 					  qualId);
@@ -1323,10 +1186,11 @@ lockTableForWorker(ArchiveHandle *AH, TocEntry *te)
 	res = PQexec(AH->connection, query->data);
 
 	if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
-		fatal("could not obtain lock on relation \"%s\"\n"
-			  "This usually means that someone requested an ACCESS EXCLUSIVE lock "
+		exit_horribly(modulename,
+					  "could not obtain lock on relation \"%s\"\n"
+		"This usually means that someone requested an ACCESS EXCLUSIVE lock "
 			  "on the table after the pg_dump parent process had gotten the "
-			  "initial ACCESS SHARE lock on the table.", qualId);
+					  "initial ACCESS SHARE lock on the table.\n", qualId);
 
 	PQclear(res);
 	destroyPQExpBuffer(query);
@@ -1341,10 +1205,10 @@ static void
 WaitForCommands(ArchiveHandle *AH, int pipefd[2])
 {
 	char	   *command;
+	DumpId		dumpId;
+	int			nBytes;
+	char	   *str;
 	TocEntry   *te;
-	T_Action	act;
-	int			status = 0;
-	char		buf[256];
 
 	for (;;)
 	{
@@ -1354,29 +1218,47 @@ WaitForCommands(ArchiveHandle *AH, int pipefd[2])
 			return;
 		}
 
-		/* Decode the command */
-		parseWorkerCommand(AH, &te, &act, command);
-
-		if (act == ACT_DUMP)
+		if (messageStartsWith(command, "DUMP "))
 		{
+			/* Decode the command */
+			sscanf(command + strlen("DUMP "), "%d%n", &dumpId, &nBytes);
+			Assert(nBytes == strlen(command) - strlen("DUMP "));
+			te = getTocEntryByDumpId(AH, dumpId);
+			Assert(te != NULL);
+
 			/* Acquire lock on this table within the worker's session */
 			lockTableForWorker(AH, te);
 
 			/* Perform the dump command */
-			status = (AH->WorkerJobDumpPtr) (AH, te);
+			str = (AH->WorkerJobDumpPtr) (AH, te);
+
+			/* Return status to master */
+			sendMessageToMaster(pipefd, str);
+
+			/* we are responsible for freeing the status string */
+			free(str);
 		}
-		else if (act == ACT_RESTORE)
+		else if (messageStartsWith(command, "RESTORE "))
 		{
+			/* Decode the command */
+			sscanf(command + strlen("RESTORE "), "%d%n", &dumpId, &nBytes);
+			Assert(nBytes == strlen(command) - strlen("RESTORE "));
+			te = getTocEntryByDumpId(AH, dumpId);
+			Assert(te != NULL);
+
 			/* Perform the restore command */
-			status = (AH->WorkerJobRestorePtr) (AH, te);
+			str = (AH->WorkerJobRestorePtr) (AH, te);
+
+			/* Return status to master */
+			sendMessageToMaster(pipefd, str);
+
+			/* we are responsible for freeing the status string */
+			free(str);
 		}
 		else
-			Assert(false);
-
-		/* Return status to master */
-		buildWorkerResponse(AH, te, act, status, buf, sizeof(buf));
-
-		sendMessageToMaster(pipefd, buf);
+			exit_horribly(modulename,
+					   "unrecognized command received from master: \"%s\"\n",
+						  command);
 
 		/* command was pg_malloc'd and we are responsible for free()ing it. */
 		free(command);
@@ -1389,17 +1271,18 @@ WaitForCommands(ArchiveHandle *AH, int pipefd[2])
  * If do_wait is true, wait to get a status message; otherwise, just return
  * immediately if there is none available.
  *
- * When we get a status message, we pass the status code to the callback
- * function that was specified to DispatchJobForTocEntry, then reset the
- * worker status to IDLE.
+ * When we get a status message, we let MasterEndParallelItemPtr process it,
+ * then save the resulting status code and switch the worker's state to
+ * WRKR_FINISHED.  Later, caller must call ReapWorkerStatus() to verify
+ * that the status was "OK" and push the worker back to IDLE state.
  *
- * Returns true if we collected a status message, else false.
+ * XXX Rube Goldberg would be proud of this API, but no one else should be.
  *
  * XXX is it worth checking for more than one status message per call?
  * It seems somewhat unlikely that multiple workers would finish at exactly
  * the same time.
  */
-static bool
+void
 ListenToWorkers(ArchiveHandle *AH, ParallelState *pstate, bool do_wait)
 {
 	int			worker;
@@ -1412,101 +1295,147 @@ ListenToWorkers(ArchiveHandle *AH, ParallelState *pstate, bool do_wait)
 	{
 		/* If do_wait is true, we must have detected EOF on some socket */
 		if (do_wait)
-			fatal("a worker process died unexpectedly");
-		return false;
+			exit_horribly(modulename, "a worker process died unexpectedly\n");
+		return;
 	}
 
 	/* Process it and update our idea of the worker's status */
 	if (messageStartsWith(msg, "OK "))
 	{
-		ParallelSlot *slot = &pstate->parallelSlot[worker];
-		TocEntry   *te = pstate->te[worker];
-		int			status;
+		TocEntry   *te = pstate->parallelSlot[worker].args->te;
+		char	   *statusString;
 
-		status = parseWorkerResponse(AH, te, msg);
-		slot->callback(AH, te, status, slot->callback_data);
-		slot->workerStatus = WRKR_IDLE;
-		pstate->te[worker] = NULL;
+		if (messageStartsWith(msg, "OK RESTORE "))
+		{
+			statusString = msg + strlen("OK RESTORE ");
+			pstate->parallelSlot[worker].status =
+				(AH->MasterEndParallelItemPtr)
+				(AH, te, statusString, ACT_RESTORE);
+		}
+		else if (messageStartsWith(msg, "OK DUMP "))
+		{
+			statusString = msg + strlen("OK DUMP ");
+			pstate->parallelSlot[worker].status =
+				(AH->MasterEndParallelItemPtr)
+				(AH, te, statusString, ACT_DUMP);
+		}
+		else
+			exit_horribly(modulename,
+						  "invalid message received from worker: \"%s\"\n",
+						  msg);
+		pstate->parallelSlot[worker].workerStatus = WRKR_FINISHED;
 	}
 	else
-		fatal("invalid message received from worker: \"%s\"",
-			  msg);
+		exit_horribly(modulename,
+					  "invalid message received from worker: \"%s\"\n",
+					  msg);
 
 	/* Free the string returned from getMessageFromWorker */
 	free(msg);
-
-	return true;
 }
 
 /*
- * Check for status results from workers, waiting if necessary.
+ * Check to see if any worker is in WRKR_FINISHED state.  If so,
+ * return its command status code into *status, reset it to IDLE state,
+ * and return its slot number.  Otherwise return NO_SLOT.
  *
- * Available wait modes are:
- * WFW_NO_WAIT: reap any available status, but don't block
- * WFW_GOT_STATUS: wait for at least one more worker to finish
- * WFW_ONE_IDLE: wait for at least one worker to be idle
- * WFW_ALL_IDLE: wait for all workers to be idle
+ * This function is executed in the master process.
+ */
+int
+ReapWorkerStatus(ParallelState *pstate, int *status)
+{
+	int			i;
+
+	for (i = 0; i < pstate->numWorkers; i++)
+	{
+		if (pstate->parallelSlot[i].workerStatus == WRKR_FINISHED)
+		{
+			*status = pstate->parallelSlot[i].status;
+			pstate->parallelSlot[i].status = 0;
+			pstate->parallelSlot[i].workerStatus = WRKR_IDLE;
+			return i;
+		}
+	}
+	return NO_SLOT;
+}
+
+/*
+ * Wait, if necessary, until we have at least one idle worker.
+ * Reap worker status as necessary to move FINISHED workers to IDLE state.
  *
- * Any received results are passed to the callback specified to
- * DispatchJobForTocEntry.
+ * We assume that no extra processing is required when reaping a finished
+ * command, except for checking that the status was OK (zero).
+ * Caution: that assumption means that this function can only be used in
+ * parallel dump, not parallel restore, because the latter has a more
+ * complex set of rules about handling status.
  *
  * This function is executed in the master process.
  */
 void
-WaitForWorkers(ArchiveHandle *AH, ParallelState *pstate, WFW_WaitOption mode)
+EnsureIdleWorker(ArchiveHandle *AH, ParallelState *pstate)
 {
-	bool		do_wait = false;
-
-	/*
-	 * In GOT_STATUS mode, always block waiting for a message, since we can't
-	 * return till we get something.  In other modes, we don't block the first
-	 * time through the loop.
-	 */
-	if (mode == WFW_GOT_STATUS)
-	{
-		/* Assert that caller knows what it's doing */
-		Assert(!IsEveryWorkerIdle(pstate));
-		do_wait = true;
-	}
+	int			ret_worker;
+	int			work_status;
 
 	for (;;)
 	{
+		int			nTerm = 0;
+
+		while ((ret_worker = ReapWorkerStatus(pstate, &work_status)) != NO_SLOT)
+		{
+			if (work_status != 0)
+				exit_horribly(modulename, "error processing a parallel work item\n");
+
+			nTerm++;
+		}
+
 		/*
-		 * Check for status messages, even if we don't need to block.  We do
-		 * not try very hard to reap all available messages, though, since
-		 * there's unlikely to be more than one.
+		 * We need to make sure that we have an idle worker before dispatching
+		 * the next item. If nTerm > 0 we already have that (quick check).
 		 */
-		if (ListenToWorkers(AH, pstate, do_wait))
-		{
-			/*
-			 * If we got a message, we are done by definition for GOT_STATUS
-			 * mode, and we can also be certain that there's at least one idle
-			 * worker.  So we're done in all but ALL_IDLE mode.
-			 */
-			if (mode != WFW_ALL_IDLE)
-				return;
-		}
+		if (nTerm > 0)
+			return;
 
-		/* Check whether we must wait for new status messages */
-		switch (mode)
-		{
-			case WFW_NO_WAIT:
-				return;			/* never wait */
-			case WFW_GOT_STATUS:
-				Assert(false);	/* can't get here, because we waited */
-				break;
-			case WFW_ONE_IDLE:
-				if (GetIdleWorker(pstate) != NO_SLOT)
-					return;
-				break;
-			case WFW_ALL_IDLE:
-				if (IsEveryWorkerIdle(pstate))
-					return;
-				break;
-		}
+		/* explicit check for an idle worker */
+		if (GetIdleWorker(pstate) != NO_SLOT)
+			return;
 
-		/* Loop back, and this time wait for something to happen */
-		do_wait = true;
+		/*
+		 * If we have no idle worker, read the result of one or more workers
+		 * and loop the loop to call ReapWorkerStatus() on them
+		 */
+		ListenToWorkers(AH, pstate, true);
+	}
+}
+
+/*
+ * Wait for all workers to be idle.
+ * Reap worker status as necessary to move FINISHED workers to IDLE state.
+ *
+ * We assume that no extra processing is required when reaping a finished
+ * command, except for checking that the status was OK (zero).
+ * Caution: that assumption means that this function can only be used in
+ * parallel dump, not parallel restore, because the latter has a more
+ * complex set of rules about handling status.
+ *
+ * This function is executed in the master process.
+ */
+void
+EnsureWorkersFinished(ArchiveHandle *AH, ParallelState *pstate)
+{
+	int			work_status;
+
+	if (!pstate || pstate->numWorkers == 1)
+		return;
+
+	/* Waiting for the remaining worker processes to finish */
+	while (!IsEveryWorkerIdle(pstate))
+	{
+		if (ReapWorkerStatus(pstate, &work_status) == NO_SLOT)
+			ListenToWorkers(AH, pstate, true);
+		else if (work_status != 0)
+			exit_horribly(modulename,
+						  "error processing a parallel work item\n");
 	}
 }
 
@@ -1534,7 +1463,9 @@ sendMessageToMaster(int pipefd[2], const char *str)
 	int			len = strlen(str) + 1;
 
 	if (pipewrite(pipefd[PIPE_WRITE], str, len) != len)
-		fatal("could not write to the communication channel: %m");
+		exit_horribly(modulename,
+					  "could not write to the communication channel: %s\n",
+					  strerror(errno));
 }
 
 /*
@@ -1592,7 +1523,7 @@ getMessageFromWorker(ParallelState *pstate, bool do_wait, int *worker)
 	FD_ZERO(&workerset);
 	for (i = 0; i < pstate->numWorkers; i++)
 	{
-		if (!WORKER_IS_RUNNING(pstate->parallelSlot[i].workerStatus))
+		if (pstate->parallelSlot[i].workerStatus == WRKR_TERMINATED)
 			continue;
 		FD_SET(pstate->parallelSlot[i].pipeRead, &workerset);
 		if (pstate->parallelSlot[i].pipeRead > maxFd)
@@ -1611,14 +1542,12 @@ getMessageFromWorker(ParallelState *pstate, bool do_wait, int *worker)
 	}
 
 	if (i < 0)
-		fatal("select() failed: %m");
+		exit_horribly(modulename, "select() failed: %s\n", strerror(errno));
 
 	for (i = 0; i < pstate->numWorkers; i++)
 	{
 		char	   *msg;
 
-		if (!WORKER_IS_RUNNING(pstate->parallelSlot[i].workerStatus))
-			continue;
 		if (!FD_ISSET(pstate->parallelSlot[i].pipeRead, &workerset))
 			continue;
 
@@ -1652,7 +1581,9 @@ sendMessageToWorker(ParallelState *pstate, int worker, const char *str)
 
 	if (pipewrite(pstate->parallelSlot[worker].pipeWrite, str, len) != len)
 	{
-		fatal("could not write to the communication channel: %m");
+		exit_horribly(modulename,
+					  "could not write to the communication channel: %s\n",
+					  strerror(errno));
 	}
 }
 
@@ -1736,33 +1667,33 @@ pgpipe(int handles[2])
 	 */
 	if ((s = socket(AF_INET, SOCK_STREAM, 0)) == PGINVALID_SOCKET)
 	{
-		pg_log_error("pgpipe: could not create socket: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not create socket: error code %d\n",
+				  WSAGetLastError());
 		return -1;
 	}
 
 	memset((void *) &serv_addr, 0, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = pg_hton16(0);
-	serv_addr.sin_addr.s_addr = pg_hton32(INADDR_LOOPBACK);
+	serv_addr.sin_port = htons(0);
+	serv_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	if (bind(s, (SOCKADDR *) &serv_addr, len) == SOCKET_ERROR)
 	{
-		pg_log_error("pgpipe: could not bind: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not bind: error code %d\n",
+				  WSAGetLastError());
 		closesocket(s);
 		return -1;
 	}
 	if (listen(s, 1) == SOCKET_ERROR)
 	{
-		pg_log_error("pgpipe: could not listen: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not listen: error code %d\n",
+				  WSAGetLastError());
 		closesocket(s);
 		return -1;
 	}
 	if (getsockname(s, (SOCKADDR *) &serv_addr, &len) == SOCKET_ERROR)
 	{
-		pg_log_error("pgpipe: getsockname() failed: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: getsockname() failed: error code %d\n",
+				  WSAGetLastError());
 		closesocket(s);
 		return -1;
 	}
@@ -1772,8 +1703,8 @@ pgpipe(int handles[2])
 	 */
 	if ((tmp_sock = socket(AF_INET, SOCK_STREAM, 0)) == PGINVALID_SOCKET)
 	{
-		pg_log_error("pgpipe: could not create second socket: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not create second socket: error code %d\n",
+				  WSAGetLastError());
 		closesocket(s);
 		return -1;
 	}
@@ -1781,8 +1712,8 @@ pgpipe(int handles[2])
 
 	if (connect(handles[1], (SOCKADDR *) &serv_addr, len) == SOCKET_ERROR)
 	{
-		pg_log_error("pgpipe: could not connect socket: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not connect socket: error code %d\n",
+				  WSAGetLastError());
 		closesocket(handles[1]);
 		handles[1] = -1;
 		closesocket(s);
@@ -1790,8 +1721,8 @@ pgpipe(int handles[2])
 	}
 	if ((tmp_sock = accept(s, (SOCKADDR *) &serv_addr, &len)) == PGINVALID_SOCKET)
 	{
-		pg_log_error("pgpipe: could not accept connection: error code %d",
-					 WSAGetLastError());
+		write_msg(modulename, "pgpipe: could not accept connection: error code %d\n",
+				  WSAGetLastError());
 		closesocket(handles[1]);
 		handles[1] = -1;
 		closesocket(s);
@@ -1819,4 +1750,4 @@ piperead(int s, char *buf, int len)
 	return ret;
 }
 
-#endif							/* WIN32 */
+#endif   /* WIN32 */

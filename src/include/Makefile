@@ -16,13 +16,11 @@ include $(top_builddir)/src/Makefile.global
 all: pg_config.h pg_config_ext.h pg_config_os.h
 
 
-# Subdirectories containing installable headers
-SUBDIRS = access bootstrap catalog commands common datatype \
-	executor fe_utils foreign jit \
-	lib libpq mb nodes optimizer parser partitioning postmaster \
-	regex replication rewrite \
-	statistics storage tcop snowball snowball/libstemmer tsearch \
-	tsearch/dicts utils port port/atomics port/win32 port/win32_msvc \
+# Subdirectories containing headers for server-side dev
+SUBDIRS = access bootstrap catalog commands common datatype executor foreign \
+	lib libpq mb nodes optimizer parser postmaster regex replication \
+	rewrite storage tcop snowball snowball/libstemmer tsearch \
+	tsearch/dicts utils port port/win32 port/win32_msvc \
 	port/win32_msvc/sys port/win32/arpa port/win32/netinet \
 	port/win32/sys portability
 
@@ -46,23 +44,19 @@ install: all installdirs
 	$(INSTALL_DATA) pg_config_os.h  '$(DESTDIR)$(includedir_server)'
 	$(INSTALL_DATA) utils/errcodes.h '$(DESTDIR)$(includedir_server)/utils'
 	$(INSTALL_DATA) utils/fmgroids.h '$(DESTDIR)$(includedir_server)/utils'
-	$(INSTALL_DATA) utils/fmgrprotos.h '$(DESTDIR)$(includedir_server)/utils'
 # We don't use INSTALL_DATA for performance reasons --- there are a lot of files
-# (in fact, we have to take some pains to avoid overlength shell commands here)
-	cp $(srcdir)/*.h '$(DESTDIR)$(includedir_server)'/
+	cp $(srcdir)/*.h '$(DESTDIR)$(includedir_server)'/ || exit; \
+	chmod $(INSTALL_DATA_MODE) '$(DESTDIR)$(includedir_server)'/*.h  || exit; \
 	for dir in $(SUBDIRS); do \
 	  cp $(srcdir)/$$dir/*.h '$(DESTDIR)$(includedir_server)'/$$dir/ || exit; \
+	  chmod $(INSTALL_DATA_MODE) '$(DESTDIR)$(includedir_server)'/$$dir/*.h  || exit; \
 	done
 ifeq ($(vpath_build),yes)
-	for file in catalog/schemapg.h catalog/pg_*_d.h parser/gram.h storage/lwlocknames.h utils/probes.h; do \
+	for file in dynloader.h catalog/schemapg.h parser/gram.h utils/probes.h; do \
 	  cp $$file '$(DESTDIR)$(includedir_server)'/$$file || exit; \
+	  chmod $(INSTALL_DATA_MODE) '$(DESTDIR)$(includedir_server)'/$$file || exit; \
 	done
 endif
-	cd '$(DESTDIR)$(includedir_server)' && chmod $(INSTALL_DATA_MODE) *.h
-	for dir in $(SUBDIRS); do \
-	  cd '$(DESTDIR)$(includedir_server)'/$$dir || exit; \
-	  chmod $(INSTALL_DATA_MODE) *.h || exit; \
-	done
 
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(includedir)/libpq' '$(DESTDIR)$(includedir_internal)/libpq'
@@ -77,9 +71,7 @@ uninstall:
 
 
 clean:
-	rm -f utils/fmgroids.h utils/fmgrprotos.h utils/errcodes.h utils/header-stamp
-	rm -f parser/gram.h storage/lwlocknames.h utils/probes.h
-	rm -f catalog/schemapg.h catalog/pg_*_d.h catalog/header-stamp
+	rm -f utils/fmgroids.h utils/errcodes.h parser/gram.h utils/probes.h catalog/schemapg.h
 
 distclean maintainer-clean: clean
-	rm -f pg_config.h pg_config_ext.h pg_config_os.h stamp-h stamp-ext-h
+	rm -f pg_config.h pg_config_ext.h pg_config_os.h dynloader.h stamp-h stamp-ext-h

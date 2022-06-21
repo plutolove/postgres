@@ -4,7 +4,7 @@
  *	  Support routines for scanning Values lists
  *	  ("VALUES (...), (...), ..." in rangetable).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -25,9 +25,6 @@
 
 #include "executor/executor.h"
 #include "executor/nodeValuesscan.h"
-#include "jit/jit.h"
-#include "optimizer/clauses.h"
-#include "utils/expandeddatum.h"
 
 
 static TupleTableSlot *ValuesNext(ValuesScanState *node);
@@ -51,7 +48,7 @@ ValuesNext(ValuesScanState *node)
 	EState	   *estate;
 	ExprContext *econtext;
 	ScanDirection direction;
-	int			curr_idx;
+	List	   *exprlist;
 
 	/*
 	 * get information from the estate and scan state
@@ -68,11 +65,19 @@ ValuesNext(ValuesScanState *node)
 	{
 		if (node->curr_idx < node->array_len)
 			node->curr_idx++;
+		if (node->curr_idx < node->array_len)
+			exprlist = node->exprlists[node->curr_idx];
+		else
+			exprlist = NIL;
 	}
 	else
 	{
 		if (node->curr_idx >= 0)
 			node->curr_idx--;
+		if (node->curr_idx >= 0)
+			exprlist = node->exprlists[node->curr_idx];
+		else
+			exprlist = NIL;
 	}
 
 	/*
@@ -83,12 +88,10 @@ ValuesNext(ValuesScanState *node)
 	 */
 	ExecClearTuple(slot);
 
-	curr_idx = node->curr_idx;
-	if (curr_idx >= 0 && curr_idx < node->array_len)
+	if (exprlist)
 	{
-		List	   *exprlist = node->exprlists[curr_idx];
-		List	   *exprstatelist = node->exprstatelists[curr_idx];
 		MemoryContext oldContext;
+		List	   *exprstatelist;
 		Datum	   *values;
 		bool	   *isnull;
 		ListCell   *lc;
@@ -102,32 +105,20 @@ ValuesNext(ValuesScanState *node)
 		ReScanExprContext(econtext);
 
 		/*
-		 * Do per-VALUES-row work in the per-tuple context.
+		 * Build the expression eval state in the econtext's per-tuple memory.
+		 * This is a tad unusual, but we want to delete the eval state again
+		 * when we move to the next row, to avoid growth of memory
+		 * requirements over a long values list.
 		 */
 		oldContext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 
 		/*
-		 * Unless we already made the expression eval state for this row,
-		 * build it in the econtext's per-tuple memory.  This is a tad
-		 * unusual, but we want to delete the eval state again when we move to
-		 * the next row, to avoid growth of memory requirements over a long
-		 * values list.  For rows in which that won't work, we already built
-		 * the eval state at plan startup.
+		 * Pass NULL, not my plan node, because we don't want anything in this
+		 * transient state linking into permanent state.  The only possibility
+		 * is a SubPlan, and there shouldn't be any (any subselects in the
+		 * VALUES list should be InitPlans).
 		 */
-		if (exprstatelist == NIL)
-		{
-			/*
-			 * Pass parent as NULL, not my plan node, because we don't want
-			 * anything in this transient state linking into permanent state.
-			 * The only expression type that might wish to do so is a SubPlan,
-			 * and we already checked that there aren't any.
-			 *
-			 * Note that passing parent = NULL also disables JIT compilation
-			 * of the expressions, which is a win, because they're only going
-			 * to be used once under normal circumstances.
-			 */
-			exprstatelist = ExecInitExprList(exprlist, NULL);
-		}
+		exprstatelist = (List *) ExecInitExpr((Expr *) exprlist, NULL);
 
 		/* parser should have checked all sublists are the same length */
 		Assert(list_length(exprstatelist) == slot->tts_tupleDescriptor->natts);
@@ -143,23 +134,11 @@ ValuesNext(ValuesScanState *node)
 		foreach(lc, exprstatelist)
 		{
 			ExprState  *estate = (ExprState *) lfirst(lc);
-			Form_pg_attribute attr = TupleDescAttr(slot->tts_tupleDescriptor,
-												   resind);
 
 			values[resind] = ExecEvalExpr(estate,
 										  econtext,
-										  &isnull[resind]);
-
-			/*
-			 * We must force any R/W expanded datums to read-only state, in
-			 * case they are multiply referenced in the plan node's output
-			 * expressions, or in case we skip the output projection and the
-			 * output column is multiply referenced in higher plan nodes.
-			 */
-			values[resind] = MakeExpandedObjectReadOnly(values[resind],
-														isnull[resind],
-														attr->attlen);
-
+										  &isnull[resind],
+										  NULL);
 			resind++;
 		}
 
@@ -193,11 +172,9 @@ ValuesRecheck(ValuesScanState *node, TupleTableSlot *slot)
  *		access method functions.
  * ----------------------------------------------------------------
  */
-static TupleTableSlot *
-ExecValuesScan(PlanState *pstate)
+TupleTableSlot *
+ExecValuesScan(ValuesScanState *node)
 {
-	ValuesScanState *node = castNode(ValuesScanState, pstate);
-
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) ValuesNext,
 					(ExecScanRecheckMtd) ValuesRecheck);
@@ -228,7 +205,6 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	scanstate = makeNode(ValuesScanState);
 	scanstate->ss.ps.plan = (Plan *) node;
 	scanstate->ss.ps.state = estate;
-	scanstate->ss.ps.ExecProcNode = ExecValuesScan;
 
 	/*
 	 * Miscellaneous initialization
@@ -245,76 +221,51 @@ ExecInitValuesScan(ValuesScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, planstate);
 
 	/*
-	 * Get info about values list, initialize scan slot with it.
+	 * tuple table initialization
 	 */
-	tupdesc = ExecTypeFromExprList((List *) linitial(node->values_lists));
-	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc, &TTSOpsVirtual);
-
-	/*
-	 * Initialize result type and projection.
-	 */
-	ExecInitResultTypeTL(&scanstate->ss.ps);
-	ExecAssignScanProjectionInfo(&scanstate->ss);
+	ExecInitResultTupleSlot(estate, &scanstate->ss.ps);
+	ExecInitScanTupleSlot(estate, &scanstate->ss);
 
 	/*
 	 * initialize child expressions
 	 */
-	scanstate->ss.ps.qual =
-		ExecInitQual(node->scan.plan.qual, (PlanState *) scanstate);
+	scanstate->ss.ps.targetlist = (List *)
+		ExecInitExpr((Expr *) node->scan.plan.targetlist,
+					 (PlanState *) scanstate);
+	scanstate->ss.ps.qual = (List *)
+		ExecInitExpr((Expr *) node->scan.plan.qual,
+					 (PlanState *) scanstate);
+
+	/*
+	 * get info about values list
+	 */
+	tupdesc = ExecTypeFromExprList((List *) linitial(node->values_lists));
+
+	ExecAssignScanType(&scanstate->ss, tupdesc);
 
 	/*
 	 * Other node-specific setup
 	 */
+	scanstate->marked_idx = -1;
 	scanstate->curr_idx = -1;
 	scanstate->array_len = list_length(node->values_lists);
 
-	/*
-	 * Convert the list of expression sublists into an array for easier
-	 * addressing at runtime.  Also, detect whether any sublists contain
-	 * SubPlans; for just those sublists, go ahead and do expression
-	 * initialization.  (This avoids problems with SubPlans wanting to connect
-	 * themselves up to the outer plan tree.  Notably, EXPLAIN won't see the
-	 * subplans otherwise; also we will have troubles with dangling pointers
-	 * and/or leaked resources if we try to handle SubPlans the same as
-	 * simpler expressions.)
-	 */
+	/* convert list of sublists into array of sublists for easy addressing */
 	scanstate->exprlists = (List **)
 		palloc(scanstate->array_len * sizeof(List *));
-	scanstate->exprstatelists = (List **)
-		palloc0(scanstate->array_len * sizeof(List *));
 	i = 0;
 	foreach(vtl, node->values_lists)
 	{
-		List	   *exprs = castNode(List, lfirst(vtl));
-
-		scanstate->exprlists[i] = exprs;
-
-		/*
-		 * We can avoid the cost of a contain_subplans() scan in the simple
-		 * case where there are no SubPlans anywhere.
-		 */
-		if (estate->es_subplanstates &&
-			contain_subplans((Node *) exprs))
-		{
-			int			saved_jit_flags;
-
-			/*
-			 * As these expressions are only used once, disable JIT for them.
-			 * This is worthwhile because it's common to insert significant
-			 * amounts of data via VALUES().  Note that this doesn't prevent
-			 * use of JIT *within* a subplan, since that's initialized
-			 * separately; this just affects the upper-level subexpressions.
-			 */
-			saved_jit_flags = estate->es_jit_flags;
-			estate->es_jit_flags = PGJIT_NONE;
-
-			scanstate->exprstatelists[i] = ExecInitExprList(exprs,
-															&scanstate->ss.ps);
-
-			estate->es_jit_flags = saved_jit_flags;
-		}
-		i++;
+		scanstate->exprlists[i++] = (List *) lfirst(vtl);
 	}
+
+	scanstate->ss.ps.ps_TupFromTlist = false;
+
+	/*
+	 * Initialize result tuple type and projection info.
+	 */
+	ExecAssignResultTypeFromTL(&scanstate->ss.ps);
+	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	return scanstate;
 }
@@ -338,9 +289,32 @@ ExecEndValuesScan(ValuesScanState *node)
 	/*
 	 * clean out the tuple table
 	 */
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+}
+
+/* ----------------------------------------------------------------
+ *		ExecValuesMarkPos
+ *
+ *		Marks scan position.
+ * ----------------------------------------------------------------
+ */
+void
+ExecValuesMarkPos(ValuesScanState *node)
+{
+	node->marked_idx = node->curr_idx;
+}
+
+/* ----------------------------------------------------------------
+ *		ExecValuesRestrPos
+ *
+ *		Restores scan position.
+ * ----------------------------------------------------------------
+ */
+void
+ExecValuesRestrPos(ValuesScanState *node)
+{
+	node->curr_idx = node->marked_idx;
 }
 
 /* ----------------------------------------------------------------
@@ -352,8 +326,7 @@ ExecEndValuesScan(ValuesScanState *node)
 void
 ExecReScanValuesScan(ValuesScanState *node)
 {
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 
 	ExecScanReScan(&node->ss);
 

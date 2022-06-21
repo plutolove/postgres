@@ -7,7 +7,7 @@
  *	  stuff - checking the qualification and projecting the tuple
  *	  appropriately.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,9 +23,11 @@
 #include "utils/memutils.h"
 
 
+static bool tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc);
+
 
 /*
- * ExecScanFetch -- check interrupts & fetch next potential tuple
+ * ExecScanFetch -- fetch next potential tuple
  *
  * This routine is concerned with substituting a test tuple if we are
  * inside an EvalPlanQual recheck.  If we aren't, just execute
@@ -38,12 +40,8 @@ ExecScanFetch(ScanState *node,
 {
 	EState	   *estate = node->ps.state;
 
-	CHECK_FOR_INTERRUPTS();
-
-	if (estate->es_epq_active != NULL)
+	if (estate->es_epqTuple != NULL)
 	{
-		EPQState   *epqstate = estate->es_epq_active;
-
 		/*
 		 * We are inside an EvalPlanQual recheck.  Return the test tuple if
 		 * one is available, after rechecking any access-method-specific
@@ -51,78 +49,29 @@ ExecScanFetch(ScanState *node,
 		 */
 		Index		scanrelid = ((Scan *) node->ps.plan)->scanrelid;
 
-		if (scanrelid == 0)
+		Assert(scanrelid > 0);
+		if (estate->es_epqTupleSet[scanrelid - 1])
 		{
-			/*
-			 * This is a ForeignScan or CustomScan which has pushed down a
-			 * join to the remote side.  The recheck method is responsible not
-			 * only for rechecking the scan/join quals but also for storing
-			 * the correct tuple in the slot.
-			 */
-
 			TupleTableSlot *slot = node->ss_ScanTupleSlot;
 
+			/* Return empty slot if we already returned a tuple */
+			if (estate->es_epqScanDone[scanrelid - 1])
+				return ExecClearTuple(slot);
+			/* Else mark to remember that we shouldn't return more */
+			estate->es_epqScanDone[scanrelid - 1] = true;
+
+			/* Return empty slot if we haven't got a test tuple */
+			if (estate->es_epqTuple[scanrelid - 1] == NULL)
+				return ExecClearTuple(slot);
+
+			/* Store test tuple in the plan node's scan slot */
+			ExecStoreTuple(estate->es_epqTuple[scanrelid - 1],
+						   slot, InvalidBuffer, false);
+
+			/* Check if it meets the access-method conditions */
 			if (!(*recheckMtd) (node, slot))
 				ExecClearTuple(slot);	/* would not be returned by scan */
-			return slot;
-		}
-		else if (epqstate->relsubs_done[scanrelid - 1])
-		{
-			/*
-			 * Return empty slot, as we already performed an EPQ substitution
-			 * for this relation.
-			 */
 
-			TupleTableSlot *slot = node->ss_ScanTupleSlot;
-
-			/* Return empty slot, as we already returned a tuple */
-			return ExecClearTuple(slot);
-		}
-		else if (epqstate->relsubs_slot[scanrelid - 1] != NULL)
-		{
-			/*
-			 * Return replacement tuple provided by the EPQ caller.
-			 */
-
-			TupleTableSlot *slot = epqstate->relsubs_slot[scanrelid - 1];
-
-			Assert(epqstate->relsubs_rowmark[scanrelid - 1] == NULL);
-
-			/* Mark to remember that we shouldn't return more */
-			epqstate->relsubs_done[scanrelid - 1] = true;
-
-			/* Return empty slot if we haven't got a test tuple */
-			if (TupIsNull(slot))
-				return NULL;
-
-			/* Check if it meets the access-method conditions */
-			if (!(*recheckMtd) (node, slot))
-				return ExecClearTuple(slot);	/* would not be returned by
-												 * scan */
-			return slot;
-		}
-		else if (epqstate->relsubs_rowmark[scanrelid - 1] != NULL)
-		{
-			/*
-			 * Fetch and return replacement tuple using a non-locking rowmark.
-			 */
-
-			TupleTableSlot *slot = node->ss_ScanTupleSlot;
-
-			/* Mark to remember that we shouldn't return more */
-			epqstate->relsubs_done[scanrelid - 1] = true;
-
-			if (!EvalPlanQualFetchRowMark(epqstate, scanrelid, slot))
-				return NULL;
-
-			/* Return empty slot if we haven't got a test tuple */
-			if (TupIsNull(slot))
-				return NULL;
-
-			/* Check if it meets the access-method conditions */
-			if (!(*recheckMtd) (node, slot))
-				return ExecClearTuple(slot);	/* would not be returned by
-												 * scan */
 			return slot;
 		}
 	}
@@ -137,8 +86,9 @@ ExecScanFetch(ScanState *node,
  *		ExecScan
  *
  *		Scans the relation using the 'access method' indicated and
- *		returns the next qualifying tuple.
- *		The access method returns the next tuple and ExecScan() is
+ *		returns the next qualifying tuple in the direction specified
+ *		in the global variable ExecDirection.
+ *		The access method returns the next tuple and execScan() is
  *		responsible for checking the tuple returned against the qual-clause.
  *
  *		A 'recheck method' must also be provided that can check an
@@ -160,8 +110,10 @@ ExecScan(ScanState *node,
 		 ExecScanRecheckMtd recheckMtd)
 {
 	ExprContext *econtext;
-	ExprState  *qual;
+	List	   *qual;
 	ProjectionInfo *projInfo;
+	ExprDoneCond isDone;
+	TupleTableSlot *resultSlot;
 
 	/*
 	 * Fetch data from node
@@ -169,8 +121,6 @@ ExecScan(ScanState *node,
 	qual = node->ps.qual;
 	projInfo = node->ps.ps_ProjInfo;
 	econtext = node->ps.ps_ExprContext;
-
-	/* interrupt checks are in ExecScanFetch */
 
 	/*
 	 * If we have neither a qual to check nor a projection to do, just skip
@@ -183,8 +133,24 @@ ExecScan(ScanState *node,
 	}
 
 	/*
+	 * Check to see if we're still projecting out tuples from a previous scan
+	 * tuple (because there is a function-returning-set in the projection
+	 * expressions).  If so, try to project another one.
+	 */
+	if (node->ps.ps_TupFromTlist)
+	{
+		Assert(projInfo);		/* can't get here if not projecting */
+		resultSlot = ExecProject(projInfo, &isDone);
+		if (isDone == ExprMultipleResult)
+			return resultSlot;
+		/* Done with that source tuple... */
+		node->ps.ps_TupFromTlist = false;
+	}
+
+	/*
 	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.
+	 * storage allocated in the previous tuple cycle.  Note this can't happen
+	 * until we're done projecting out tuples from a scan tuple.
 	 */
 	ResetExprContext(econtext);
 
@@ -195,6 +161,8 @@ ExecScan(ScanState *node,
 	for (;;)
 	{
 		TupleTableSlot *slot;
+
+		CHECK_FOR_INTERRUPTS();
 
 		slot = ExecScanFetch(node, accessMtd, recheckMtd);
 
@@ -207,7 +175,7 @@ ExecScan(ScanState *node,
 		if (TupIsNull(slot))
 		{
 			if (projInfo)
-				return ExecClearTuple(projInfo->pi_state.resultslot);
+				return ExecClearTuple(projInfo->pi_slot);
 			else
 				return slot;
 		}
@@ -220,11 +188,11 @@ ExecScan(ScanState *node,
 		/*
 		 * check that the current tuple satisfies the qual-clause
 		 *
-		 * check for non-null qual here to avoid a function call to ExecQual()
-		 * when the qual is null ... saves only a few cycles, but they add up
+		 * check for non-nil qual here to avoid a function call to ExecQual()
+		 * when the qual is nil ... saves only a few cycles, but they add up
 		 * ...
 		 */
-		if (qual == NULL || ExecQual(qual, econtext))
+		if (!qual || ExecQual(qual, econtext, false))
 		{
 			/*
 			 * Found a satisfactory scan tuple.
@@ -233,9 +201,15 @@ ExecScan(ScanState *node,
 			{
 				/*
 				 * Form a projection tuple, store it in the result tuple slot
-				 * and return it.
+				 * and return it --- unless we find we can project no tuples
+				 * from this scan tuple, in which case continue scan.
 				 */
-				return ExecProject(projInfo);
+				resultSlot = ExecProject(projInfo, &isDone);
+				if (isDone != ExprEndResult)
+				{
+					node->ps.ps_TupFromTlist = (isDone == ExprMultipleResult);
+					return resultSlot;
+				}
 			}
 			else
 			{
@@ -266,27 +240,87 @@ ExecScan(ScanState *node,
  * the scan node, because the planner will preferentially generate a matching
  * tlist.
  *
- * The scan slot's descriptor must have been set already.
+ * ExecAssignScanType must have been called already.
  */
 void
 ExecAssignScanProjectionInfo(ScanState *node)
 {
 	Scan	   *scan = (Scan *) node->ps.plan;
-	TupleDesc	tupdesc = node->ss_ScanTupleSlot->tts_tupleDescriptor;
+	Index		varno;
 
-	ExecConditionalAssignProjectionInfo(&node->ps, tupdesc, scan->scanrelid);
+	/* Vars in an index-only scan's tlist should be INDEX_VAR */
+	if (IsA(scan, IndexOnlyScan))
+		varno = INDEX_VAR;
+	else
+		varno = scan->scanrelid;
+
+	if (tlist_matches_tupdesc(&node->ps,
+							  scan->plan.targetlist,
+							  varno,
+							  node->ss_ScanTupleSlot->tts_tupleDescriptor))
+		node->ps.ps_ProjInfo = NULL;
+	else
+		ExecAssignProjectionInfo(&node->ps,
+								 node->ss_ScanTupleSlot->tts_tupleDescriptor);
 }
 
-/*
- * ExecAssignScanProjectionInfoWithVarno
- *		As above, but caller can specify varno expected in Vars in the tlist.
- */
-void
-ExecAssignScanProjectionInfoWithVarno(ScanState *node, Index varno)
+static bool
+tlist_matches_tupdesc(PlanState *ps, List *tlist, Index varno, TupleDesc tupdesc)
 {
-	TupleDesc	tupdesc = node->ss_ScanTupleSlot->tts_tupleDescriptor;
+	int			numattrs = tupdesc->natts;
+	int			attrno;
+	bool		hasoid;
+	ListCell   *tlist_item = list_head(tlist);
 
-	ExecConditionalAssignProjectionInfo(&node->ps, tupdesc, varno);
+	/* Check the tlist attributes */
+	for (attrno = 1; attrno <= numattrs; attrno++)
+	{
+		Form_pg_attribute att_tup = tupdesc->attrs[attrno - 1];
+		Var		   *var;
+
+		if (tlist_item == NULL)
+			return false;		/* tlist too short */
+		var = (Var *) ((TargetEntry *) lfirst(tlist_item))->expr;
+		if (!var || !IsA(var, Var))
+			return false;		/* tlist item not a Var */
+		/* if these Asserts fail, planner messed up */
+		Assert(var->varno == varno);
+		Assert(var->varlevelsup == 0);
+		if (var->varattno != attrno)
+			return false;		/* out of order */
+		if (att_tup->attisdropped)
+			return false;		/* table contains dropped columns */
+
+		/*
+		 * Note: usually the Var's type should match the tupdesc exactly, but
+		 * in situations involving unions of columns that have different
+		 * typmods, the Var may have come from above the union and hence have
+		 * typmod -1.  This is a legitimate situation since the Var still
+		 * describes the column, just not as exactly as the tupdesc does. We
+		 * could change the planner to prevent it, but it'd then insert
+		 * projection steps just to convert from specific typmod to typmod -1,
+		 * which is pretty silly.
+		 */
+		if (var->vartype != att_tup->atttypid ||
+			(var->vartypmod != att_tup->atttypmod &&
+			 var->vartypmod != -1))
+			return false;		/* type mismatch */
+
+		tlist_item = lnext(tlist_item);
+	}
+
+	if (tlist_item)
+		return false;			/* tlist too long */
+
+	/*
+	 * If the plan context requires a particular hasoid setting, then that has
+	 * to match, too.
+	 */
+	if (ExecContextForcesOids(ps, &hasoid) &&
+		hasoid != tupdesc->tdhasoid)
+		return false;
+
+	return true;
 }
 
 /*
@@ -300,43 +334,16 @@ ExecScanReScan(ScanState *node)
 {
 	EState	   *estate = node->ps.state;
 
-	/*
-	 * We must clear the scan tuple so that observers (e.g., execCurrent.c)
-	 * can tell that this plan node is not positioned on a tuple.
-	 */
-	ExecClearTuple(node->ss_ScanTupleSlot);
+	/* Stop projecting any tuples from SRFs in the targetlist */
+	node->ps.ps_TupFromTlist = false;
 
 	/* Rescan EvalPlanQual tuple if we're inside an EvalPlanQual recheck */
-	if (estate->es_epq_active != NULL)
+	if (estate->es_epqScanDone != NULL)
 	{
-		EPQState   *epqstate = estate->es_epq_active;
 		Index		scanrelid = ((Scan *) node->ps.plan)->scanrelid;
 
-		if (scanrelid > 0)
-			epqstate->relsubs_done[scanrelid - 1] = false;
-		else
-		{
-			Bitmapset  *relids;
-			int			rtindex = -1;
+		Assert(scanrelid > 0);
 
-			/*
-			 * If an FDW or custom scan provider has replaced the join with a
-			 * scan, there are multiple RTIs; reset the epqScanDone flag for
-			 * all of them.
-			 */
-			if (IsA(node->ps.plan, ForeignScan))
-				relids = ((ForeignScan *) node->ps.plan)->fs_relids;
-			else if (IsA(node->ps.plan, CustomScan))
-				relids = ((CustomScan *) node->ps.plan)->custom_relids;
-			else
-				elog(ERROR, "unexpected scan node: %d",
-					 (int) nodeTag(node->ps.plan));
-
-			while ((rtindex = bms_next_member(relids, rtindex)) >= 0)
-			{
-				Assert(rtindex > 0);
-				epqstate->relsubs_done[rtindex - 1] = false;
-			}
-		}
+		estate->es_epqScanDone[scanrelid - 1] = false;
 	}
 }

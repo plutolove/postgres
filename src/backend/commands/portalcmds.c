@@ -9,7 +9,7 @@
  * storage management for portals (but doesn't run any queries in them).
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -27,10 +27,7 @@
 #include "commands/portalcmds.h"
 #include "executor/executor.h"
 #include "executor/tstoreReceiver.h"
-#include "miscadmin.h"
-#include "rewrite/rewriteHandler.h"
 #include "tcop/pquery.h"
-#include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
@@ -38,17 +35,21 @@
 /*
  * PerformCursorOpen
  *		Execute SQL DECLARE CURSOR command.
+ *
+ * The query has already been through parse analysis, rewriting, and planning.
+ * When it gets here, it looks like a SELECT PlannedStmt, except that the
+ * utilityStmt field is set.
  */
 void
-PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo params,
-				  bool isTopLevel)
+PerformCursorOpen(PlannedStmt *stmt, ParamListInfo params,
+				  const char *queryString, bool isTopLevel)
 {
-	Query	   *query = castNode(Query, cstmt->query);
-	List	   *rewritten;
-	PlannedStmt *plan;
+	DeclareCursorStmt *cstmt = (DeclareCursorStmt *) stmt->utilityStmt;
 	Portal		portal;
 	MemoryContext oldContext;
-	char	   *queryString;
+
+	if (cstmt == NULL || !IsA(cstmt, DeclareCursorStmt))
+		elog(ERROR, "PerformCursorOpen called for non-cursor query");
 
 	/*
 	 * Disallow empty-string cursor name (conflicts with protocol-level
@@ -65,54 +66,25 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	 * user-visible effect).
 	 */
 	if (!(cstmt->options & CURSOR_OPT_HOLD))
-		RequireTransactionBlock(isTopLevel, "DECLARE CURSOR");
-	else if (InSecurityRestrictedOperation())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("cannot create a cursor WITH HOLD within security-restricted operation")));
+		RequireTransactionChain(isTopLevel, "DECLARE CURSOR");
 
 	/*
-	 * Parse analysis was done already, but we still have to run the rule
-	 * rewriter.  We do not do AcquireRewriteLocks: we assume the query either
-	 * came straight from the parser, or suitable locks were acquired by
-	 * plancache.c.
-	 *
-	 * Because the rewriter and planner tend to scribble on the input, we make
-	 * a preliminary copy of the source querytree.  This prevents problems in
-	 * the case that the DECLARE CURSOR is in a portal or plpgsql function and
-	 * is executed repeatedly.  (See also the same hack in EXPLAIN and
-	 * PREPARE.)  XXX FIXME someday.
-	 */
-	rewritten = QueryRewrite((Query *) copyObject(query));
-
-	/* SELECT should never rewrite to more or less than one query */
-	if (list_length(rewritten) != 1)
-		elog(ERROR, "non-SELECT statement in DECLARE CURSOR");
-
-	query = linitial_node(Query, rewritten);
-
-	if (query->commandType != CMD_SELECT)
-		elog(ERROR, "non-SELECT statement in DECLARE CURSOR");
-
-	/* Plan the query, applying the specified options */
-	plan = pg_plan_query(query, pstate->p_sourcetext, cstmt->options, params);
-
-	/*
-	 * Create a portal and copy the plan and query string into its memory.
+	 * Create a portal and copy the plan and queryString into its memory.
 	 */
 	portal = CreatePortal(cstmt->portalname, false, false);
 
-	oldContext = MemoryContextSwitchTo(portal->portalContext);
+	oldContext = MemoryContextSwitchTo(PortalGetHeapMemory(portal));
 
-	plan = copyObject(plan);
+	stmt = copyObject(stmt);
+	stmt->utilityStmt = NULL;	/* make it look like plain SELECT */
 
-	queryString = pstrdup(pstate->p_sourcetext);
+	queryString = pstrdup(queryString);
 
 	PortalDefineQuery(portal,
 					  NULL,
 					  queryString,
-					  CMDTAG_SELECT,	/* cursor's query is always a SELECT */
-					  list_make1(plan),
+					  "SELECT", /* cursor's query is always a SELECT */
+					  list_make1(stmt),
 					  NULL);
 
 	/*----------
@@ -139,8 +111,8 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	portal->cursorOptions = cstmt->options;
 	if (!(portal->cursorOptions & (CURSOR_OPT_SCROLL | CURSOR_OPT_NO_SCROLL)))
 	{
-		if (plan->rowMarks == NIL &&
-			ExecSupportsBackwardScan(plan->planTree))
+		if (stmt->rowMarks == NIL &&
+			ExecSupportsBackwardScan(stmt->planTree))
 			portal->cursorOptions |= CURSOR_OPT_SCROLL;
 		else
 			portal->cursorOptions |= CURSOR_OPT_NO_SCROLL;
@@ -165,17 +137,18 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
  *
  *	stmt: parsetree node for command
  *	dest: where to send results
- *	qc: where to store a command completion status data.
+ *	completionTag: points to a buffer of size COMPLETION_TAG_BUFSIZE
+ *		in which to store a command completion status string.
  *
- * qc may be NULL if caller doesn't want status data.
+ * completionTag may be NULL if caller doesn't want a status string.
  */
 void
 PerformPortalFetch(FetchStmt *stmt,
 				   DestReceiver *dest,
-				   QueryCompletion *qc)
+				   char *completionTag)
 {
 	Portal		portal;
-	uint64		nprocessed;
+	long		nprocessed;
 
 	/*
 	 * Disallow empty-string cursor name (conflicts with protocol-level
@@ -207,9 +180,10 @@ PerformPortalFetch(FetchStmt *stmt,
 								dest);
 
 	/* Return command status if wanted */
-	if (qc)
-		SetQueryCompletion(qc, stmt->ismove ? CMDTAG_MOVE : CMDTAG_FETCH,
-						   nprocessed);
+	if (completionTag)
+		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "%s %ld",
+				 stmt->ismove ? "MOVE" : "FETCH",
+				 nprocessed);
 }
 
 /*
@@ -281,7 +255,7 @@ PortalCleanup(Portal portal)
 	 * since other mechanisms will take care of releasing executor resources,
 	 * and we can't be sure that ExecutorEnd itself wouldn't fail.
 	 */
-	queryDesc = portal->queryDesc;
+	queryDesc = PortalGetQueryDesc(portal);
 	if (queryDesc)
 	{
 		/*
@@ -298,13 +272,21 @@ PortalCleanup(Portal portal)
 
 			/* We must make the portal's resource owner current */
 			saveResourceOwner = CurrentResourceOwner;
-			if (portal->resowner)
-				CurrentResourceOwner = portal->resowner;
-
-			ExecutorFinish(queryDesc);
-			ExecutorEnd(queryDesc);
-			FreeQueryDesc(queryDesc);
-
+			PG_TRY();
+			{
+				if (portal->resowner)
+					CurrentResourceOwner = portal->resowner;
+				ExecutorFinish(queryDesc);
+				ExecutorEnd(queryDesc);
+				FreeQueryDesc(queryDesc);
+			}
+			PG_CATCH();
+			{
+				/* Ensure CurrentResourceOwner is restored on error */
+				CurrentResourceOwner = saveResourceOwner;
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
 			CurrentResourceOwner = saveResourceOwner;
 		}
 	}
@@ -321,7 +303,7 @@ PortalCleanup(Portal portal)
 void
 PersistHoldablePortal(Portal portal)
 {
-	QueryDesc  *queryDesc = portal->queryDesc;
+	QueryDesc  *queryDesc = PortalGetQueryDesc(portal);
 	Portal		saveActivePortal;
 	ResourceOwner saveResourceOwner;
 	MemoryContext savePortalContext;
@@ -335,11 +317,10 @@ PersistHoldablePortal(Portal portal)
 	Assert(queryDesc != NULL);
 
 	/*
-	 * Caller must have created the tuplestore already ... but not a snapshot.
+	 * Caller must have created the tuplestore already.
 	 */
 	Assert(portal->holdContext != NULL);
 	Assert(portal->holdStore != NULL);
-	Assert(portal->holdSnapshot == NULL);
 
 	/*
 	 * Before closing down the executor, we must copy the tupdesc into
@@ -367,7 +348,7 @@ PersistHoldablePortal(Portal portal)
 		ActivePortal = portal;
 		if (portal->resowner)
 			CurrentResourceOwner = portal->resowner;
-		PortalContext = portal->portalContext;
+		PortalContext = PortalGetHeapMemory(portal);
 
 		MemoryContextSwitchTo(PortalContext);
 
@@ -381,8 +362,7 @@ PersistHoldablePortal(Portal portal)
 
 		/*
 		 * Change the destination to output to the tuplestore.  Note we tell
-		 * the tuplestore receiver to detoast all data passed through it; this
-		 * makes it safe to not keep a snapshot associated with the data.
+		 * the tuplestore receiver to detoast all data passed through it.
 		 */
 		queryDesc->dest = CreateDestReceiver(DestTuplestore);
 		SetTuplestoreDestReceiverParams(queryDesc->dest,
@@ -391,15 +371,15 @@ PersistHoldablePortal(Portal portal)
 										true);
 
 		/* Fetch the result set into the tuplestore */
-		ExecutorRun(queryDesc, ForwardScanDirection, 0L, false);
+		ExecutorRun(queryDesc, ForwardScanDirection, 0L);
 
-		queryDesc->dest->rDestroy(queryDesc->dest);
+		(*queryDesc->dest->rDestroy) (queryDesc->dest);
 		queryDesc->dest = NULL;
 
 		/*
 		 * Now shut down the inner executor.
 		 */
-		portal->queryDesc = NULL;	/* prevent double shutdown */
+		portal->queryDesc = NULL;		/* prevent double shutdown */
 		ExecutorFinish(queryDesc);
 		ExecutorEnd(queryDesc);
 		FreeQueryDesc(queryDesc);
@@ -412,14 +392,20 @@ PersistHoldablePortal(Portal portal)
 		if (portal->atEnd)
 		{
 			/*
-			 * Just force the tuplestore forward to its end.  The size of the
-			 * skip request here is arbitrary.
+			 * We can handle this case even if posOverflow: just force the
+			 * tuplestore forward to its end.  The size of the skip request
+			 * here is arbitrary.
 			 */
 			while (tuplestore_skiptuples(portal->holdStore, 1000000, true))
 				 /* continue */ ;
 		}
 		else
 		{
+			if (portal->posOverflow)	/* oops, cannot trust portalPos */
+				ereport(ERROR,
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						 errmsg("could not reposition held cursor")));
+
 			tuplestore_rescan(portal->holdStore);
 
 			if (!tuplestore_skiptuples(portal->holdStore,
@@ -454,10 +440,10 @@ PersistHoldablePortal(Portal portal)
 	PopActiveSnapshot();
 
 	/*
-	 * We can now release any subsidiary memory of the portal's context; we'll
-	 * never use it again.  The executor already dropped its context, but this
-	 * will clean up anything that glommed onto the portal's context via
+	 * We can now release any subsidiary memory of the portal's heap context;
+	 * we'll never use it again.  The executor already dropped its context,
+	 * but this will clean up anything that glommed onto the portal's heap via
 	 * PortalContext.
 	 */
-	MemoryContextDeleteChildren(portal->portalContext);
+	MemoryContextDeleteChildren(PortalGetHeapMemory(portal));
 }

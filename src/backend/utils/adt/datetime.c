@@ -3,7 +3,7 @@
  * datetime.c
  *	  Support functions for date/time types.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,13 +15,13 @@
 #include "postgres.h"
 
 #include <ctype.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
-#include "common/string.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -31,28 +31,29 @@
 #include "utils/memutils.h"
 #include "utils/tzparser.h"
 
-static int	DecodeNumber(int flen, char *field, bool haveTextMonth,
-						 int fmask, int *tmask,
-						 struct pg_tm *tm, fsec_t *fsec, bool *is2digits);
-static int	DecodeNumberField(int len, char *str,
-							  int fmask, int *tmask,
-							  struct pg_tm *tm, fsec_t *fsec, bool *is2digits);
-static int	DecodeTime(char *str, int fmask, int range,
-					   int *tmask, struct pg_tm *tm, fsec_t *fsec);
+
+static int DecodeNumber(int flen, char *field, bool haveTextMonth,
+			 int fmask, int *tmask,
+			 struct pg_tm * tm, fsec_t *fsec, bool *is2digits);
+static int DecodeNumberField(int len, char *str,
+				  int fmask, int *tmask,
+				  struct pg_tm * tm, fsec_t *fsec, bool *is2digits);
+static int DecodeTime(char *str, int fmask, int range,
+		   int *tmask, struct pg_tm * tm, fsec_t *fsec);
 static const datetkn *datebsearch(const char *key, const datetkn *base, int nel);
-static int	DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
-					   struct pg_tm *tm);
-static char *AppendSeconds(char *cp, int sec, fsec_t fsec,
-						   int precision, bool fillzeros);
-static void AdjustFractSeconds(double frac, struct pg_tm *tm, fsec_t *fsec,
-							   int scale);
-static void AdjustFractDays(double frac, struct pg_tm *tm, fsec_t *fsec,
-							int scale);
-static int	DetermineTimeZoneOffsetInternal(struct pg_tm *tm, pg_tz *tzp,
-											pg_time_t *tp);
-static bool DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t,
-												  const char *abbr, pg_tz *tzp,
-												  int *offset, int *isdst);
+static int DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
+		   struct pg_tm * tm);
+static void TrimTrailingZeros(char *str);
+static void AppendSeconds(char *cp, int sec, fsec_t fsec,
+			  int precision, bool fillzeros);
+static void AdjustFractSeconds(double frac, struct pg_tm * tm, fsec_t *fsec,
+				   int scale);
+static void AdjustFractDays(double frac, struct pg_tm * tm, fsec_t *fsec,
+				int scale);
+static int DetermineTimeZoneOffsetInternal(struct pg_tm * tm, pg_tz *tzp,
+								pg_time_t *tp);
+static int DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr,
+									  pg_tz *tzp, int *isdst);
 static pg_tz *FetchDynamicTimeZone(TimeZoneAbbrevTable *tbl, const datetkn *tp);
 
 
@@ -90,7 +91,7 @@ static const datetkn datetktbl[] = {
 	/* token, type, value */
 	{EARLY, RESERV, DTK_EARLY}, /* "-infinity" reserved for "early time" */
 	{DA_D, ADBC, AD},			/* "ad" for years > 0 */
-	{"allballs", RESERV, DTK_ZULU}, /* 00:00:00 */
+	{"allballs", RESERV, DTK_ZULU},		/* 00:00:00 */
 	{"am", AMPM, AM},
 	{"apr", MONTH, 4},
 	{"april", MONTH, 4},
@@ -98,6 +99,7 @@ static const datetkn datetktbl[] = {
 	{"aug", MONTH, 8},
 	{"august", MONTH, 8},
 	{DB_C, ADBC, BC},			/* "bc" for years <= 0 */
+	{DCURRENT, RESERV, DTK_CURRENT},	/* "current" is always now */
 	{"d", UNITS, DTK_DAY},		/* "day of month" for ISO input */
 	{"dec", MONTH, 12},
 	{"december", MONTH, 12},
@@ -111,7 +113,8 @@ static const datetkn datetktbl[] = {
 	{"friday", DOW, 5},
 	{"h", UNITS, DTK_HOUR},		/* "hour" */
 	{LATE, RESERV, DTK_LATE},	/* "infinity" reserved for "late time" */
-	{"isodow", UNITS, DTK_ISODOW},	/* ISO day of week, Sunday == 7 */
+	{INVALID, RESERV, DTK_INVALID},		/* "invalid" reserved for bad time */
+	{"isodow", UNITS, DTK_ISODOW},		/* ISO day of week, Sunday == 7 */
 	{"isoyear", UNITS, DTK_ISOYEAR},	/* year in terms of the ISO week date */
 	{"j", UNITS, DTK_JULIAN},
 	{"jan", MONTH, 1},
@@ -154,6 +157,7 @@ static const datetkn datetktbl[] = {
 	{"tue", DOW, 2},
 	{"tues", DOW, 2},
 	{"tuesday", DOW, 2},
+	{"undefined", RESERV, DTK_INVALID}, /* pre-v6.1 invalid time */
 	{"wed", DOW, 3},
 	{"wednesday", DOW, 3},
 	{"weds", DOW, 3},
@@ -161,7 +165,7 @@ static const datetkn datetktbl[] = {
 	{YESTERDAY, RESERV, DTK_YESTERDAY}	/* yesterday midnight */
 };
 
-static const int szdatetktbl = sizeof datetktbl / sizeof datetktbl[0];
+static int	szdatetktbl = sizeof datetktbl / sizeof datetktbl[0];
 
 /*
  * deltatktbl: same format as datetktbl, but holds keywords used to represent
@@ -172,32 +176,33 @@ static const datetkn deltatktbl[] = {
 	{"@", IGNORE_DTF, 0},		/* postgres relative prefix */
 	{DAGO, AGO, 0},				/* "ago" indicates negative time offset */
 	{"c", UNITS, DTK_CENTURY},	/* "century" relative */
-	{"cent", UNITS, DTK_CENTURY},	/* "century" relative */
+	{"cent", UNITS, DTK_CENTURY},		/* "century" relative */
 	{"centuries", UNITS, DTK_CENTURY},	/* "centuries" relative */
-	{DCENTURY, UNITS, DTK_CENTURY}, /* "century" relative */
+	{DCENTURY, UNITS, DTK_CENTURY},		/* "century" relative */
 	{"d", UNITS, DTK_DAY},		/* "day" relative */
 	{DDAY, UNITS, DTK_DAY},		/* "day" relative */
 	{"days", UNITS, DTK_DAY},	/* "days" relative */
 	{"dec", UNITS, DTK_DECADE}, /* "decade" relative */
-	{DDECADE, UNITS, DTK_DECADE},	/* "decade" relative */
-	{"decades", UNITS, DTK_DECADE}, /* "decades" relative */
+	{DDECADE, UNITS, DTK_DECADE},		/* "decade" relative */
+	{"decades", UNITS, DTK_DECADE},		/* "decades" relative */
 	{"decs", UNITS, DTK_DECADE},	/* "decades" relative */
 	{"h", UNITS, DTK_HOUR},		/* "hour" relative */
 	{DHOUR, UNITS, DTK_HOUR},	/* "hour" relative */
 	{"hours", UNITS, DTK_HOUR}, /* "hours" relative */
 	{"hr", UNITS, DTK_HOUR},	/* "hour" relative */
 	{"hrs", UNITS, DTK_HOUR},	/* "hours" relative */
+	{INVALID, RESERV, DTK_INVALID},		/* reserved for invalid time */
 	{"m", UNITS, DTK_MINUTE},	/* "minute" relative */
-	{"microsecon", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
-	{"mil", UNITS, DTK_MILLENNIUM}, /* "millennium" relative */
-	{"millennia", UNITS, DTK_MILLENNIUM},	/* "millennia" relative */
-	{DMILLENNIUM, UNITS, DTK_MILLENNIUM},	/* "millennium" relative */
-	{"millisecon", UNITS, DTK_MILLISEC},	/* relative */
+	{"microsecon", UNITS, DTK_MICROSEC},		/* "microsecond" relative */
+	{"mil", UNITS, DTK_MILLENNIUM},		/* "millennium" relative */
+	{"millennia", UNITS, DTK_MILLENNIUM},		/* "millennia" relative */
+	{DMILLENNIUM, UNITS, DTK_MILLENNIUM},		/* "millennium" relative */
+	{"millisecon", UNITS, DTK_MILLISEC},		/* relative */
 	{"mils", UNITS, DTK_MILLENNIUM},	/* "millennia" relative */
 	{"min", UNITS, DTK_MINUTE}, /* "minute" relative */
 	{"mins", UNITS, DTK_MINUTE},	/* "minutes" relative */
-	{DMINUTE, UNITS, DTK_MINUTE},	/* "minute" relative */
-	{"minutes", UNITS, DTK_MINUTE}, /* "minutes" relative */
+	{DMINUTE, UNITS, DTK_MINUTE},		/* "minute" relative */
+	{"minutes", UNITS, DTK_MINUTE},		/* "minutes" relative */
 	{"mon", UNITS, DTK_MONTH},	/* "months" relative */
 	{"mons", UNITS, DTK_MONTH}, /* "months" relative */
 	{DMONTH, UNITS, DTK_MONTH}, /* "month" relative */
@@ -208,7 +213,7 @@ static const datetkn deltatktbl[] = {
 	{"mseconds", UNITS, DTK_MILLISEC},
 	{"msecs", UNITS, DTK_MILLISEC},
 	{"qtr", UNITS, DTK_QUARTER},	/* "quarter" relative */
-	{DQUARTER, UNITS, DTK_QUARTER}, /* "quarter" relative */
+	{DQUARTER, UNITS, DTK_QUARTER},		/* "quarter" relative */
 	{"s", UNITS, DTK_SECOND},
 	{"sec", UNITS, DTK_SECOND},
 	{DSECOND, UNITS, DTK_SECOND},
@@ -216,12 +221,13 @@ static const datetkn deltatktbl[] = {
 	{"secs", UNITS, DTK_SECOND},
 	{DTIMEZONE, UNITS, DTK_TZ}, /* "timezone" time offset */
 	{"timezone_h", UNITS, DTK_TZ_HOUR}, /* timezone hour units */
-	{"timezone_m", UNITS, DTK_TZ_MINUTE},	/* timezone minutes units */
+	{"timezone_m", UNITS, DTK_TZ_MINUTE},		/* timezone minutes units */
+	{"undefined", RESERV, DTK_INVALID}, /* pre-v6.1 invalid time */
 	{"us", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
-	{"usec", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
+	{"usec", UNITS, DTK_MICROSEC},		/* "microsecond" relative */
 	{DMICROSEC, UNITS, DTK_MICROSEC},	/* "microsecond" relative */
 	{"useconds", UNITS, DTK_MICROSEC},	/* "microseconds" relative */
-	{"usecs", UNITS, DTK_MICROSEC}, /* "microseconds" relative */
+	{"usecs", UNITS, DTK_MICROSEC},		/* "microseconds" relative */
 	{"w", UNITS, DTK_WEEK},		/* "week" relative */
 	{DWEEK, UNITS, DTK_WEEK},	/* "week" relative */
 	{"weeks", UNITS, DTK_WEEK}, /* "weeks" relative */
@@ -232,7 +238,7 @@ static const datetkn deltatktbl[] = {
 	{"yrs", UNITS, DTK_YEAR}	/* "years" relative */
 };
 
-static const int szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
+static int	szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
 
 static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
 
@@ -246,6 +252,23 @@ static const datetkn *abbrevcache[MAXDATEFIELDS] = {NULL};
 
 
 /*
+ * strtoint --- just like strtol, but returns int not long
+ */
+static int
+strtoint(const char *nptr, char **endptr, int base)
+{
+	long		val;
+
+	val = strtol(nptr, endptr, base);
+#ifdef HAVE_LONG_INT_64
+	if (val != (long) ((int32) val))
+		errno = ERANGE;
+#endif
+	return (int) val;
+}
+
+
+/*
  * Calendar time to Julian date conversions.
  * Julian date is commonly used in astronomical applications,
  *	since it is numerically accurate and computationally simple.
@@ -253,16 +276,14 @@ static const datetkn *abbrevcache[MAXDATEFIELDS] = {NULL};
  *	and calendar date for all non-negative Julian days
  *	(i.e. from Nov 24, -4713 on).
  *
+ * These routines will be used by other date/time packages
+ * - thomas 97/02/25
+ *
  * Rewritten to eliminate overflow problems. This now allows the
  * routines to work correctly for all Julian day counts from
  * 0 to 2147483647	(Nov 24, -4713 to Jun 3, 5874898) assuming
  * a 32-bit integer. Longer types should also work to the limits
  * of their precision.
- *
- * Actually, date2j() will work sanely, in the sense of producing
- * valid negative Julian dates, significantly before Nov 24, -4713.
- * We rely on it to do so back to Nov 1, -4713; see IS_VALID_JULIAN()
- * and associated commentary in timestamp.h.
  */
 
 int
@@ -288,7 +309,7 @@ date2j(int y, int m, int d)
 	julian += 7834 * m / 256 + d;
 
 	return julian;
-}								/* date2j() */
+}	/* date2j() */
 
 void
 j2date(int jd, int *year, int *month, int *day)
@@ -313,7 +334,9 @@ j2date(int jd, int *year, int *month, int *day)
 	quad = julian * 2141 / 65536;
 	*day = julian - 7834 * quad / 256;
 	*month = (quad + 10) % MONTHS_PER_YEAR + 1;
-}								/* j2date() */
+
+	return;
+}	/* j2date() */
 
 
 /*
@@ -326,14 +349,15 @@ j2date(int jd, int *year, int *month, int *day)
 int
 j2day(int date)
 {
-	date += 1;
-	date %= 7;
-	/* Cope if division truncates towards zero, as it probably does */
-	if (date < 0)
-		date += 7;
+	unsigned int day;
 
-	return date;
-}								/* j2day() */
+	day = date;
+
+	day += 1;
+	day %= 7;
+
+	return (int) day;
+}	/* j2day() */
 
 
 /*
@@ -342,7 +366,7 @@ j2day(int date)
  * Get the transaction start time ("now()") broken down as a struct pg_tm.
  */
 void
-GetCurrentDateTime(struct pg_tm *tm)
+GetCurrentDateTime(struct pg_tm * tm)
 {
 	int			tz;
 	fsec_t		fsec;
@@ -359,7 +383,7 @@ GetCurrentDateTime(struct pg_tm *tm)
  * including fractional seconds and timezone offset.
  */
 void
-GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
+GetCurrentTimeUsec(struct pg_tm * tm, fsec_t *fsec, int *tzp)
 {
 	int			tz;
 
@@ -371,84 +395,71 @@ GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
 }
 
 
-/*
- * Append seconds and fractional seconds (if any) at *cp.
+/* TrimTrailingZeros()
+ * ... resulting from printing numbers with full precision.
  *
- * precision is the max number of fraction digits, fillzeros says to
- * pad to two integral-seconds digits.
- *
- * Returns a pointer to the new end of string.  No NUL terminator is put
- * there; callers are responsible for NUL terminating str themselves.
- *
- * Note that any sign is stripped from the input seconds values.
+ * Before Postgres 8.4, this always left at least 2 fractional digits,
+ * but conversations on the lists suggest this isn't desired
+ * since showing '0.10' is misleading with values of precision(1).
  */
-static char *
-AppendSeconds(char *cp, int sec, fsec_t fsec, int precision, bool fillzeros)
+static void
+TrimTrailingZeros(char *str)
 {
-	Assert(precision >= 0);
+	int			len = strlen(str);
 
-	if (fillzeros)
-		cp = pg_ultostr_zeropad(cp, Abs(sec), 2);
-	else
-		cp = pg_ultostr(cp, Abs(sec));
-
-	/* fsec_t is just an int32 */
-	if (fsec != 0)
+	while (len > 1 && *(str + len - 1) == '0' && *(str + len - 2) != '.')
 	{
-		int32		value = Abs(fsec);
-		char	   *end = &cp[precision + 1];
-		bool		gotnonzero = false;
-
-		*cp++ = '.';
-
-		/*
-		 * Append the fractional seconds part.  Note that we don't want any
-		 * trailing zeros here, so since we're building the number in reverse
-		 * we'll skip appending zeros until we've output a non-zero digit.
-		 */
-		while (precision--)
-		{
-			int32		oldval = value;
-			int32		remainder;
-
-			value /= 10;
-			remainder = oldval - value * 10;
-
-			/* check if we got a non-zero */
-			if (remainder)
-				gotnonzero = true;
-
-			if (gotnonzero)
-				cp[precision] = '0' + remainder;
-			else
-				end = &cp[precision];
-		}
-
-		/*
-		 * If we still have a non-zero value then precision must have not been
-		 * enough to print the number.  We punt the problem to pg_ltostr(),
-		 * which will generate a correct answer in the minimum valid width.
-		 */
-		if (value)
-			return pg_ultostr(cp, Abs(fsec));
-
-		return end;
+		len--;
+		*(str + len) = '\0';
 	}
-	else
-		return cp;
 }
 
-
 /*
- * Variant of above that's specialized to timestamp case.
- *
- * Returns a pointer to the new end of string.  No NUL terminator is put
- * there; callers are responsible for NUL terminating str themselves.
+ * Append sections and fractional seconds (if any) at *cp.
+ * precision is the max number of fraction digits, fillzeros says to
+ * pad to two integral-seconds digits.
+ * Note that any sign is stripped from the input seconds values.
  */
-static char *
-AppendTimestampSeconds(char *cp, struct pg_tm *tm, fsec_t fsec)
+static void
+AppendSeconds(char *cp, int sec, fsec_t fsec, int precision, bool fillzeros)
 {
-	return AppendSeconds(cp, tm->tm_sec, fsec, MAX_TIMESTAMP_PRECISION, true);
+	if (fsec == 0)
+	{
+		if (fillzeros)
+			sprintf(cp, "%02d", abs(sec));
+		else
+			sprintf(cp, "%d", abs(sec));
+	}
+	else
+	{
+#ifdef HAVE_INT64_TIMESTAMP
+		if (fillzeros)
+			sprintf(cp, "%02d.%0*d", abs(sec), precision, (int) Abs(fsec));
+		else
+			sprintf(cp, "%d.%0*d", abs(sec), precision, (int) Abs(fsec));
+#else
+		if (fillzeros)
+			sprintf(cp, "%0*.*f", precision + 3, precision, fabs(sec + fsec));
+		else
+			sprintf(cp, "%.*f", precision, fabs(sec + fsec));
+#endif
+		TrimTrailingZeros(cp);
+	}
+}
+
+/* Variant of above that's specialized to timestamp case */
+static void
+AppendTimestampSeconds(char *cp, struct pg_tm * tm, fsec_t fsec)
+{
+	/*
+	 * In float mode, don't print fractional seconds before 1 AD, since it's
+	 * unlikely there's any precision left ...
+	 */
+#ifndef HAVE_INT64_TIMESTAMP
+	if (tm->tm_year <= 0)
+		fsec = 0;
+#endif
+	AppendSeconds(cp, tm->tm_sec, fsec, MAX_TIMESTAMP_PRECISION, true);
 }
 
 /*
@@ -456,7 +467,7 @@ AppendTimestampSeconds(char *cp, struct pg_tm *tm, fsec_t fsec)
  * We assume the input frac is less than 1 so overflow is not an issue.
  */
 static void
-AdjustFractSeconds(double frac, struct pg_tm *tm, fsec_t *fsec, int scale)
+AdjustFractSeconds(double frac, struct pg_tm * tm, fsec_t *fsec, int scale)
 {
 	int			sec;
 
@@ -466,12 +477,16 @@ AdjustFractSeconds(double frac, struct pg_tm *tm, fsec_t *fsec, int scale)
 	sec = (int) frac;
 	tm->tm_sec += sec;
 	frac -= sec;
+#ifdef HAVE_INT64_TIMESTAMP
 	*fsec += rint(frac * 1000000);
+#else
+	*fsec += frac;
+#endif
 }
 
 /* As above, but initial scale produces days */
 static void
-AdjustFractDays(double frac, struct pg_tm *tm, fsec_t *fsec, int scale)
+AdjustFractDays(double frac, struct pg_tm * tm, fsec_t *fsec, int scale)
 {
 	int			extra_days;
 
@@ -497,7 +512,11 @@ ParseFractionalSecond(char *cp, fsec_t *fsec)
 	/* check for parse failure */
 	if (*cp != '\0' || errno != 0)
 		return DTERR_BAD_FORMAT;
+#ifdef HAVE_INT64_TIMESTAMP
 	*fsec = rint(frac * 1000000);
+#else
+	*fsec = frac;
+#endif
 	return 0;
 }
 
@@ -756,7 +775,7 @@ ParseDateTime(const char *timestr, char *workbuf, size_t buflen,
  */
 int
 DecodeDateTime(char **field, int *ftype, int nf,
-			   int *dtype, struct pg_tm *tm, fsec_t *fsec, int *tzp)
+			   int *dtype, struct pg_tm * tm, fsec_t *fsec, int *tzp)
 {
 	int			fmask = 0,
 				tmask,
@@ -766,10 +785,10 @@ DecodeDateTime(char **field, int *ftype, int nf,
 	int			val;
 	int			dterr;
 	int			mer = HR24;
-	bool		haveTextMonth = false;
-	bool		isjulian = false;
-	bool		is2digits = false;
-	bool		bc = false;
+	bool		haveTextMonth = FALSE;
+	bool		isjulian = FALSE;
+	bool		is2digits = FALSE;
+	bool		bc = FALSE;
 	pg_tz	   *namedTz = NULL;
 	pg_tz	   *abbrevTz = NULL;
 	pg_tz	   *valtz;
@@ -815,7 +834,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 						return DTERR_FIELD_OVERFLOW;
 
 					j2date(val, &tm->tm_year, &tm->tm_mon, &tm->tm_mday);
-					isjulian = true;
+					isjulian = TRUE;
 
 					/* Get the time zone from the end of the string */
 					dterr = DecodeTimezone(cp, tzp);
@@ -936,9 +955,14 @@ DecodeDateTime(char **field, int *ftype, int nf,
 				if (dterr)
 					return dterr;
 
-				/* check for time overflow */
-				if (time_overflows(tm->tm_hour, tm->tm_min, tm->tm_sec,
-								   *fsec))
+				/*
+				 * Check upper limit on hours; other limits checked in
+				 * DecodeTime()
+				 */
+				/* test for > 24:00:00 */
+				if (tm->tm_hour > HOURS_PER_DAY ||
+					(tm->tm_hour == HOURS_PER_DAY &&
+					 (tm->tm_min > 0 || tm->tm_sec > 0 || *fsec > 0)))
 					return DTERR_FIELD_OVERFLOW;
 				break;
 
@@ -1057,7 +1081,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 								return DTERR_FIELD_OVERFLOW;
 							tmask = DTK_DATE_M;
 							j2date(val, &tm->tm_year, &tm->tm_mon, &tm->tm_mday);
-							isjulian = true;
+							isjulian = TRUE;
 
 							/* fractional Julian Day? */
 							if (*cp == '.')
@@ -1068,7 +1092,12 @@ DecodeDateTime(char **field, int *ftype, int nf,
 								time = strtod(cp, &cp);
 								if (*cp != '\0' || errno != 0)
 									return DTERR_BAD_FORMAT;
+
+#ifdef HAVE_INT64_TIMESTAMP
 								time *= USECS_PER_DAY;
+#else
+								time *= SECS_PER_DAY;
+#endif
 								dt2time(time,
 										&tm->tm_hour, &tm->tm_min,
 										&tm->tm_sec, fsec);
@@ -1131,8 +1160,8 @@ DecodeDateTime(char **field, int *ftype, int nf,
 					 * Is this a YMD or HMS specification, or a year number?
 					 * YMD and HMS are required to be six digits or more, so
 					 * if it is 5 digits, it is a year.  If it is six or more
-					 * digits, we assume it is YMD or HMS unless no date and
-					 * no time values have been specified.  This forces 6+
+					 * more digits, we assume it is YMD or HMS unless no date
+					 * and no time values have been specified.  This forces 6+
 					 * digit years to be at the end of the string, or to use
 					 * the ISO date specification.
 					 */
@@ -1173,6 +1202,14 @@ DecodeDateTime(char **field, int *ftype, int nf,
 					case RESERV:
 						switch (val)
 						{
+							case DTK_CURRENT:
+								ereport(ERROR,
+									 (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									  errmsg("date/time value \"current\" is no longer supported")));
+
+								return DTERR_BAD_FORMAT;
+								break;
+
 							case DTK_NOW:
 								tmask = (DTK_DATE_M | DTK_TIME_M | DTK_M(TZ));
 								*dtype = DTK_DATE;
@@ -1184,7 +1221,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 								*dtype = DTK_DATE;
 								GetCurrentDateTime(&cur_tm);
 								j2date(date2j(cur_tm.tm_year, cur_tm.tm_mon, cur_tm.tm_mday) - 1,
-									   &tm->tm_year, &tm->tm_mon, &tm->tm_mday);
+									&tm->tm_year, &tm->tm_mon, &tm->tm_mday);
 								break;
 
 							case DTK_TODAY:
@@ -1201,7 +1238,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 								*dtype = DTK_DATE;
 								GetCurrentDateTime(&cur_tm);
 								j2date(date2j(cur_tm.tm_year, cur_tm.tm_mon, cur_tm.tm_mday) + 1,
-									   &tm->tm_year, &tm->tm_mon, &tm->tm_mday);
+									&tm->tm_year, &tm->tm_mon, &tm->tm_mday);
 								break;
 
 							case DTK_ZULU:
@@ -1233,7 +1270,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 							tm->tm_mday = tm->tm_mon;
 							tmask = DTK_M(DAY);
 						}
-						haveTextMonth = true;
+						haveTextMonth = TRUE;
 						tm->tm_mon = val;
 						break;
 
@@ -1430,7 +1467,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
  * though probably some higher-level code will.
  */
 int
-DetermineTimeZoneOffset(struct pg_tm *tm, pg_tz *tzp)
+DetermineTimeZoneOffset(struct pg_tm * tm, pg_tz *tzp)
 {
 	pg_time_t	t;
 
@@ -1452,7 +1489,7 @@ DetermineTimeZoneOffset(struct pg_tm *tm, pg_tz *tzp)
  * of mktime(), anyway.
  */
 static int
-DetermineTimeZoneOffsetInternal(struct pg_tm *tm, pg_tz *tzp, pg_time_t *tp)
+DetermineTimeZoneOffsetInternal(struct pg_tm * tm, pg_tz *tzp, pg_time_t *tp)
 {
 	int			date,
 				sec;
@@ -1553,10 +1590,7 @@ DetermineTimeZoneOffsetInternal(struct pg_tm *tm, pg_tz *tzp, pg_time_t *tp)
 	 * fall-back transition, prefer "after".  (We used to define and implement
 	 * this test as "prefer the standard-time interpretation", but that rule
 	 * does not help to resolve the behavior when both times are reported as
-	 * standard time; which does happen, eg Europe/Moscow in Oct 2014.  Also,
-	 * in some zones such as Europe/Dublin, there is widespread confusion
-	 * about which time offset is "standard" time, so it's fortunate that our
-	 * behavior doesn't depend on that.)
+	 * standard time; which does happen, eg Europe/Moscow in Oct 2014.)
 	 */
 	if (beforetime > aftertime)
 	{
@@ -1586,40 +1620,19 @@ overflow:
  * This differs from the behavior of DetermineTimeZoneOffset() in that a
  * standard-time or daylight-time abbreviation forces use of the corresponding
  * GMT offset even when the zone was then in DS or standard time respectively.
- * (However, that happens only if we can match the given abbreviation to some
- * abbreviation that appears in the IANA timezone data.  Otherwise, we fall
- * back to doing DetermineTimeZoneOffset().)
  */
 int
-DetermineTimeZoneAbbrevOffset(struct pg_tm *tm, const char *abbr, pg_tz *tzp)
+DetermineTimeZoneAbbrevOffset(struct pg_tm * tm, const char *abbr, pg_tz *tzp)
 {
 	pg_time_t	t;
-	int			zone_offset;
-	int			abbr_offset;
-	int			abbr_isdst;
 
 	/*
 	 * Compute the UTC time we want to probe at.  (In event of overflow, we'll
 	 * probe at the epoch, which is a bit random but probably doesn't matter.)
 	 */
-	zone_offset = DetermineTimeZoneOffsetInternal(tm, tzp, &t);
+	(void) DetermineTimeZoneOffsetInternal(tm, tzp, &t);
 
-	/*
-	 * Try to match the abbreviation to something in the zone definition.
-	 */
-	if (DetermineTimeZoneAbbrevOffsetInternal(t, abbr, tzp,
-											  &abbr_offset, &abbr_isdst))
-	{
-		/* Success, so use the abbrev-specific answers. */
-		tm->tm_isdst = abbr_isdst;
-		return abbr_offset;
-	}
-
-	/*
-	 * No match, so use the answers we already got from
-	 * DetermineTimeZoneOffsetInternal.
-	 */
-	return zone_offset;
+	return DetermineTimeZoneAbbrevOffsetInternal(t, abbr, tzp, &tm->tm_isdst);
 }
 
 
@@ -1633,41 +1646,19 @@ DetermineTimeZoneAbbrevOffsetTS(TimestampTz ts, const char *abbr,
 								pg_tz *tzp, int *isdst)
 {
 	pg_time_t	t = timestamptz_to_time_t(ts);
-	int			zone_offset;
-	int			abbr_offset;
-	int			tz;
-	struct pg_tm tm;
-	fsec_t		fsec;
 
-	/*
-	 * If the abbrev matches anything in the zone data, this is pretty easy.
-	 */
-	if (DetermineTimeZoneAbbrevOffsetInternal(t, abbr, tzp,
-											  &abbr_offset, isdst))
-		return abbr_offset;
-
-	/*
-	 * Else, break down the timestamp so we can use DetermineTimeZoneOffset.
-	 */
-	if (timestamp2tm(ts, &tz, &tm, &fsec, NULL, tzp) != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-				 errmsg("timestamp out of range")));
-
-	zone_offset = DetermineTimeZoneOffset(&tm, tzp);
-	*isdst = tm.tm_isdst;
-	return zone_offset;
+	return DetermineTimeZoneAbbrevOffsetInternal(t, abbr, tzp, isdst);
 }
 
 
 /* DetermineTimeZoneAbbrevOffsetInternal()
  *
  * Workhorse for above two functions: work from a pg_time_t probe instant.
- * On success, return GMT offset and DST status into *offset and *isdst.
+ * DST status is returned into *isdst.
  */
-static bool
-DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr, pg_tz *tzp,
-									  int *offset, int *isdst)
+static int
+DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr,
+									  pg_tz *tzp, int *isdst)
 {
 	char		upabbr[TZ_STRLEN_MAX + 1];
 	unsigned char *p;
@@ -1679,17 +1670,18 @@ DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr, pg_tz *tzp,
 		*p = pg_toupper(*p);
 
 	/* Look up the abbrev's meaning at this time in this zone */
-	if (pg_interpret_timezone_abbrev(upabbr,
-									 &t,
-									 &gmtoff,
-									 isdst,
-									 tzp))
-	{
-		/* Change sign to agree with DetermineTimeZoneOffset() */
-		*offset = (int) -gmtoff;
-		return true;
-	}
-	return false;
+	if (!pg_interpret_timezone_abbrev(upabbr,
+									  &t,
+									  &gmtoff,
+									  isdst,
+									  tzp))
+		ereport(ERROR,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("time zone abbreviation \"%s\" is not used in time zone \"%s\"",
+						abbr, pg_get_timezone_name(tzp))));
+
+	/* Change sign to agree with DetermineTimeZoneOffset() */
+	return (int) -gmtoff;
 }
 
 
@@ -1707,7 +1699,7 @@ DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr, pg_tz *tzp,
  */
 int
 DecodeTimeOnly(char **field, int *ftype, int nf,
-			   int *dtype, struct pg_tm *tm, fsec_t *fsec, int *tzp)
+			   int *dtype, struct pg_tm * tm, fsec_t *fsec, int *tzp)
 {
 	int			fmask = 0,
 				tmask,
@@ -1716,9 +1708,9 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 	int			i;
 	int			val;
 	int			dterr;
-	bool		isjulian = false;
-	bool		is2digits = false;
-	bool		bc = false;
+	bool		isjulian = FALSE;
+	bool		is2digits = FALSE;
+	bool		bc = FALSE;
 	int			mer = HR24;
 	pg_tz	   *namedTz = NULL;
 	pg_tz	   *abbrevTz = NULL;
@@ -1847,7 +1839,7 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 
 				/*
 				 * Was this an "ISO time" with embedded field labels? An
-				 * example is "h04mm05s06" - thomas 2001-02-04
+				 * example is "h04m05s06" - thomas 2001-02-04
 				 */
 				if (ptype != 0)
 				{
@@ -1956,7 +1948,7 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 								return DTERR_FIELD_OVERFLOW;
 							tmask = DTK_DATE_M;
 							j2date(val, &tm->tm_year, &tm->tm_mon, &tm->tm_mday);
-							isjulian = true;
+							isjulian = TRUE;
 
 							if (*cp == '.')
 							{
@@ -1966,7 +1958,12 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 								time = strtod(cp, &cp);
 								if (*cp != '\0' || errno != 0)
 									return DTERR_BAD_FORMAT;
+
+#ifdef HAVE_INT64_TIMESTAMP
 								time *= USECS_PER_DAY;
+#else
+								time *= SECS_PER_DAY;
+#endif
 								dt2time(time,
 										&tm->tm_hour, &tm->tm_min,
 										&tm->tm_sec, fsec);
@@ -2051,7 +2048,7 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 					else
 					{
 						dterr = DecodeNumber(flen, field[i],
-											 false,
+											 FALSE,
 											 (fmask | DTK_DATE_M),
 											 &tmask, tm,
 											 fsec, &is2digits);
@@ -2076,6 +2073,13 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 					case RESERV:
 						switch (val)
 						{
+							case DTK_CURRENT:
+								ereport(ERROR,
+									 (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									  errmsg("date/time value \"current\" is no longer supported")));
+								return DTERR_BAD_FORMAT;
+								break;
+
 							case DTK_NOW:
 								tmask = DTK_TIME_M;
 								*dtype = DTK_TIME;
@@ -2213,8 +2217,21 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 	else if (mer == PM && tm->tm_hour != HOURS_PER_DAY / 2)
 		tm->tm_hour += HOURS_PER_DAY / 2;
 
-	/* check for time overflow */
-	if (time_overflows(tm->tm_hour, tm->tm_min, tm->tm_sec, *fsec))
+	/*
+	 * This should match the checks in make_timestamp_internal
+	 */
+	if (tm->tm_hour < 0 || tm->tm_min < 0 || tm->tm_min > MINS_PER_HOUR - 1 ||
+		tm->tm_sec < 0 || tm->tm_sec > SECS_PER_MINUTE ||
+		tm->tm_hour > HOURS_PER_DAY ||
+	/* test for > 24:00:00 */
+		(tm->tm_hour == HOURS_PER_DAY &&
+		 (tm->tm_min > 0 || tm->tm_sec > 0 || *fsec > 0)) ||
+#ifdef HAVE_INT64_TIMESTAMP
+		*fsec < INT64CONST(0) || *fsec > USECS_PER_SEC
+#else
+		*fsec < 0 || *fsec > 1
+#endif
+		)
 		return DTERR_FIELD_OVERFLOW;
 
 	if ((fmask & DTK_TIME_M) != DTK_TIME_M)
@@ -2264,9 +2281,6 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 			GetCurrentDateTime(tmp);
 		else
 		{
-			/* a date has to be specified */
-			if ((fmask & DTK_DATE_M) != DTK_DATE_M)
-				return DTERR_BAD_FORMAT;
 			tmp->tm_year = tm->tm_year;
 			tmp->tm_mon = tm->tm_mon;
 			tmp->tm_mday = tm->tm_mday;
@@ -2294,9 +2308,6 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 			GetCurrentDateTime(tmp);
 		else
 		{
-			/* a date has to be specified */
-			if ((fmask & DTK_DATE_M) != DTK_DATE_M)
-				return DTERR_BAD_FORMAT;
 			tmp->tm_year = tm->tm_year;
 			tmp->tm_mon = tm->tm_mon;
 			tmp->tm_mday = tm->tm_mday;
@@ -2318,19 +2329,19 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
  *	str: field to be parsed
  *	fmask: bitmask for field types already seen
  *	*tmask: receives bitmask for fields found here
- *	*is2digits: set to true if we find 2-digit year
+ *	*is2digits: set to TRUE if we find 2-digit year
  *	*tm: field values are stored into appropriate members of this struct
  */
 static int
 DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
-		   struct pg_tm *tm)
+		   struct pg_tm * tm)
 {
 	fsec_t		fsec;
 	int			nf = 0;
 	int			i,
 				len;
 	int			dterr;
-	bool		haveTextMonth = false;
+	bool		haveTextMonth = FALSE;
 	int			type,
 				val,
 				dmask = 0;
@@ -2380,7 +2391,7 @@ DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
 			{
 				case MONTH:
 					tm->tm_mon = val;
-					haveTextMonth = true;
+					haveTextMonth = TRUE;
 					break;
 
 				default:
@@ -2433,7 +2444,7 @@ DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
  */
 int
 ValidateDate(int fmask, bool isjulian, bool is2digits, bool bc,
-			 struct pg_tm *tm)
+			 struct pg_tm * tm)
 {
 	if (fmask & DTK_M(YEAR))
 	{
@@ -2512,7 +2523,7 @@ ValidateDate(int fmask, bool isjulian, bool is2digits, bool bc,
  */
 static int
 DecodeTime(char *str, int fmask, int range,
-		   int *tmask, struct pg_tm *tm, fsec_t *fsec)
+		   int *tmask, struct pg_tm * tm, fsec_t *fsec)
 {
 	char	   *cp;
 	int			dterr;
@@ -2572,11 +2583,18 @@ DecodeTime(char *str, int fmask, int range,
 		return DTERR_BAD_FORMAT;
 
 	/* do a sanity check */
+#ifdef HAVE_INT64_TIMESTAMP
 	if (tm->tm_hour < 0 || tm->tm_min < 0 || tm->tm_min > MINS_PER_HOUR - 1 ||
 		tm->tm_sec < 0 || tm->tm_sec > SECS_PER_MINUTE ||
 		*fsec < INT64CONST(0) ||
 		*fsec > USECS_PER_SEC)
 		return DTERR_FIELD_OVERFLOW;
+#else
+	if (tm->tm_hour < 0 || tm->tm_min < 0 || tm->tm_min > MINS_PER_HOUR - 1 ||
+		tm->tm_sec < 0 || tm->tm_sec > SECS_PER_MINUTE ||
+		*fsec < 0 || *fsec > 1)
+		return DTERR_FIELD_OVERFLOW;
+#endif
 
 	return 0;
 }
@@ -2588,7 +2606,7 @@ DecodeTime(char *str, int fmask, int range,
  */
 static int
 DecodeNumber(int flen, char *str, bool haveTextMonth, int fmask,
-			 int *tmask, struct pg_tm *tm, fsec_t *fsec, bool *is2digits)
+			 int *tmask, struct pg_tm * tm, fsec_t *fsec, bool *is2digits)
 {
 	int			val;
 	char	   *cp;
@@ -2708,10 +2726,10 @@ DecodeNumber(int flen, char *str, bool haveTextMonth, int fmask,
 				if (flen >= 3 && *is2digits)
 				{
 					/* Guess that first numeric field is day was wrong */
-					*tmask = DTK_M(DAY);	/* YEAR is already set */
+					*tmask = DTK_M(DAY);		/* YEAR is already set */
 					tm->tm_mday = tm->tm_year;
 					tm->tm_year = val;
-					*is2digits = false;
+					*is2digits = FALSE;
 				}
 				else
 				{
@@ -2773,7 +2791,7 @@ DecodeNumber(int flen, char *str, bool haveTextMonth, int fmask,
  */
 static int
 DecodeNumberField(int len, char *str, int fmask,
-				  int *tmask, struct pg_tm *tm, fsec_t *fsec, bool *is2digits)
+				int *tmask, struct pg_tm * tm, fsec_t *fsec, bool *is2digits)
 {
 	char	   *cp;
 
@@ -2793,7 +2811,11 @@ DecodeNumberField(int len, char *str, int fmask,
 		frac = strtod(cp, NULL);
 		if (errno != 0)
 			return DTERR_BAD_FORMAT;
+#ifdef HAVE_INT64_TIMESTAMP
 		*fsec = rint(frac * 1000000);
+#else
+		*fsec = frac;
+#endif
 		/* Now truncate off the fraction for further processing */
 		*cp = '\0';
 		len = strlen(str);
@@ -2815,7 +2837,7 @@ DecodeNumberField(int len, char *str, int fmask,
 			*(str + (len - 4)) = '\0';
 			tm->tm_year = atoi(str);
 			if ((len - 4) == 2)
-				*is2digits = true;
+				*is2digits = TRUE;
 
 			return DTK_DATE;
 		}
@@ -3019,12 +3041,12 @@ DecodeSpecial(int field, char *lowtoken, int *val)
 }
 
 
-/* ClearPgTm
+/* ClearPgTM
  *
  * Zero out a pg_tm and associated fsec_t
  */
 static inline void
-ClearPgTm(struct pg_tm *tm, fsec_t *fsec)
+ClearPgTm(struct pg_tm * tm, fsec_t *fsec)
 {
 	tm->tm_year = 0;
 	tm->tm_mon = 0;
@@ -3049,9 +3071,9 @@ ClearPgTm(struct pg_tm *tm, fsec_t *fsec)
  */
 int
 DecodeInterval(char **field, int *ftype, int nf, int range,
-			   int *dtype, struct pg_tm *tm, fsec_t *fsec)
+			   int *dtype, struct pg_tm * tm, fsec_t *fsec)
 {
-	bool		is_before = false;
+	bool		is_before = FALSE;
 	char	   *cp;
 	int			fmask = 0,
 				tmask,
@@ -3118,7 +3140,7 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 				 * handle signed float numbers and signed year-month values.
 				 */
 
-				/* FALLTHROUGH */
+				/* FALL THROUGH */
 
 			case DTK_DATE:
 			case DTK_NUMBER:
@@ -3202,7 +3224,11 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 				switch (type)
 				{
 					case DTK_MICROSEC:
+#ifdef HAVE_INT64_TIMESTAMP
 						*fsec += rint(val + fval);
+#else
+						*fsec += (val + fval) * 1e-6;
+#endif
 						tmask = DTK_M(MICROSECOND);
 						break;
 
@@ -3210,13 +3236,21 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 						/* avoid overflowing the fsec field */
 						tm->tm_sec += val / 1000;
 						val -= (val / 1000) * 1000;
+#ifdef HAVE_INT64_TIMESTAMP
 						*fsec += rint((val + fval) * 1000);
+#else
+						*fsec += (val + fval) * 1e-3;
+#endif
 						tmask = DTK_M(MILLISECOND);
 						break;
 
 					case DTK_SECOND:
 						tm->tm_sec += val;
+#ifdef HAVE_INT64_TIMESTAMP
 						*fsec += rint(fval * 1000000);
+#else
+						*fsec += fval;
+#endif
 
 						/*
 						 * If any subseconds were specified, consider this
@@ -3306,7 +3340,7 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 						break;
 
 					case AGO:
-						is_before = true;
+						is_before = TRUE;
 						type = val;
 						break;
 
@@ -3338,8 +3372,12 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 	{
 		int			sec;
 
+#ifdef HAVE_INT64_TIMESTAMP
 		sec = *fsec / USECS_PER_SEC;
 		*fsec -= sec * USECS_PER_SEC;
+#else
+		TMODULO(*fsec, sec, 1.0);
+#endif
 		tm->tm_sec += sec;
 	}
 
@@ -3475,7 +3513,7 @@ ISO8601IntegerWidth(char *fieldstart)
  */
 int
 DecodeISO8601Interval(char *str,
-					  int *dtype, struct pg_tm *tm, fsec_t *fsec)
+					  int *dtype, struct pg_tm * tm, fsec_t *fsec)
 {
 	bool		datepart = true;
 	bool		havefield = false;
@@ -3549,7 +3587,6 @@ DecodeISO8601Interval(char *str,
 						continue;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
 				case '-':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -3628,7 +3665,6 @@ DecodeISO8601Interval(char *str,
 						return 0;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
 				case ':':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -3707,7 +3743,7 @@ DecodeUnits(int field, char *lowtoken, int *val)
 	}
 
 	return type;
-}								/* DecodeUnits() */
+}	/* DecodeUnits() */
 
 /*
  * Report an error detected by one of the datetime input processing routines.
@@ -3736,7 +3772,7 @@ DateTimeParseError(int dterr, const char *str, const char *datatype)
 					(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
 					 errmsg("date/time field value out of range: \"%s\"",
 							str),
-					 errhint("Perhaps you need a different \"datestyle\" setting.")));
+			errhint("Perhaps you need a different \"datestyle\" setting.")));
 			break;
 		case DTERR_INTERVAL_OVERFLOW:
 			ereport(ERROR,
@@ -3795,12 +3831,9 @@ datebsearch(const char *key, const datetkn *base, int nel)
 }
 
 /* EncodeTimezone()
- *		Copies representation of a numeric timezone offset to str.
- *
- * Returns a pointer to the new end of string.  No NUL terminator is put
- * there; callers are responsible for NUL terminating str themselves.
+ *		Append representation of a numeric timezone offset to str.
  */
-static char *
+static void
 EncodeTimezone(char *str, int tz, int style)
 {
 	int			hour,
@@ -3813,33 +3846,23 @@ EncodeTimezone(char *str, int tz, int style)
 	hour = min / MINS_PER_HOUR;
 	min -= hour * MINS_PER_HOUR;
 
+	str += strlen(str);
 	/* TZ is negated compared to sign we wish to display ... */
 	*str++ = (tz <= 0 ? '+' : '-');
 
 	if (sec != 0)
-	{
-		str = pg_ultostr_zeropad(str, hour, 2);
-		*str++ = ':';
-		str = pg_ultostr_zeropad(str, min, 2);
-		*str++ = ':';
-		str = pg_ultostr_zeropad(str, sec, 2);
-	}
+		sprintf(str, "%02d:%02d:%02d", hour, min, sec);
 	else if (min != 0 || style == USE_XSD_DATES)
-	{
-		str = pg_ultostr_zeropad(str, hour, 2);
-		*str++ = ':';
-		str = pg_ultostr_zeropad(str, min, 2);
-	}
+		sprintf(str, "%02d:%02d", hour, min);
 	else
-		str = pg_ultostr_zeropad(str, hour, 2);
-	return str;
+		sprintf(str, "%02d", hour);
 }
 
 /* EncodeDateOnly()
  * Encode date as local time.
  */
 void
-EncodeDateOnly(struct pg_tm *tm, int style, char *str)
+EncodeDateOnly(struct pg_tm * tm, int style, char *str)
 {
 	Assert(tm->tm_mon >= 1 && tm->tm_mon <= MONTHS_PER_YEAR);
 
@@ -3848,70 +3871,48 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 		case USE_ISO_DATES:
 		case USE_XSD_DATES:
 			/* compatible with ISO date formats */
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
-			*str++ = '-';
-			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			*str++ = '-';
-			str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
+			if (tm->tm_year > 0)
+				sprintf(str, "%04d-%02d-%02d",
+						tm->tm_year, tm->tm_mon, tm->tm_mday);
+			else
+				sprintf(str, "%04d-%02d-%02d %s",
+						-(tm->tm_year - 1), tm->tm_mon, tm->tm_mday, "BC");
 			break;
 
 		case USE_SQL_DATES:
 			/* compatible with Oracle/Ingres date formats */
 			if (DateOrder == DATEORDER_DMY)
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-				*str++ = '/';
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			}
+				sprintf(str, "%02d/%02d", tm->tm_mday, tm->tm_mon);
 			else
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-				*str++ = '/';
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			}
-			*str++ = '/';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+				sprintf(str, "%02d/%02d", tm->tm_mon, tm->tm_mday);
+			if (tm->tm_year > 0)
+				sprintf(str + 5, "/%04d", tm->tm_year);
+			else
+				sprintf(str + 5, "/%04d %s", -(tm->tm_year - 1), "BC");
 			break;
 
 		case USE_GERMAN_DATES:
 			/* German-style date format */
-			str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			*str++ = '.';
-			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			*str++ = '.';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+			sprintf(str, "%02d.%02d", tm->tm_mday, tm->tm_mon);
+			if (tm->tm_year > 0)
+				sprintf(str + 5, ".%04d", tm->tm_year);
+			else
+				sprintf(str + 5, ".%04d %s", -(tm->tm_year - 1), "BC");
 			break;
 
 		case USE_POSTGRES_DATES:
 		default:
 			/* traditional date-only style for Postgres */
 			if (DateOrder == DATEORDER_DMY)
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-				*str++ = '-';
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			}
+				sprintf(str, "%02d-%02d", tm->tm_mday, tm->tm_mon);
 			else
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-				*str++ = '-';
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			}
-			*str++ = '-';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+				sprintf(str, "%02d-%02d", tm->tm_mon, tm->tm_mday);
+			if (tm->tm_year > 0)
+				sprintf(str + 5, "-%04d", tm->tm_year);
+			else
+				sprintf(str + 5, "-%04d %s", -(tm->tm_year - 1), "BC");
 			break;
 	}
-
-	if (tm->tm_year <= 0)
-	{
-		memcpy(str, " BC", 3);	/* Don't copy NUL */
-		str += 3;
-	}
-	*str = '\0';
 }
 
 
@@ -3924,16 +3925,15 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
  * output.
  */
 void
-EncodeTimeOnly(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, int style, char *str)
+EncodeTimeOnly(struct pg_tm * tm, fsec_t fsec, bool print_tz, int tz, int style, char *str)
 {
-	str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
-	*str++ = ':';
-	str = pg_ultostr_zeropad(str, tm->tm_min, 2);
-	*str++ = ':';
-	str = AppendSeconds(str, tm->tm_sec, fsec, MAX_TIME_PRECISION, true);
+	sprintf(str, "%02d:%02d:", tm->tm_hour, tm->tm_min);
+	str += strlen(str);
+
+	AppendSeconds(str, tm->tm_sec, fsec, MAX_TIME_PRECISION, true);
+
 	if (print_tz)
-		str = EncodeTimezone(str, tz, style);
-	*str = '\0';
+		EncodeTimezone(str, tz, style);
 }
 
 
@@ -3954,7 +3954,7 @@ EncodeTimeOnly(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, int style, 
  *	XSD - yyyy-mm-ddThh:mm:ss.ss+/-tz
  */
 void
-EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char *tzn, int style, char *str)
+EncodeDateTime(struct pg_tm * tm, fsec_t fsec, bool print_tz, int tz, const char *tzn, int style, char *str)
 {
 	int			day;
 
@@ -3971,129 +3971,106 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 		case USE_ISO_DATES:
 		case USE_XSD_DATES:
 			/* Compatible with ISO-8601 date formats */
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
-			*str++ = '-';
-			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			*str++ = '-';
-			str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			*str++ = (style == USE_ISO_DATES) ? ' ' : 'T';
-			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
-			*str++ = ':';
-			str = pg_ultostr_zeropad(str, tm->tm_min, 2);
-			*str++ = ':';
-			str = AppendTimestampSeconds(str, tm, fsec);
+
+			if (style == USE_ISO_DATES)
+				sprintf(str, "%04d-%02d-%02d %02d:%02d:",
+						(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1),
+						tm->tm_mon, tm->tm_mday, tm->tm_hour, tm->tm_min);
+			else
+				sprintf(str, "%04d-%02d-%02dT%02d:%02d:",
+						(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1),
+						tm->tm_mon, tm->tm_mday, tm->tm_hour, tm->tm_min);
+
+			AppendTimestampSeconds(str + strlen(str), tm, fsec);
+
 			if (print_tz)
-				str = EncodeTimezone(str, tz, style);
+				EncodeTimezone(str, tz, style);
+
+			if (tm->tm_year <= 0)
+				sprintf(str + strlen(str), " BC");
 			break;
 
 		case USE_SQL_DATES:
 			/* Compatible with Oracle/Ingres date formats */
+
 			if (DateOrder == DATEORDER_DMY)
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-				*str++ = '/';
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			}
+				sprintf(str, "%02d/%02d", tm->tm_mday, tm->tm_mon);
 			else
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-				*str++ = '/';
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			}
-			*str++ = '/';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
-			*str++ = ' ';
-			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
-			*str++ = ':';
-			str = pg_ultostr_zeropad(str, tm->tm_min, 2);
-			*str++ = ':';
-			str = AppendTimestampSeconds(str, tm, fsec);
+				sprintf(str, "%02d/%02d", tm->tm_mon, tm->tm_mday);
+
+			sprintf(str + 5, "/%04d %02d:%02d:",
+					(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1),
+					tm->tm_hour, tm->tm_min);
+
+			AppendTimestampSeconds(str + strlen(str), tm, fsec);
 
 			/*
 			 * Note: the uses of %.*s in this function would be risky if the
 			 * timezone names ever contain non-ASCII characters.  However, all
-			 * TZ abbreviations in the IANA database are plain ASCII.
+			 * TZ abbreviations in the Olson database are plain ASCII.
 			 */
+
 			if (print_tz)
 			{
 				if (tzn)
-				{
-					sprintf(str, " %.*s", MAXTZLEN, tzn);
-					str += strlen(str);
-				}
+					sprintf(str + strlen(str), " %.*s", MAXTZLEN, tzn);
 				else
-					str = EncodeTimezone(str, tz, style);
+					EncodeTimezone(str, tz, style);
 			}
+
+			if (tm->tm_year <= 0)
+				sprintf(str + strlen(str), " BC");
 			break;
 
 		case USE_GERMAN_DATES:
 			/* German variant on European style */
-			str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			*str++ = '.';
-			str = pg_ultostr_zeropad(str, tm->tm_mon, 2);
-			*str++ = '.';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
-			*str++ = ' ';
-			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
-			*str++ = ':';
-			str = pg_ultostr_zeropad(str, tm->tm_min, 2);
-			*str++ = ':';
-			str = AppendTimestampSeconds(str, tm, fsec);
+
+			sprintf(str, "%02d.%02d", tm->tm_mday, tm->tm_mon);
+
+			sprintf(str + 5, ".%04d %02d:%02d:",
+					(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1),
+					tm->tm_hour, tm->tm_min);
+
+			AppendTimestampSeconds(str + strlen(str), tm, fsec);
 
 			if (print_tz)
 			{
 				if (tzn)
-				{
-					sprintf(str, " %.*s", MAXTZLEN, tzn);
-					str += strlen(str);
-				}
+					sprintf(str + strlen(str), " %.*s", MAXTZLEN, tzn);
 				else
-					str = EncodeTimezone(str, tz, style);
+					EncodeTimezone(str, tz, style);
 			}
+
+			if (tm->tm_year <= 0)
+				sprintf(str + strlen(str), " BC");
 			break;
 
 		case USE_POSTGRES_DATES:
 		default:
 			/* Backward-compatible with traditional Postgres abstime dates */
+
 			day = date2j(tm->tm_year, tm->tm_mon, tm->tm_mday);
 			tm->tm_wday = j2day(day);
-			memcpy(str, days[tm->tm_wday], 3);
-			str += 3;
-			*str++ = ' ';
+
+			strncpy(str, days[tm->tm_wday], 3);
+			strcpy(str + 3, " ");
+
 			if (DateOrder == DATEORDER_DMY)
-			{
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-				*str++ = ' ';
-				memcpy(str, months[tm->tm_mon - 1], 3);
-				str += 3;
-			}
+				sprintf(str + 4, "%02d %3s", tm->tm_mday, months[tm->tm_mon - 1]);
 			else
-			{
-				memcpy(str, months[tm->tm_mon - 1], 3);
-				str += 3;
-				*str++ = ' ';
-				str = pg_ultostr_zeropad(str, tm->tm_mday, 2);
-			}
-			*str++ = ' ';
-			str = pg_ultostr_zeropad(str, tm->tm_hour, 2);
-			*str++ = ':';
-			str = pg_ultostr_zeropad(str, tm->tm_min, 2);
-			*str++ = ':';
-			str = AppendTimestampSeconds(str, tm, fsec);
-			*str++ = ' ';
-			str = pg_ultostr_zeropad(str,
-									 (tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1), 4);
+				sprintf(str + 4, "%3s %02d", months[tm->tm_mon - 1], tm->tm_mday);
+
+			sprintf(str + 10, " %02d:%02d:", tm->tm_hour, tm->tm_min);
+
+			AppendTimestampSeconds(str + strlen(str), tm, fsec);
+
+			sprintf(str + strlen(str), " %04d",
+					(tm->tm_year > 0) ? tm->tm_year : -(tm->tm_year - 1));
 
 			if (print_tz)
 			{
 				if (tzn)
-				{
-					sprintf(str, " %.*s", MAXTZLEN, tzn);
-					str += strlen(str);
-				}
+					sprintf(str + strlen(str), " %.*s", MAXTZLEN, tzn);
 				else
 				{
 					/*
@@ -4102,19 +4079,15 @@ EncodeDateTime(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, const char 
 					 * avoid formatting something which would be rejected by
 					 * the date/time parser later. - thomas 2001-10-19
 					 */
-					*str++ = ' ';
-					str = EncodeTimezone(str, tz, style);
+					sprintf(str + strlen(str), " ");
+					EncodeTimezone(str, tz, style);
 				}
 			}
+
+			if (tm->tm_year <= 0)
+				sprintf(str + strlen(str), " BC");
 			break;
 	}
-
-	if (tm->tm_year <= 0)
-	{
-		memcpy(str, " BC", 3);	/* Don't copy NUL */
-		str += 3;
-	}
-	*str = '\0';
 }
 
 
@@ -4151,7 +4124,7 @@ AddPostgresIntPart(char *cp, int value, const char *units,
 	 * tad bizarre but it's how it worked before...
 	 */
 	*is_before = (value < 0);
-	*is_zero = false;
+	*is_zero = FALSE;
 	return cp + strlen(cp);
 }
 
@@ -4171,7 +4144,7 @@ AddVerboseIntPart(char *cp, int value, const char *units,
 	else if (*is_before)
 		value = -value;
 	sprintf(cp, " %d %s%s", value, units, (value == 1) ? "" : "s");
-	*is_zero = false;
+	*is_zero = FALSE;
 	return cp + strlen(cp);
 }
 
@@ -4196,7 +4169,7 @@ AddVerboseIntPart(char *cp, int value, const char *units,
  * "day-time literal"s (that look like ('4 5:6:7')
  */
 void
-EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
+EncodeInterval(struct pg_tm * tm, fsec_t fsec, int style, char *str)
 {
 	char	   *cp = str;
 	int			year = tm->tm_year;
@@ -4205,8 +4178,8 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 	int			hour = tm->tm_hour;
 	int			min = tm->tm_min;
 	int			sec = tm->tm_sec;
-	bool		is_before = false;
-	bool		is_zero = true;
+	bool		is_before = FALSE;
+	bool		is_zero = TRUE;
 
 	/*
 	 * The sign of year and month are guaranteed to match, since they are
@@ -4269,8 +4242,7 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 							day_sign, abs(mday),
 							sec_sign, abs(hour), abs(min));
 					cp += strlen(cp);
-					cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
-					*cp = '\0';
+					AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 				}
 				else if (has_year_month)
 				{
@@ -4280,15 +4252,13 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 				{
 					sprintf(cp, "%d %d:%02d:", mday, hour, min);
 					cp += strlen(cp);
-					cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
-					*cp = '\0';
+					AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 				}
 				else
 				{
 					sprintf(cp, "%d:%02d:", hour, min);
 					cp += strlen(cp);
-					cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
-					*cp = '\0';
+					AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 				}
 			}
 			break;
@@ -4314,7 +4284,8 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 			{
 				if (sec < 0 || fsec < 0)
 					*cp++ = '-';
-				cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, false);
+				AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, false);
+				cp += strlen(cp);
 				*cp++ = 'S';
 				*cp++ = '\0';
 			}
@@ -4340,8 +4311,7 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 						(minus ? "-" : (is_before ? "+" : "")),
 						abs(hour), abs(min));
 				cp += strlen(cp);
-				cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
-				*cp = '\0';
+				AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, true);
 			}
 			break;
 
@@ -4361,16 +4331,17 @@ EncodeInterval(struct pg_tm *tm, fsec_t fsec, int style, char *str)
 				if (sec < 0 || (sec == 0 && fsec < 0))
 				{
 					if (is_zero)
-						is_before = true;
+						is_before = TRUE;
 					else if (!is_before)
 						*cp++ = '-';
 				}
 				else if (is_before)
 					*cp++ = '-';
-				cp = AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, false);
+				AppendSeconds(cp, sec, fsec, MAX_INTERVAL_PRECISION, false);
+				cp += strlen(cp);
 				sprintf(cp, " sec%s",
 						(abs(sec) != 1 || fsec != 0) ? "s" : "");
-				is_zero = false;
+				is_zero = FALSE;
 			}
 			/* identically zero? then put in a unitless zero... */
 			if (is_zero)
@@ -4432,33 +4403,27 @@ CheckDateTokenTables(void)
 }
 
 /*
- * Common code for temporal prosupport functions: simplify, if possible,
- * a call to a temporal type's length-coercion function.
- *
- * Types time, timetz, timestamp and timestamptz each have a range of allowed
- * precisions.  An unspecified precision is rigorously equivalent to the
- * highest specifiable precision.  We can replace the function call with a
- * no-op RelabelType if it is coercing to the same or higher precision as the
- * input is known to have.
- *
- * The input Node is always a FuncExpr, but to reduce the #include footprint
- * of datetime.h, we declare it as Node *.
+ * Common code for temporal protransform functions.  Types time, timetz,
+ * timestamp and timestamptz each have a range of allowed precisions.  An
+ * unspecified precision is rigorously equivalent to the highest specifiable
+ * precision.
  *
  * Note: timestamp_scale throws an error when the typmod is out of range, but
  * we can't get there from a cast: our typmodin will have caught it already.
  */
 Node *
-TemporalSimplify(int32 max_precis, Node *node)
+TemporalTransform(int32 max_precis, Node *node)
 {
-	FuncExpr   *expr = castNode(FuncExpr, node);
+	FuncExpr   *expr = (FuncExpr *) node;
 	Node	   *ret = NULL;
 	Node	   *typmod;
 
+	Assert(IsA(expr, FuncExpr));
 	Assert(list_length(expr->args) >= 2);
 
 	typmod = (Node *) lsecond(expr->args);
 
-	if (IsA(typmod, Const) && !((Const *) typmod)->constisnull)
+	if (IsA(typmod, Const) &&!((Const *) typmod)->constisnull)
 	{
 		Node	   *source = (Node *) linitial(expr->args);
 		int32		old_precis = exprTypmod(source);
@@ -4651,7 +4616,7 @@ pg_timezone_abbrevs(PG_FUNCTION_ARGS)
 		 * build tupdesc for result tuples. This must match this function's
 		 * pg_proc entry!
 		 */
-		tupdesc = CreateTemplateTupleDesc(3);
+		tupdesc = CreateTemplateTupleDesc(3, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "abbrev",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "utc_offset",
@@ -4742,12 +4707,12 @@ pg_timezone_abbrevs(PG_FUNCTION_ARGS)
 Datum
 pg_timezone_names(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	bool		randomAccess;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
+	MemoryContext oldcontext;
+	FuncCallContext *funcctx;
 	pg_tzenum  *tzenum;
 	pg_tz	   *tz;
+	Datum		result;
+	HeapTuple	tuple;
 	Datum		values[4];
 	bool		nulls[4];
 	int			tzoff;
@@ -4756,75 +4721,88 @@ pg_timezone_names(PG_FUNCTION_ARGS)
 	const char *tzn;
 	Interval   *resInterval;
 	struct pg_tm itm;
-	MemoryContext oldcontext;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+	/* stuff done only on the first call of the function */
+	if (SRF_IS_FIRSTCALL())
+	{
+		TupleDesc	tupdesc;
 
-	/* The tupdesc and tuplestore must be created in ecxt_per_query_memory */
-	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
+		/* create a function context for cross-call persistence */
+		funcctx = SRF_FIRSTCALL_INIT();
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+		/*
+		 * switch to memory context appropriate for multiple function calls
+		 */
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-	randomAccess = (rsinfo->allowedModes & SFRM_Materialize_Random) != 0;
-	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
+		/* initialize timezone scanning code */
+		tzenum = pg_tzenumerate_start();
+		funcctx->user_fctx = (void *) tzenum;
 
-	MemoryContextSwitchTo(oldcontext);
+		/*
+		 * build tupdesc for result tuples. This must match this function's
+		 * pg_proc entry!
+		 */
+		tupdesc = CreateTemplateTupleDesc(4, false);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "name",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "abbrev",
+						   TEXTOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 3, "utc_offset",
+						   INTERVALOID, -1, 0);
+		TupleDescInitEntry(tupdesc, (AttrNumber) 4, "is_dst",
+						   BOOLOID, -1, 0);
 
-	/* initialize timezone scanning code */
-	tzenum = pg_tzenumerate_start();
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+		MemoryContextSwitchTo(oldcontext);
+	}
+
+	/* stuff done on every call of the function */
+	funcctx = SRF_PERCALL_SETUP();
+	tzenum = (pg_tzenum *) funcctx->user_fctx;
 
 	/* search for another zone to display */
 	for (;;)
 	{
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 		tz = pg_tzenumerate_next(tzenum);
+		MemoryContextSwitchTo(oldcontext);
+
 		if (!tz)
-			break;
+		{
+			pg_tzenumerate_end(tzenum);
+			funcctx->user_fctx = NULL;
+			SRF_RETURN_DONE(funcctx);
+		}
 
 		/* Convert now() to local time in this zone */
 		if (timestamp2tm(GetCurrentTransactionStartTimestamp(),
 						 &tzoff, &tm, &fsec, &tzn, tz) != 0)
 			continue;			/* ignore if conversion fails */
 
-		/*
-		 * IANA's rather silly "Factory" time zone used to emit ridiculously
-		 * long "abbreviations" such as "Local time zone must be set--see zic
-		 * manual page" or "Local time zone must be set--use tzsetup".  While
-		 * modern versions of tzdb emit the much saner "-00", it seems some
-		 * benighted packagers are hacking the IANA data so that it continues
-		 * to produce these strings.  To prevent producing a weirdly wide
-		 * abbrev column, reject ridiculously long abbreviations.
-		 */
-		if (tzn && strlen(tzn) > 31)
+		/* Ignore zic's rather silly "Factory" time zone */
+		if (tzn && strcmp(tzn, "Local time zone must be set--see zic manual page") == 0)
 			continue;
 
-		MemSet(nulls, 0, sizeof(nulls));
-
-		values[0] = CStringGetTextDatum(pg_get_timezone_name(tz));
-		values[1] = CStringGetTextDatum(tzn ? tzn : "");
-
-		MemSet(&itm, 0, sizeof(struct pg_tm));
-		itm.tm_sec = -tzoff;
-		resInterval = (Interval *) palloc(sizeof(Interval));
-		tm2interval(&itm, 0, resInterval);
-		values[2] = IntervalPGetDatum(resInterval);
-
-		values[3] = BoolGetDatum(tm.tm_isdst > 0);
-
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		/* Found a displayable zone */
+		break;
 	}
 
-	pg_tzenumerate_end(tzenum);
-	return (Datum) 0;
+	MemSet(nulls, 0, sizeof(nulls));
+
+	values[0] = CStringGetTextDatum(pg_get_timezone_name(tz));
+	values[1] = CStringGetTextDatum(tzn ? tzn : "");
+
+	MemSet(&itm, 0, sizeof(struct pg_tm));
+	itm.tm_sec = -tzoff;
+	resInterval = (Interval *) palloc(sizeof(Interval));
+	tm2interval(&itm, 0, resInterval);
+	values[2] = IntervalPGetDatum(resInterval);
+
+	values[3] = BoolGetDatum(tm.tm_isdst > 0);
+
+	tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+	result = HeapTupleGetDatum(tuple);
+
+	SRF_RETURN_NEXT(funcctx, result);
 }

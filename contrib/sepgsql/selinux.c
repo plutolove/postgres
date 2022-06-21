@@ -5,7 +5,7 @@
  * Interactions between userspace and selinux in kernelspace,
  * using libselinux api.
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2014, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -23,7 +23,7 @@
  * When we ask SELinux whether the required privileges are allowed or not,
  * we use security_compute_av(3). It needs us to represent object classes
  * and access vectors using 'external' codes defined in the security policy.
- * It is determined in the runtime, not build time. So, it needs an internal
+ * It is determinded in the runtime, not build time. So, it needs an internal
  * service to translate object class/access vectors which we want to check
  * into the code which kernel want to be given.
  */
@@ -36,7 +36,7 @@ static struct
 		const char *av_name;
 		uint32		av_code;
 	}			av[32];
-}			selinux_catalog[] =
+}	selinux_catalog[] =
 
 {
 	{
@@ -360,9 +360,6 @@ static struct
 				"lock", SEPG_DB_TABLE__LOCK
 			},
 			{
-				"truncate", SEPG_DB_TABLE__TRUNCATE
-			},
-			{
 				NULL, 0UL
 			},
 		}
@@ -660,8 +657,10 @@ sepgsql_getenforce(void)
 /*
  * sepgsql_audit_log
  *
- * It generates a security audit record. It writes out audit records
- * into standard PG's logfile.
+ * It generates a security audit record. In the default, it writes out
+ * audit records into standard PG's logfile. It also allows to set up
+ * external audit log receiver, such as auditd in Linux, using the
+ * sepgsql_audit_hook.
  *
  * SELinux can control what should be audited and should not using
  * "auditdeny" and "auditallow" rules in the security policy. In the
@@ -703,7 +702,7 @@ sepgsql_audit_log(bool denied,
 			appendStringInfo(&buf, " %s", av_name);
 		}
 	}
-	appendStringInfoString(&buf, " }");
+	appendStringInfo(&buf, " }");
 
 	/*
 	 * Call external audit module, if loaded
@@ -733,7 +732,7 @@ void
 sepgsql_compute_avd(const char *scontext,
 					const char *tcontext,
 					uint16 tclass,
-					struct av_decision *avd)
+					struct av_decision * avd)
 {
 	const char *tclass_name;
 	security_class_t tclass_ex;
@@ -809,6 +808,8 @@ sepgsql_compute_avd(const char *scontext,
 		if (avd_ex.auditdeny & av_code_ex)
 			avd->auditdeny |= av_code;
 	}
+
+	return;
 }
 
 /*
@@ -872,11 +873,13 @@ sepgsql_compute_create(const char *scontext,
 	{
 		result = pstrdup(ncontext);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		freecon(ncontext);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	freecon(ncontext);
 
 	return result;
 }

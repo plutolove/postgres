@@ -3,12 +3,7 @@
 MODULES = isn
 
 EXTENSION = isn
-DATA = isn--1.1.sql isn--1.1--1.2.sql \
-	isn--1.0--1.1.sql
-PGFILEDESC = "isn - data types for international product numbering standards"
-
-# the other .h files are data tables, we don't install those
-HEADERS_isn = isn.h
+DATA = isn--1.0.sql isn--unpackaged--1.0.sql
 
 REGRESS = isn
 

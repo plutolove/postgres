@@ -3,7 +3,7 @@
  * syslogger.h
  *	  Exports from postmaster/syslogger.c.
  *
- * Copyright (c) 2004-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2004-2014, PostgreSQL Global Development Group
  *
  * src/include/postmaster/syslogger.h
  *
@@ -48,7 +48,7 @@ typedef struct
 	int32		pid;			/* writer's pid */
 	char		is_last;		/* last chunk of message? 't' or 'f' ('T' or
 								 * 'F' for CSV case) */
-	char		data[FLEXIBLE_ARRAY_MEMBER];	/* data payload starts here */
+	char		data[1];		/* data payload starts here */
 } PipeProtoHeader;
 
 typedef union
@@ -70,6 +70,8 @@ extern PGDLLIMPORT char *Log_filename;
 extern bool Log_truncate_on_rotation;
 extern int	Log_file_mode;
 
+extern bool am_syslogger;
+
 #ifndef WIN32
 extern int	syslogPipe[2];
 #else
@@ -82,17 +84,7 @@ extern int	SysLogger_Start(void);
 extern void write_syslogger_file(const char *buffer, int count, int dest);
 
 #ifdef EXEC_BACKEND
-extern void SysLoggerMain(int argc, char *argv[]) pg_attribute_noreturn();
+extern void SysLoggerMain(int argc, char *argv[]) __attribute__((noreturn));
 #endif
 
-extern bool CheckLogrotateSignal(void);
-extern void RemoveLogrotateSignalFiles(void);
-
-/*
- * Name of files saving meta-data information about the log
- * files currently in use by the syslogger
- */
-#define LOG_METAINFO_DATAFILE  "current_logfiles"
-#define LOG_METAINFO_DATAFILE_TMP  LOG_METAINFO_DATAFILE ".tmp"
-
-#endif							/* _SYSLOGGER_H */
+#endif   /* _SYSLOGGER_H */

@@ -37,14 +37,13 @@
 #include "optimizer/geqo_random.h"
 #include "optimizer/geqo_recombination.h"
 
-#if defined(OX2)
 
 /* ox2
  *
  *	 position crossover
  */
 void
-ox2(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene, City * city_table)
+ox2(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene, City *city_table)
 {
 	int			k,
 				j,
@@ -108,5 +107,3 @@ ox2(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene, 
 	}
 
 }
-
-#endif							/* defined(OX2) */

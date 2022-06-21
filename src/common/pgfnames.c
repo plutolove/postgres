@@ -3,7 +3,7 @@
  * pgfnames.c
  *	  directory handling functions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -19,12 +19,6 @@
 #endif
 
 #include <dirent.h>
-
-#ifndef FRONTEND
-#define pg_log_warning(...) elog(WARNING, __VA_ARGS__)
-#else
-#include "common/logging.h"
-#endif
 
 /*
  * pgfnames
@@ -45,7 +39,12 @@ pgfnames(const char *path)
 	dir = opendir(path);
 	if (dir == NULL)
 	{
-		pg_log_warning("could not open directory \"%s\": %m", path);
+#ifndef FRONTEND
+		elog(WARNING, "could not open directory \"%s\": %m", path);
+#else
+		fprintf(stderr, _("could not open directory \"%s\": %s\n"),
+				path, strerror(errno));
+#endif
 		return NULL;
 	}
 
@@ -66,12 +65,26 @@ pgfnames(const char *path)
 	}
 
 	if (errno)
-		pg_log_warning("could not read directory \"%s\": %m", path);
+	{
+#ifndef FRONTEND
+		elog(WARNING, "could not read directory \"%s\": %m", path);
+#else
+		fprintf(stderr, _("could not read directory \"%s\": %s\n"),
+				path, strerror(errno));
+#endif
+	}
 
 	filenames[numnames] = NULL;
 
 	if (closedir(dir))
-		pg_log_warning("could not close directory \"%s\": %m", path);
+	{
+#ifndef FRONTEND
+		elog(WARNING, "could not close directory \"%s\": %m", path);
+#else
+		fprintf(stderr, _("could not close directory \"%s\": %s\n"),
+				path, strerror(errno));
+#endif
+	}
 
 	return filenames;
 }

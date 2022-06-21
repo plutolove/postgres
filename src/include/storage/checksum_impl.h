@@ -8,7 +8,7 @@
  * referenced by storage/checksum.h.  (Note: you may need to redefine
  * Assert() as empty to compile this successfully externally.)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/checksum_impl.h
@@ -107,13 +107,6 @@
 /* prime multiplier of FNV-1a hash */
 #define FNV_PRIME 16777619
 
-/* Use a union so that this code is valid under strict aliasing */
-typedef union
-{
-	PageHeaderData phdr;
-	uint32		data[BLCKSZ / (sizeof(uint32) * N_SUMS)][N_SUMS];
-} PGChecksummablePage;
-
 /*
  * Base offsets to initialize each of the parallel FNV hashes into a
  * different initial state.
@@ -139,27 +132,28 @@ do { \
 } while (0)
 
 /*
- * Block checksum algorithm.  The page must be adequately aligned
- * (at least on 4-byte boundary).
+ * Block checksum algorithm.  The data argument must be aligned on a 4-byte
+ * boundary.
  */
 static uint32
-pg_checksum_block(const PGChecksummablePage *page)
+pg_checksum_block(char *data, uint32 size)
 {
 	uint32		sums[N_SUMS];
+	uint32		(*dataArr)[N_SUMS] = (uint32 (*)[N_SUMS]) data;
 	uint32		result = 0;
 	uint32		i,
 				j;
 
 	/* ensure that the size is compatible with the algorithm */
-	Assert(sizeof(PGChecksummablePage) == BLCKSZ);
+	Assert((size % (sizeof(uint32) * N_SUMS)) == 0);
 
 	/* initialize partial checksums to their corresponding offsets */
 	memcpy(sums, checksumBaseOffsets, sizeof(checksumBaseOffsets));
 
 	/* main checksum calculation */
-	for (i = 0; i < (uint32) (BLCKSZ / (sizeof(uint32) * N_SUMS)); i++)
+	for (i = 0; i < size / sizeof(uint32) / N_SUMS; i++)
 		for (j = 0; j < N_SUMS; j++)
-			CHECKSUM_COMP(sums[j], page->data[i][j]);
+			CHECKSUM_COMP(sums[j], dataArr[i][j]);
 
 	/* finally add in two rounds of zeroes for additional mixing */
 	for (i = 0; i < 2; i++)
@@ -174,10 +168,8 @@ pg_checksum_block(const PGChecksummablePage *page)
 }
 
 /*
- * Compute the checksum for a Postgres page.
- *
- * The page must be adequately aligned (at least on a 4-byte boundary).
- * Beware also that the checksum field of the page is transiently zeroed.
+ * Compute the checksum for a Postgres page.  The page must be aligned on a
+ * 4-byte boundary.
  *
  * The checksum includes the block number (to detect the case where a page is
  * somehow moved to a different location), the page header (excluding the
@@ -186,12 +178,12 @@ pg_checksum_block(const PGChecksummablePage *page)
 uint16
 pg_checksum_page(char *page, BlockNumber blkno)
 {
-	PGChecksummablePage *cpage = (PGChecksummablePage *) page;
+	PageHeader	phdr = (PageHeader) page;
 	uint16		save_checksum;
 	uint32		checksum;
 
 	/* We only calculate the checksum for properly-initialized pages */
-	Assert(!PageIsNew(&cpage->phdr));
+	Assert(!PageIsNew(page));
 
 	/*
 	 * Save pd_checksum and temporarily set it to zero, so that the checksum
@@ -199,10 +191,10 @@ pg_checksum_page(char *page, BlockNumber blkno)
 	 * Restore it after, because actually updating the checksum is NOT part of
 	 * the API of this function.
 	 */
-	save_checksum = cpage->phdr.pd_checksum;
-	cpage->phdr.pd_checksum = 0;
-	checksum = pg_checksum_block(cpage);
-	cpage->phdr.pd_checksum = save_checksum;
+	save_checksum = phdr->pd_checksum;
+	phdr->pd_checksum = 0;
+	checksum = pg_checksum_block(page, BLCKSZ);
+	phdr->pd_checksum = save_checksum;
 
 	/* Mix in the block number to detect transposed pages */
 	checksum ^= blkno;
@@ -211,5 +203,5 @@ pg_checksum_page(char *page, BlockNumber blkno)
 	 * Reduce to a uint16 (to fit in the pd_checksum field) with an offset of
 	 * one. That avoids checksums of zero, which seems like a good idea.
 	 */
-	return (uint16) ((checksum % 65535) + 1);
+	return (checksum % 65535) + 1;
 }

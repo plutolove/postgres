@@ -2,7 +2,7 @@
  *
  * createdb
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/scripts/createdb.c
@@ -12,8 +12,7 @@
 #include "postgres_fe.h"
 
 #include "common.h"
-#include "common/logging.h"
-#include "fe_utils/string_utils.h"
+#include "dumputils.h"
 
 
 static void help(const char *progname);
@@ -51,7 +50,6 @@ main(int argc, char *argv[])
 	char	   *port = NULL;
 	char	   *username = NULL;
 	enum trivalue prompt_password = TRI_DEFAULT;
-	ConnParams	cparams;
 	bool		echo = false;
 	char	   *owner = NULL;
 	char	   *tablespace = NULL;
@@ -66,7 +64,6 @@ main(int argc, char *argv[])
 	PGconn	   *conn;
 	PGresult   *result;
 
-	pg_logging_init(argv[0]);
 	progname = get_progname(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pgscripts"));
 
@@ -136,8 +133,8 @@ main(int argc, char *argv[])
 			comment = argv[optind + 1];
 			break;
 		default:
-			pg_log_error("too many command-line arguments (first is \"%s\")",
-						 argv[optind + 2]);
+			fprintf(stderr, _("%s: too many command-line arguments (first is \"%s\")\n"),
+					progname, argv[optind + 2]);
 			fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 			exit(1);
 	}
@@ -146,12 +143,14 @@ main(int argc, char *argv[])
 	{
 		if (lc_ctype)
 		{
-			pg_log_error("only one of --locale and --lc-ctype can be specified");
+			fprintf(stderr, _("%s: only one of --locale and --lc-ctype can be specified\n"),
+					progname);
 			exit(1);
 		}
 		if (lc_collate)
 		{
-			pg_log_error("only one of --locale and --lc-collate can be specified");
+			fprintf(stderr, _("%s: only one of --locale and --lc-collate can be specified\n"),
+					progname);
 			exit(1);
 		}
 		lc_ctype = locale;
@@ -162,7 +161,8 @@ main(int argc, char *argv[])
 	{
 		if (pg_char_to_encoding(encoding) < 0)
 		{
-			pg_log_error("\"%s\" is not a valid encoding name", encoding);
+			fprintf(stderr, _("%s: \"%s\" is not a valid encoding name\n"),
+					progname, encoding);
 			exit(1);
 		}
 	}
@@ -177,19 +177,6 @@ main(int argc, char *argv[])
 			dbname = get_user_name_or_exit(progname);
 	}
 
-	/* No point in trying to use postgres db when creating postgres db. */
-	if (maintenance_db == NULL && strcmp(dbname, "postgres") == 0)
-		maintenance_db = "template1";
-
-	cparams.dbname = maintenance_db;
-	cparams.pghost = host;
-	cparams.pgport = port;
-	cparams.pguser = username;
-	cparams.prompt_password = prompt_password;
-	cparams.override_dbname = NULL;
-
-	conn = connectMaintenanceDatabase(&cparams, progname, echo);
-
 	initPQExpBuffer(&sql);
 
 	appendPQExpBuffer(&sql, "CREATE DATABASE %s",
@@ -200,24 +187,22 @@ main(int argc, char *argv[])
 	if (tablespace)
 		appendPQExpBuffer(&sql, " TABLESPACE %s", fmtId(tablespace));
 	if (encoding)
-	{
-		appendPQExpBufferStr(&sql, " ENCODING ");
-		appendStringLiteralConn(&sql, encoding, conn);
-	}
+		appendPQExpBuffer(&sql, " ENCODING '%s'", encoding);
 	if (template)
 		appendPQExpBuffer(&sql, " TEMPLATE %s", fmtId(template));
 	if (lc_collate)
-	{
-		appendPQExpBufferStr(&sql, " LC_COLLATE ");
-		appendStringLiteralConn(&sql, lc_collate, conn);
-	}
+		appendPQExpBuffer(&sql, " LC_COLLATE '%s'", lc_collate);
 	if (lc_ctype)
-	{
-		appendPQExpBufferStr(&sql, " LC_CTYPE ");
-		appendStringLiteralConn(&sql, lc_ctype, conn);
-	}
+		appendPQExpBuffer(&sql, " LC_CTYPE '%s'", lc_ctype);
 
-	appendPQExpBufferChar(&sql, ';');
+	appendPQExpBufferStr(&sql, ";");
+
+	/* No point in trying to use postgres db when creating postgres db. */
+	if (maintenance_db == NULL && strcmp(dbname, "postgres") == 0)
+		maintenance_db = "template1";
+
+	conn = connectMaintenanceDatabase(maintenance_db, host, port, username,
+									  prompt_password, progname);
 
 	if (echo)
 		printf("%s\n", sql.data);
@@ -225,7 +210,8 @@ main(int argc, char *argv[])
 
 	if (PQresultStatus(result) != PGRES_COMMAND_OK)
 	{
-		pg_log_error("database creation failed: %s", PQerrorMessage(conn));
+		fprintf(stderr, _("%s: database creation failed: %s"),
+				progname, PQerrorMessage(conn));
 		PQfinish(conn);
 		exit(1);
 	}
@@ -236,7 +222,7 @@ main(int argc, char *argv[])
 	{
 		printfPQExpBuffer(&sql, "COMMENT ON DATABASE %s IS ", fmtId(dbname));
 		appendStringLiteralConn(&sql, comment, conn);
-		appendPQExpBufferChar(&sql, ';');
+		appendPQExpBufferStr(&sql, ";");
 
 		if (echo)
 			printf("%s\n", sql.data);
@@ -244,8 +230,8 @@ main(int argc, char *argv[])
 
 		if (PQresultStatus(result) != PGRES_COMMAND_OK)
 		{
-			pg_log_error("comment creation failed (database was created): %s",
-						 PQerrorMessage(conn));
+			fprintf(stderr, _("%s: comment creation failed (database was created): %s"),
+					progname, PQerrorMessage(conn));
 			PQfinish(conn);
 			exit(1);
 		}
@@ -284,6 +270,5 @@ help(const char *progname)
 	printf(_("  -W, --password               force password prompt\n"));
 	printf(_("  --maintenance-db=DBNAME      alternate maintenance database\n"));
 	printf(_("\nBy default, a database with the same name as the current user is created.\n"));
-	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
-	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
+	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
 }

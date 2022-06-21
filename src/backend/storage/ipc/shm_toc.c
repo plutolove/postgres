@@ -3,33 +3,33 @@
  * shm_toc.c
  *	  shared memory segment table of contents
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2013, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * src/backend/storage/ipc/shm_toc.c
+ * src/include/storage/shm_toc.c
  *
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 
-#include "port/atomics.h"
+#include "storage/barrier.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
 
 typedef struct shm_toc_entry
 {
 	uint64		key;			/* Arbitrary identifier */
-	Size		offset;			/* Offset, in bytes, from TOC start */
+	uint64		offset;			/* Bytes offset */
 } shm_toc_entry;
 
 struct shm_toc
 {
-	uint64		toc_magic;		/* Magic number identifying this TOC */
+	uint64		toc_magic;		/* Magic number for this TOC */
 	slock_t		toc_mutex;		/* Spinlock for mutual exclusion */
 	Size		toc_total_bytes;	/* Bytes managed by this TOC */
 	Size		toc_allocated_bytes;	/* Bytes allocated of those managed */
-	uint32		toc_nentry;		/* Number of entries in TOC */
+	Size		toc_nentry;		/* Number of entries in TOC */
 	shm_toc_entry toc_entry[FLEXIBLE_ARRAY_MEMBER];
 };
 
@@ -44,12 +44,7 @@ shm_toc_create(uint64 magic, void *address, Size nbytes)
 	Assert(nbytes > offsetof(shm_toc, toc_entry));
 	toc->toc_magic = magic;
 	SpinLockInit(&toc->toc_mutex);
-
-	/*
-	 * The alignment code in shm_toc_allocate() assumes that the starting
-	 * value is buffer-aligned.
-	 */
-	toc->toc_total_bytes = BUFFERALIGN_DOWN(nbytes);
+	toc->toc_total_bytes = nbytes;
 	toc->toc_allocated_bytes = 0;
 	toc->toc_nentry = 0;
 
@@ -58,9 +53,9 @@ shm_toc_create(uint64 magic, void *address, Size nbytes)
 
 /*
  * Attach to an existing table of contents.  If the magic number found at
- * the target address doesn't match our expectations, return NULL.
+ * the target address doesn't match our expectations, returns NULL.
  */
-shm_toc *
+extern shm_toc *
 shm_toc_attach(uint64 magic, void *address)
 {
 	shm_toc    *toc = (shm_toc *) address;
@@ -69,7 +64,7 @@ shm_toc_attach(uint64 magic, void *address)
 		return NULL;
 
 	Assert(toc->toc_total_bytes >= toc->toc_allocated_bytes);
-	Assert(toc->toc_total_bytes > offsetof(shm_toc, toc_entry));
+	Assert(toc->toc_total_bytes >= offsetof(shm_toc, toc_entry));
 
 	return toc;
 }
@@ -81,10 +76,10 @@ shm_toc_attach(uint64 magic, void *address)
  * just a way of dividing a single physical shared memory segment into logical
  * chunks that may be used for different purposes.
  *
- * We allocate backwards from the end of the segment, so that the TOC entries
+ * We allocated backwards from the end of the segment, so that the TOC entries
  * can grow forward from the start of the segment.
  */
-void *
+extern void *
 shm_toc_allocate(shm_toc *toc, Size nbytes)
 {
 	volatile shm_toc *vtoc = toc;
@@ -93,12 +88,7 @@ shm_toc_allocate(shm_toc *toc, Size nbytes)
 	Size		nentry;
 	Size		toc_bytes;
 
-	/*
-	 * Make sure request is well-aligned.  XXX: MAXALIGN is not enough,
-	 * because atomic ops might need a wider alignment.  We don't have a
-	 * proper definition for the minimum to make atomic ops safe, but
-	 * BUFFERALIGN ought to be enough.
-	 */
+	/* Make sure request is well-aligned. */
 	nbytes = BUFFERALIGN(nbytes);
 
 	SpinLockAcquire(&toc->toc_mutex);
@@ -106,7 +96,7 @@ shm_toc_allocate(shm_toc *toc, Size nbytes)
 	total_bytes = vtoc->toc_total_bytes;
 	allocated_bytes = vtoc->toc_allocated_bytes;
 	nentry = vtoc->toc_nentry;
-	toc_bytes = offsetof(shm_toc, toc_entry) + nentry * sizeof(shm_toc_entry)
+	toc_bytes = offsetof(shm_toc, toc_entry) +nentry * sizeof(shm_toc_entry)
 		+ allocated_bytes;
 
 	/* Check for memory exhaustion and overflow. */
@@ -127,7 +117,7 @@ shm_toc_allocate(shm_toc *toc, Size nbytes)
 /*
  * Return the number of bytes that can still be allocated.
  */
-Size
+extern Size
 shm_toc_freespace(shm_toc *toc)
 {
 	volatile shm_toc *vtoc = toc;
@@ -142,7 +132,7 @@ shm_toc_freespace(shm_toc *toc)
 	nentry = vtoc->toc_nentry;
 	SpinLockRelease(&toc->toc_mutex);
 
-	toc_bytes = offsetof(shm_toc, toc_entry) + nentry * sizeof(shm_toc_entry);
+	toc_bytes = offsetof(shm_toc, toc_entry) +nentry * sizeof(shm_toc_entry);
 	Assert(allocated_bytes + BUFFERALIGN(toc_bytes) <= total_bytes);
 	return total_bytes - (allocated_bytes + BUFFERALIGN(toc_bytes));
 }
@@ -150,7 +140,7 @@ shm_toc_freespace(shm_toc *toc)
 /*
  * Insert a TOC entry.
  *
- * The idea here is that the process setting up the shared memory segment will
+ * The idea here is that process setting up the shared memory segment will
  * register the addresses of data structures within the segment using this
  * function.  Each data structure will be identified using a 64-bit key, which
  * is assumed to be a well-known or discoverable integer.  Other processes
@@ -165,17 +155,17 @@ shm_toc_freespace(shm_toc *toc)
  * data structure here.  But the real idea here is just to give someone mapping
  * a dynamic shared memory the ability to find the bare minimum number of
  * pointers that they need to bootstrap.  If you're storing a lot of stuff in
- * the TOC, you're doing it wrong.
+ * here, you're doing it wrong.
  */
 void
 shm_toc_insert(shm_toc *toc, uint64 key, void *address)
 {
 	volatile shm_toc *vtoc = toc;
-	Size		total_bytes;
-	Size		allocated_bytes;
-	Size		nentry;
-	Size		toc_bytes;
-	Size		offset;
+	uint64		total_bytes;
+	uint64		allocated_bytes;
+	uint64		nentry;
+	uint64		toc_bytes;
+	uint64		offset;
 
 	/* Relativize pointer. */
 	Assert(address > (void *) toc);
@@ -186,13 +176,12 @@ shm_toc_insert(shm_toc *toc, uint64 key, void *address)
 	total_bytes = vtoc->toc_total_bytes;
 	allocated_bytes = vtoc->toc_allocated_bytes;
 	nentry = vtoc->toc_nentry;
-	toc_bytes = offsetof(shm_toc, toc_entry) + nentry * sizeof(shm_toc_entry)
+	toc_bytes = offsetof(shm_toc, toc_entry) +nentry * sizeof(shm_toc_entry)
 		+ allocated_bytes;
 
 	/* Check for memory exhaustion and overflow. */
 	if (toc_bytes + sizeof(shm_toc_entry) > total_bytes ||
-		toc_bytes + sizeof(shm_toc_entry) < toc_bytes ||
-		nentry >= PG_UINT32_MAX)
+		toc_bytes + sizeof(shm_toc_entry) < toc_bytes)
 	{
 		SpinLockRelease(&toc->toc_mutex);
 		ereport(ERROR,
@@ -219,9 +208,6 @@ shm_toc_insert(shm_toc *toc, uint64 key, void *address)
 /*
  * Look up a TOC entry.
  *
- * If the key is not found, returns NULL if noError is true, otherwise
- * throws elog(ERROR).
- *
  * Unlike the other functions in this file, this operation acquires no lock;
  * it uses only barriers.  It probably wouldn't hurt concurrency very much even
  * if it did get a lock, but since it's reasonably likely that a group of
@@ -229,29 +215,21 @@ shm_toc_insert(shm_toc *toc, uint64 key, void *address)
  * right around the same time, there seems to be some value in avoiding it.
  */
 void *
-shm_toc_lookup(shm_toc *toc, uint64 key, bool noError)
+shm_toc_lookup(shm_toc *toc, uint64 key)
 {
-	uint32		nentry;
-	uint32		i;
+	uint64		nentry;
+	uint64		i;
 
-	/*
-	 * Read the number of entries before we examine any entry.  We assume that
-	 * reading a uint32 is atomic.
-	 */
+	/* Read the number of entries before we examine any entry. */
 	nentry = toc->toc_nentry;
 	pg_read_barrier();
 
 	/* Now search for a matching entry. */
 	for (i = 0; i < nentry; ++i)
-	{
 		if (toc->toc_entry[i].key == key)
 			return ((char *) toc) + toc->toc_entry[i].offset;
-	}
 
 	/* No matching entry was found. */
-	if (!noError)
-		elog(ERROR, "could not find key " UINT64_FORMAT " in shm TOC at %p",
-			 key, toc);
 	return NULL;
 }
 
@@ -262,11 +240,7 @@ shm_toc_lookup(shm_toc *toc, uint64 key, bool noError)
 Size
 shm_toc_estimate(shm_toc_estimator *e)
 {
-	Size		sz;
-
-	sz = offsetof(shm_toc, toc_entry);
-	sz = add_size(sz, mul_size(e->number_of_keys, sizeof(shm_toc_entry)));
-	sz = add_size(sz, e->space_for_chunks);
-
-	return BUFFERALIGN(sz);
+	return add_size(offsetof(shm_toc, toc_entry),
+				 add_size(mul_size(e->number_of_keys, sizeof(shm_toc_entry)),
+						  e->space_for_chunks));
 }

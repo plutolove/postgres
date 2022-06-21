@@ -4,16 +4,16 @@
  *
  * Routines corresponding to schema objects
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2014, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_database.h"
@@ -21,11 +21,12 @@
 #include "commands/seclabel.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
-#include "sepgsql.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/snapmgr.h"
+#include "utils/tqual.h"
+
+#include "sepgsql.h"
 
 /*
  * sepgsql_schema_post_create
@@ -51,14 +52,14 @@ sepgsql_schema_post_create(Oid namespaceId)
 	 * Compute a default security label when we create a new schema object
 	 * under the working database.
 	 *
-	 * XXX - upcoming version of libselinux supports to take object name to
+	 * XXX - uncoming version of libselinux supports to take object name to
 	 * handle special treatment on default security label; such as special
 	 * label on "pg_temp" schema.
 	 */
-	rel = table_open(NamespaceRelationId, AccessShareLock);
+	rel = heap_open(NamespaceRelationId, AccessShareLock);
 
 	ScanKeyInit(&skey,
-				Anum_pg_namespace_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(namespaceId));
 
@@ -66,7 +67,7 @@ sepgsql_schema_post_create(Oid namespaceId)
 							   SnapshotSelf, 1, &skey);
 	tuple = systable_getnext(sscan);
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "could not find tuple for namespace %u", namespaceId);
+		elog(ERROR, "catalog lookup failed for namespace %u", namespaceId);
 
 	nspForm = (Form_pg_namespace) GETSTRUCT(tuple);
 	nsp_name = NameStr(nspForm->nspname);
@@ -92,7 +93,7 @@ sepgsql_schema_post_create(Oid namespaceId)
 								  audit_name.data,
 								  true);
 	systable_endscan(sscan);
-	table_close(rel, AccessShareLock);
+	heap_close(rel, AccessShareLock);
 
 	/*
 	 * Assign the default security label on a new procedure

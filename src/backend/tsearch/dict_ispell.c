@@ -3,7 +3,7 @@
  * dict_ispell.c
  *		Ispell dictionary interface
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -17,7 +17,6 @@
 #include "tsearch/dicts/spell.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
 
 
 typedef struct
@@ -44,18 +43,18 @@ dispell_init(PG_FUNCTION_ARGS)
 	{
 		DefElem    *defel = (DefElem *) lfirst(l);
 
-		if (strcmp(defel->defname, "dictfile") == 0)
+		if (pg_strcasecmp(defel->defname, "DictFile") == 0)
 		{
 			if (dictloaded)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("multiple DictFile parameters")));
 			NIImportDictionary(&(d->obj),
-							   get_tsearch_config_filename(defGetString(defel),
-														   "dict"));
+							 get_tsearch_config_filename(defGetString(defel),
+														 "dict"));
 			dictloaded = true;
 		}
-		else if (strcmp(defel->defname, "afffile") == 0)
+		else if (pg_strcasecmp(defel->defname, "AffFile") == 0)
 		{
 			if (affloaded)
 				ereport(ERROR,
@@ -66,7 +65,7 @@ dispell_init(PG_FUNCTION_ARGS)
 														"affix"));
 			affloaded = true;
 		}
-		else if (strcmp(defel->defname, "stopwords") == 0)
+		else if (pg_strcasecmp(defel->defname, "StopWords") == 0)
 		{
 			if (stoploaded)
 				ereport(ERROR,

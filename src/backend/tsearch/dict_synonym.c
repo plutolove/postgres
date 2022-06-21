@@ -3,7 +3,7 @@
  * dict_synonym.c
  *		Synonym dictionary: replace word by its synonym
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -16,7 +16,6 @@
 #include "commands/defrem.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
 
 typedef struct
 {
@@ -37,8 +36,8 @@ typedef struct
  * Finds the next whitespace-delimited word within the 'in' string.
  * Returns a pointer to the first character of the word, and a pointer
  * to the next byte after the last character in the word (in *end).
- * Character '*' at the end of word will not be treated as word
- * character if flags is not null.
+ * Character '*' at the end of word will not be threated as word
+ * charater if flags is not null.
  */
 static char *
 findwrd(char *in, char **end, uint16 *flags)
@@ -108,9 +107,9 @@ dsynonym_init(PG_FUNCTION_ARGS)
 	{
 		DefElem    *defel = (DefElem *) lfirst(l);
 
-		if (strcmp(defel->defname, "synonyms") == 0)
+		if (pg_strcasecmp("Synonyms", defel->defname) == 0)
 			filename = defGetString(defel);
-		else if (strcmp(defel->defname, "casesensitive") == 0)
+		else if (pg_strcasecmp("CaseSensitive", defel->defname) == 0)
 			case_sensitive = defGetBoolean(defel);
 		else
 			ereport(ERROR,

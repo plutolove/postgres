@@ -37,7 +37,6 @@
 #include "optimizer/geqo_random.h"
 #include "optimizer/geqo_recombination.h"
 
-#if defined(PX)
 
 /* px
  *
@@ -45,7 +44,7 @@
  */
 void
 px(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene,
-   City * city_table)
+   City *city_table)
 {
 	int			num_positions;
 	int			i,
@@ -106,5 +105,3 @@ px(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene,
 	}
 
 }
-
-#endif							/* defined(PX) */

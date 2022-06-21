@@ -2,7 +2,7 @@
  *	Thread test program
  *	by Lee Kindness.
  */
-#include <stdint.h>
+
 #include <stdlib.h>
 #include "ecpg_config.h"
 
@@ -18,7 +18,6 @@ main(void)
 #include <pthread.h>
 #else
 #include <windows.h>
-#include <locale.h>
 #endif
 
 exec sql include ../regression;
@@ -35,7 +34,7 @@ int main()
 #else
   HANDLE *threads;
 #endif
-  intptr_t n;
+  int n;
   EXEC SQL BEGIN DECLARE SECTION;
   int l_rows;
   EXEC SQL END DECLARE SECTION;
@@ -61,12 +60,12 @@ int main()
   if( threads == NULL )
     {
       fprintf(stderr, "Cannot alloc memory\n");
-      return 1;
+      return( 1 );
     }
   for( n = 0; n < nthreads; n++ )
     {
 #ifndef WIN32
-      pthread_create(&threads[n], NULL, test_thread, (void *) (n + 1));
+      pthread_create(&threads[n], NULL, test_thread, (void *) (long) (n + 1));
 #else
       threads[n] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) test_thread, (void *) (n+1), 0, NULL);
 #endif
@@ -93,20 +92,19 @@ int main()
   else
     printf("ERROR: Failure - expecting %d rows, got %d.\n", nthreads * iterations, l_rows);
 
-  return 0;
+  return( 0 );
 }
 
 void *test_thread(void *arg)
 {
-  long threadnum = (intptr_t) arg;
-
+  long threadnum = (long)arg;
   EXEC SQL BEGIN DECLARE SECTION;
   int  l_i;
   char l_connection[128];
   EXEC SQL END DECLARE SECTION;
 
   /* build up connection name, and connect to database */
-#ifndef _MSC_VER
+#ifndef WIN32_ONLY_COMPILER
   snprintf(l_connection, sizeof(l_connection), "thread_%03ld", threadnum);
 #else
   _snprintf(l_connection, sizeof(l_connection), "thread_%03ld", threadnum);
@@ -116,7 +114,7 @@ void *test_thread(void *arg)
   if( sqlca.sqlcode != 0 )
     {
       printf("%s: ERROR: cannot connect to database!\n", l_connection);
-      return NULL;
+      return( NULL );
     }
   EXEC SQL BEGIN;
 
@@ -131,6 +129,6 @@ void *test_thread(void *arg)
   /* all done */
   EXEC SQL COMMIT;
   EXEC SQL DISCONNECT :l_connection;
-  return NULL;
+  return( NULL );
 }
 #endif /* ENABLE_THREAD_SAFETY */

@@ -4,7 +4,7 @@
  *
  *	  Routines for aggregate-manipulation commands
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -39,9 +40,6 @@
 #include "utils/syscache.h"
 
 
-static char extractModify(DefElem *defel);
-
-
 /*
  *	DefineAggregate
  *
@@ -53,13 +51,9 @@ static char extractModify(DefElem *defel);
  * isn't an ordered-set aggregate.
  * "parameters" is a list of DefElem representing the agg's definition clauses.
  */
-ObjectAddress
-DefineAggregate(ParseState *pstate,
-				List *name,
-				List *args,
-				bool oldstyle,
-				List *parameters,
-				bool replace)
+Oid
+DefineAggregate(List *name, List *args, bool oldstyle, List *parameters,
+				const char *queryString)
 {
 	char	   *aggName;
 	Oid			aggNamespace;
@@ -67,16 +61,11 @@ DefineAggregate(ParseState *pstate,
 	char		aggKind = AGGKIND_NORMAL;
 	List	   *transfuncName = NIL;
 	List	   *finalfuncName = NIL;
-	List	   *combinefuncName = NIL;
-	List	   *serialfuncName = NIL;
-	List	   *deserialfuncName = NIL;
 	List	   *mtransfuncName = NIL;
 	List	   *minvtransfuncName = NIL;
 	List	   *mfinalfuncName = NIL;
 	bool		finalfuncExtraArgs = false;
 	bool		mfinalfuncExtraArgs = false;
-	char		finalfuncModify = 0;
-	char		mfinalfuncModify = 0;
 	List	   *sortoperatorName = NIL;
 	TypeName   *baseType = NULL;
 	TypeName   *transType = NULL;
@@ -85,7 +74,6 @@ DefineAggregate(ParseState *pstate,
 	int32		mtransSpace = 0;
 	char	   *initval = NULL;
 	char	   *minitval = NULL;
-	char	   *parallel = NULL;
 	int			numArgs;
 	int			numDirectArgs = 0;
 	oidvector  *parameterTypes;
@@ -98,7 +86,6 @@ DefineAggregate(ParseState *pstate,
 	Oid			mtransTypeId = InvalidOid;
 	char		transTypeType;
 	char		mtransTypeType = 0;
-	char		proparallel = PROPARALLEL_UNSAFE;
 	ListCell   *pl;
 
 	/* Convert list of names to a name and namespace */
@@ -107,7 +94,7 @@ DefineAggregate(ParseState *pstate,
 	/* Check we have creation rights in target namespace */
 	aclresult = pg_namespace_aclcheck(aggNamespace, GetUserId(), ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
-		aclcheck_error(aclresult, OBJECT_SCHEMA,
+		aclcheck_error(aclresult, ACL_KIND_NAMESPACE,
 					   get_namespace_name(aggNamespace));
 
 	/* Deconstruct the output of the aggr_args grammar production */
@@ -119,49 +106,39 @@ DefineAggregate(ParseState *pstate,
 			aggKind = AGGKIND_ORDERED_SET;
 		else
 			numDirectArgs = 0;
-		args = linitial_node(List, args);
+		args = (List *) linitial(args);
 	}
 
 	/* Examine aggregate's definition clauses */
 	foreach(pl, parameters)
 	{
-		DefElem    *defel = lfirst_node(DefElem, pl);
+		DefElem    *defel = (DefElem *) lfirst(pl);
 
 		/*
 		 * sfunc1, stype1, and initcond1 are accepted as obsolete spellings
 		 * for sfunc, stype, initcond.
 		 */
-		if (strcmp(defel->defname, "sfunc") == 0)
+		if (pg_strcasecmp(defel->defname, "sfunc") == 0)
 			transfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "sfunc1") == 0)
+		else if (pg_strcasecmp(defel->defname, "sfunc1") == 0)
 			transfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "finalfunc") == 0)
+		else if (pg_strcasecmp(defel->defname, "finalfunc") == 0)
 			finalfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "combinefunc") == 0)
-			combinefuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "serialfunc") == 0)
-			serialfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "deserialfunc") == 0)
-			deserialfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "msfunc") == 0)
+		else if (pg_strcasecmp(defel->defname, "msfunc") == 0)
 			mtransfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "minvfunc") == 0)
+		else if (pg_strcasecmp(defel->defname, "minvfunc") == 0)
 			minvtransfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "mfinalfunc") == 0)
+		else if (pg_strcasecmp(defel->defname, "mfinalfunc") == 0)
 			mfinalfuncName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "finalfunc_extra") == 0)
+		else if (pg_strcasecmp(defel->defname, "finalfunc_extra") == 0)
 			finalfuncExtraArgs = defGetBoolean(defel);
-		else if (strcmp(defel->defname, "mfinalfunc_extra") == 0)
+		else if (pg_strcasecmp(defel->defname, "mfinalfunc_extra") == 0)
 			mfinalfuncExtraArgs = defGetBoolean(defel);
-		else if (strcmp(defel->defname, "finalfunc_modify") == 0)
-			finalfuncModify = extractModify(defel);
-		else if (strcmp(defel->defname, "mfinalfunc_modify") == 0)
-			mfinalfuncModify = extractModify(defel);
-		else if (strcmp(defel->defname, "sortop") == 0)
+		else if (pg_strcasecmp(defel->defname, "sortop") == 0)
 			sortoperatorName = defGetQualifiedName(defel);
-		else if (strcmp(defel->defname, "basetype") == 0)
+		else if (pg_strcasecmp(defel->defname, "basetype") == 0)
 			baseType = defGetTypeName(defel);
-		else if (strcmp(defel->defname, "hypothetical") == 0)
+		else if (pg_strcasecmp(defel->defname, "hypothetical") == 0)
 		{
 			if (defGetBoolean(defel))
 			{
@@ -172,24 +149,22 @@ DefineAggregate(ParseState *pstate,
 				aggKind = AGGKIND_HYPOTHETICAL;
 			}
 		}
-		else if (strcmp(defel->defname, "stype") == 0)
+		else if (pg_strcasecmp(defel->defname, "stype") == 0)
 			transType = defGetTypeName(defel);
-		else if (strcmp(defel->defname, "stype1") == 0)
+		else if (pg_strcasecmp(defel->defname, "stype1") == 0)
 			transType = defGetTypeName(defel);
-		else if (strcmp(defel->defname, "sspace") == 0)
+		else if (pg_strcasecmp(defel->defname, "sspace") == 0)
 			transSpace = defGetInt32(defel);
-		else if (strcmp(defel->defname, "mstype") == 0)
+		else if (pg_strcasecmp(defel->defname, "mstype") == 0)
 			mtransType = defGetTypeName(defel);
-		else if (strcmp(defel->defname, "msspace") == 0)
+		else if (pg_strcasecmp(defel->defname, "msspace") == 0)
 			mtransSpace = defGetInt32(defel);
-		else if (strcmp(defel->defname, "initcond") == 0)
+		else if (pg_strcasecmp(defel->defname, "initcond") == 0)
 			initval = defGetString(defel);
-		else if (strcmp(defel->defname, "initcond1") == 0)
+		else if (pg_strcasecmp(defel->defname, "initcond1") == 0)
 			initval = defGetString(defel);
-		else if (strcmp(defel->defname, "minitcond") == 0)
+		else if (pg_strcasecmp(defel->defname, "minitcond") == 0)
 			minitval = defGetString(defel);
-		else if (strcmp(defel->defname, "parallel") == 0)
-			parallel = defGetString(defel);
 		else
 			ereport(WARNING,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -230,7 +205,7 @@ DefineAggregate(ParseState *pstate,
 		if (mtransfuncName != NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("aggregate msfunc must not be specified without mstype")));
+			errmsg("aggregate msfunc must not be specified without mstype")));
 		if (minvtransfuncName != NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
@@ -248,15 +223,6 @@ DefineAggregate(ParseState *pstate,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 					 errmsg("aggregate minitcond must not be specified without mstype")));
 	}
-
-	/*
-	 * Default values for modify flags can only be determined once we know the
-	 * aggKind.
-	 */
-	if (finalfuncModify == 0)
-		finalfuncModify = (aggKind == AGGKIND_NORMAL) ? AGGMODIFY_READ_ONLY : AGGMODIFY_READ_WRITE;
-	if (mfinalfuncModify == 0)
-		mfinalfuncModify = (aggKind == AGGKIND_NORMAL) ? AGGMODIFY_READ_ONLY : AGGMODIFY_READ_WRITE;
 
 	/*
 	 * look up the aggregate's input datatype(s).
@@ -308,10 +274,10 @@ DefineAggregate(ParseState *pstate,
 					 errmsg("basetype is redundant with aggregate input type specification")));
 
 		numArgs = list_length(args);
-		interpret_function_parameter_list(pstate,
-										  args,
+		interpret_function_parameter_list(args,
 										  InvalidOid,
-										  OBJECT_AGGREGATE,
+										  true, /* is an aggregate */
+										  queryString,
 										  &parameterTypes,
 										  &allParameterTypes,
 										  &parameterModes,
@@ -348,27 +314,6 @@ DefineAggregate(ParseState *pstate,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 					 errmsg("aggregate transition data type cannot be %s",
 							format_type_be(transTypeId))));
-	}
-
-	if (serialfuncName && deserialfuncName)
-	{
-		/*
-		 * Serialization is only needed/allowed for transtype INTERNAL.
-		 */
-		if (transTypeId != INTERNALOID)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("serialization functions may be specified only when the aggregate transition data type is %s",
-							format_type_be(INTERNALOID))));
-	}
-	else if (serialfuncName || deserialfuncName)
-	{
-		/*
-		 * Cannot specify one function without the other.
-		 */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				 errmsg("must specify both or neither of serialization and deserialization functions")));
 	}
 
 	/*
@@ -422,26 +367,11 @@ DefineAggregate(ParseState *pstate,
 		(void) OidInputFunctionCall(typinput, minitval, typioparam, -1);
 	}
 
-	if (parallel)
-	{
-		if (strcmp(parallel, "safe") == 0)
-			proparallel = PROPARALLEL_SAFE;
-		else if (strcmp(parallel, "restricted") == 0)
-			proparallel = PROPARALLEL_RESTRICTED;
-		else if (strcmp(parallel, "unsafe") == 0)
-			proparallel = PROPARALLEL_UNSAFE;
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("parameter \"parallel\" must be SAFE, RESTRICTED, or UNSAFE")));
-	}
-
 	/*
 	 * Most of the argument-checking is done inside of AggregateCreate
 	 */
-	return AggregateCreate(aggName, /* aggregate name */
-						   aggNamespace,	/* namespace */
-						   replace,
+	return AggregateCreate(aggName,		/* aggregate name */
+						   aggNamespace,		/* namespace */
 						   aggKind,
 						   numArgs,
 						   numDirectArgs,
@@ -451,45 +381,18 @@ DefineAggregate(ParseState *pstate,
 						   PointerGetDatum(parameterNames),
 						   parameterDefaults,
 						   variadicArgType,
-						   transfuncName,	/* step function name */
-						   finalfuncName,	/* final function name */
-						   combinefuncName, /* combine function name */
-						   serialfuncName,	/* serial function name */
-						   deserialfuncName,	/* deserial function name */
-						   mtransfuncName,	/* fwd trans function name */
+						   transfuncName,		/* step function name */
+						   finalfuncName,		/* final function name */
+						   mtransfuncName,		/* fwd trans function name */
 						   minvtransfuncName,	/* inv trans function name */
-						   mfinalfuncName,	/* final function name */
+						   mfinalfuncName,		/* final function name */
 						   finalfuncExtraArgs,
 						   mfinalfuncExtraArgs,
-						   finalfuncModify,
-						   mfinalfuncModify,
 						   sortoperatorName,	/* sort operator name */
 						   transTypeId, /* transition data type */
 						   transSpace,	/* transition space */
-						   mtransTypeId,	/* transition data type */
+						   mtransTypeId,		/* transition data type */
 						   mtransSpace, /* transition space */
-						   initval, /* initial condition */
-						   minitval,	/* initial condition */
-						   proparallel);	/* parallel safe? */
-}
-
-/*
- * Convert the string form of [m]finalfunc_modify to the catalog representation
- */
-static char
-extractModify(DefElem *defel)
-{
-	char	   *val = defGetString(defel);
-
-	if (strcmp(val, "read_only") == 0)
-		return AGGMODIFY_READ_ONLY;
-	if (strcmp(val, "shareable") == 0)
-		return AGGMODIFY_SHAREABLE;
-	if (strcmp(val, "read_write") == 0)
-		return AGGMODIFY_READ_WRITE;
-	ereport(ERROR,
-			(errcode(ERRCODE_SYNTAX_ERROR),
-			 errmsg("parameter \"%s\" must be READ_ONLY, SHAREABLE, or READ_WRITE",
-					defel->defname)));
-	return 0;					/* keep compiler quiet */
+						   initval,		/* initial condition */
+						   minitval);	/* initial condition */
 }

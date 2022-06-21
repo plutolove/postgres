@@ -3,15 +3,15 @@
  * subtrans.c
  *		PostgreSQL subtransaction-log manager
  *
- * The pg_subtrans manager is a pg_xact-like manager that stores the parent
+ * The pg_subtrans manager is a pg_clog-like manager that stores the parent
  * transaction Id for each transaction.  It is a fundamental part of the
  * nested transactions implementation.  A main transaction has a parent
  * of InvalidTransactionId, and each subtransaction has its immediate parent.
  * The tree can easily be walked from child to parent, but not in the
  * opposite direction.
  *
- * This code is based on xact.c, but the robustness requirements
- * are completely different from pg_xact, because we only need to remember
+ * This code is based on clog.c, but the robustness requirements
+ * are completely different from pg_clog, because we only need to remember
  * pg_subtrans information for currently-open transactions.  Thus, there is
  * no need to preserve data over a crash and restart.
  *
@@ -19,7 +19,7 @@
  * data across crashes.  During database startup, we simply force the
  * currently-active page of SUBTRANS to zeroes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/subtrans.c
@@ -69,9 +69,11 @@ static bool SubTransPagePrecedes(int page1, int page2);
 
 /*
  * Record the parent of a subtransaction in the subtrans log.
+ *
+ * In some cases we may need to overwrite an existing value.
  */
 void
-SubTransSetParent(TransactionId xid, TransactionId parent)
+SubTransSetParent(TransactionId xid, TransactionId parent, bool overwriteOK)
 {
 	int			pageno = TransactionIdToPage(xid);
 	int			entryno = TransactionIdToEntry(xid);
@@ -79,27 +81,22 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	TransactionId *ptr;
 
 	Assert(TransactionIdIsValid(parent));
-	Assert(TransactionIdFollows(xid, parent));
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	LWLockAcquire(SubtransControlLock, LW_EXCLUSIVE);
 
 	slotno = SimpleLruReadPage(SubTransCtl, pageno, true, xid);
 	ptr = (TransactionId *) SubTransCtl->shared->page_buffer[slotno];
 	ptr += entryno;
 
-	/*
-	 * It's possible we'll try to set the parent xid multiple times but we
-	 * shouldn't ever be changing the xid from one valid xid to another valid
-	 * xid, which would corrupt the data structure.
-	 */
-	if (*ptr != parent)
-	{
-		Assert(*ptr == InvalidTransactionId);
-		*ptr = parent;
-		SubTransCtl->shared->page_dirty[slotno] = true;
-	}
+	/* Current state should be 0 */
+	Assert(*ptr == InvalidTransactionId ||
+		   (*ptr == parent && overwriteOK));
 
-	LWLockRelease(SubtransSLRULock);
+	*ptr = parent;
+
+	SubTransCtl->shared->page_dirty[slotno] = true;
+
+	LWLockRelease(SubtransControlLock);
 }
 
 /*
@@ -129,7 +126,7 @@ SubTransGetParent(TransactionId xid)
 
 	parent = *ptr;
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(SubtransControlLock);
 
 	return parent;
 }
@@ -161,15 +158,6 @@ SubTransGetTopmostTransaction(TransactionId xid)
 		if (TransactionIdPrecedes(parentXid, TransactionXmin))
 			break;
 		parentXid = SubTransGetParent(parentXid);
-
-		/*
-		 * By convention the parent xid gets allocated first, so should always
-		 * precede the child xid. Anything else points to a corrupted data
-		 * structure that could lead to an infinite loop, so exit.
-		 */
-		if (!TransactionIdPrecedes(parentXid, previousXid))
-			elog(ERROR, "pg_subtrans contains invalid entry: xid %u points to parent xid %u",
-				 previousXid, parentXid);
 	}
 
 	Assert(TransactionIdIsValid(previousXid));
@@ -191,12 +179,10 @@ void
 SUBTRANSShmemInit(void)
 {
 	SubTransCtl->PagePrecedes = SubTransPagePrecedes;
-	SimpleLruInit(SubTransCtl, "Subtrans", NUM_SUBTRANS_BUFFERS, 0,
-				  SubtransSLRULock, "pg_subtrans",
-				  LWTRANCHE_SUBTRANS_BUFFER);
+	SimpleLruInit(SubTransCtl, "SUBTRANS Ctl", NUM_SUBTRANS_BUFFERS, 0,
+				  SubtransControlLock, "pg_subtrans");
 	/* Override default assumption that writes should be fsync'd */
 	SubTransCtl->do_fsync = false;
-	SlruPagePrecedesUnitTests(SubTransCtl, SUBTRANS_XACTS_PER_PAGE);
 }
 
 /*
@@ -214,7 +200,7 @@ BootStrapSUBTRANS(void)
 {
 	int			slotno;
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	LWLockAcquire(SubtransControlLock, LW_EXCLUSIVE);
 
 	/* Create and zero the first page of the subtrans log */
 	slotno = ZeroSUBTRANSPage(0);
@@ -223,7 +209,7 @@ BootStrapSUBTRANS(void)
 	SimpleLruWritePage(SubTransCtl, slotno);
 	Assert(!SubTransCtl->shared->page_dirty[slotno]);
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(SubtransControlLock);
 }
 
 /*
@@ -242,15 +228,14 @@ ZeroSUBTRANSPage(int pageno)
 
 /*
  * This must be called ONCE during postmaster or standalone-backend startup,
- * after StartupXLOG has initialized ShmemVariableCache->nextFullXid.
+ * after StartupXLOG has initialized ShmemVariableCache->nextXid.
  *
- * oldestActiveXID is the oldest XID of any prepared transaction, or nextFullXid
+ * oldestActiveXID is the oldest XID of any prepared transaction, or nextXid
  * if there are none.
  */
 void
 StartupSUBTRANS(TransactionId oldestActiveXID)
 {
-	FullTransactionId nextFullXid;
 	int			startPage;
 	int			endPage;
 
@@ -260,11 +245,10 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 	 * Whenever we advance into a new page, ExtendSUBTRANS will likewise zero
 	 * the new page without regard to whatever was previously on disk.
 	 */
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	LWLockAcquire(SubtransControlLock, LW_EXCLUSIVE);
 
 	startPage = TransactionIdToPage(oldestActiveXID);
-	nextFullXid = ShmemVariableCache->nextFullXid;
-	endPage = TransactionIdToPage(XidFromFullTransactionId(nextFullXid));
+	endPage = TransactionIdToPage(ShmemVariableCache->nextXid);
 
 	while (startPage != endPage)
 	{
@@ -272,11 +256,11 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 		startPage++;
 		/* must account for wraparound */
 		if (startPage > TransactionIdToPage(MaxTransactionId))
-			startPage = 0;
+			startPage=0;
 	}
 	(void) ZeroSUBTRANSPage(startPage);
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(SubtransControlLock);
 }
 
 /*
@@ -338,20 +322,20 @@ ExtendSUBTRANS(TransactionId newestXact)
 
 	pageno = TransactionIdToPage(newestXact);
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	LWLockAcquire(SubtransControlLock, LW_EXCLUSIVE);
 
 	/* Zero the page */
 	ZeroSUBTRANSPage(pageno);
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(SubtransControlLock);
 }
 
 
 /*
  * Remove all SUBTRANS segments before the one holding the passed transaction ID
  *
- * oldestXact is the oldest TransactionXmin of any running transaction.  This
- * is called only during checkpoint.
+ * This is normally called during checkpoint, with oldestXact being the
+ * oldest TransactionXmin of any running transaction.
  */
 void
 TruncateSUBTRANS(TransactionId oldestXact)
@@ -374,8 +358,13 @@ TruncateSUBTRANS(TransactionId oldestXact)
 
 
 /*
- * Decide whether a SUBTRANS page number is "older" for truncation purposes.
- * Analogous to CLOGPagePrecedes().
+ * Decide which of two SUBTRANS page numbers is "older" for truncation purposes.
+ *
+ * We need to use comparison of TransactionIds here in order to do the right
+ * thing with wraparound XID arithmetic.  However, if we are asked about
+ * page number zero, we don't want to hand InvalidTransactionId to
+ * TransactionIdPrecedes: it'll get weird about permanent xact IDs.  So,
+ * offset both xids by FirstNormalTransactionId to avoid that.
  */
 static bool
 SubTransPagePrecedes(int page1, int page2)
@@ -384,10 +373,9 @@ SubTransPagePrecedes(int page1, int page2)
 	TransactionId xid2;
 
 	xid1 = ((TransactionId) page1) * SUBTRANS_XACTS_PER_PAGE;
-	xid1 += FirstNormalTransactionId + 1;
+	xid1 += FirstNormalTransactionId;
 	xid2 = ((TransactionId) page2) * SUBTRANS_XACTS_PER_PAGE;
-	xid2 += FirstNormalTransactionId + 1;
+	xid2 += FirstNormalTransactionId;
 
-	return (TransactionIdPrecedes(xid1, xid2) &&
-			TransactionIdPrecedes(xid1, xid2 + SUBTRANS_XACTS_PER_PAGE - 1));
+	return TransactionIdPrecedes(xid1, xid2);
 }

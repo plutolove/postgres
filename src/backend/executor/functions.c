@@ -3,7 +3,7 @@
  * functions.c
  *	  Execution of SQL-language functions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,7 +24,6 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
-#include "parser/parse_collate.h"
 #include "parser/parse_func.h"
 #include "storage/proc.h"
 #include "tcop/utility.h"
@@ -67,7 +66,7 @@ typedef struct execution_state
 	ExecStatus	status;
 	bool		setsResult;		/* true if this query produces func's result */
 	bool		lazyEval;		/* true if should fetch one row at a time */
-	PlannedStmt *stmt;			/* plan for this query */
+	Node	   *stmt;			/* PlannedStmt or utility statement */
 	QueryDesc  *qd;				/* null unless status == RUN */
 } execution_state;
 
@@ -94,7 +93,7 @@ typedef struct
 	char	   *fname;			/* function name (for error msgs) */
 	char	   *src;			/* function body text (for error msgs) */
 
-	SQLFunctionParseInfoPtr pinfo;	/* data for parser callback hooks */
+	SQLFunctionParseInfoPtr pinfo;		/* data for parser callback hooks */
 
 	Oid			rettype;		/* actual return type */
 	int16		typlen;			/* length of the return type */
@@ -141,39 +140,34 @@ typedef struct SQLFunctionParseInfo
 	char	  **argnames;		/* names of input arguments; NULL if none */
 	/* Note that argnames[i] can be NULL, if some args are unnamed */
 	Oid			collation;		/* function's input collation, if known */
-}			SQLFunctionParseInfo;
+}	SQLFunctionParseInfo;
 
 
 /* non-export function prototypes */
 static Node *sql_fn_param_ref(ParseState *pstate, ParamRef *pref);
 static Node *sql_fn_post_column_ref(ParseState *pstate,
-									ColumnRef *cref, Node *var);
+					   ColumnRef *cref, Node *var);
 static Node *sql_fn_make_param(SQLFunctionParseInfoPtr pinfo,
-							   int paramno, int location);
+				  int paramno, int location);
 static Node *sql_fn_resolve_param_name(SQLFunctionParseInfoPtr pinfo,
-									   const char *paramname, int location);
+						  const char *paramname, int location);
 static List *init_execution_state(List *queryTree_list,
-								  SQLFunctionCachePtr fcache,
-								  bool lazyEvalOK);
-static void init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK);
+					 SQLFunctionCachePtr fcache,
+					 bool lazyEvalOK);
+static void init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK);
 static void postquel_start(execution_state *es, SQLFunctionCachePtr fcache);
 static bool postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache);
 static void postquel_end(execution_state *es);
 static void postquel_sub_params(SQLFunctionCachePtr fcache,
-								FunctionCallInfo fcinfo);
+					FunctionCallInfo fcinfo);
 static Datum postquel_get_single_result(TupleTableSlot *slot,
-										FunctionCallInfo fcinfo,
-										SQLFunctionCachePtr fcache,
-										MemoryContext resultcontext);
+						   FunctionCallInfo fcinfo,
+						   SQLFunctionCachePtr fcache,
+						   MemoryContext resultcontext);
 static void sql_exec_error_callback(void *arg);
 static void ShutdownSQLFunction(Datum arg);
-static bool coerce_fn_result_column(TargetEntry *src_tle,
-									Oid res_type, int32 res_typmod,
-									bool tlist_is_modifiable,
-									List **upper_tlist,
-									bool *upper_tlist_nontrivial);
 static void sqlfunction_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
-static bool sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self);
+static void sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self);
 static void sqlfunction_shutdown(DestReceiver *self);
 static void sqlfunction_destroy(DestReceiver *self);
 
@@ -251,13 +245,13 @@ prepare_sql_fn_parse_info(HeapTuple procedureTuple,
 									  Anum_pg_proc_proargnames,
 									  &isNull);
 		if (isNull)
-			proargnames = PointerGetDatum(NULL);	/* just to be sure */
+			proargnames = PointerGetDatum(NULL);		/* just to be sure */
 
 		proargmodes = SysCacheGetAttr(PROCNAMEARGSNSP, procedureTuple,
 									  Anum_pg_proc_proargmodes,
 									  &isNull);
 		if (isNull)
-			proargmodes = PointerGetDatum(NULL);	/* just to be sure */
+			proargmodes = PointerGetDatum(NULL);		/* just to be sure */
 
 		n_arg_names = get_func_input_arg_names(proargnames, proargmodes,
 											   &pinfo->argnames);
@@ -394,9 +388,7 @@ sql_fn_post_column_ref(ParseState *pstate, ColumnRef *cref, Node *var)
 		param = ParseFuncOrColumn(pstate,
 								  list_make1(subfield),
 								  list_make1(param),
-								  pstate->p_last_srf,
 								  NULL,
-								  false,
 								  cref->location);
 	}
 
@@ -487,60 +479,39 @@ init_execution_state(List *queryTree_list,
 
 	foreach(lc1, queryTree_list)
 	{
-		List	   *qtlist = lfirst_node(List, lc1);
+		List	   *qtlist = (List *) lfirst(lc1);
 		execution_state *firstes = NULL;
 		execution_state *preves = NULL;
 		ListCell   *lc2;
 
 		foreach(lc2, qtlist)
 		{
-			Query	   *queryTree = lfirst_node(Query, lc2);
-			PlannedStmt *stmt;
+			Query	   *queryTree = (Query *) lfirst(lc2);
+			Node	   *stmt;
 			execution_state *newes;
+
+			Assert(IsA(queryTree, Query));
 
 			/* Plan the query if needed */
 			if (queryTree->commandType == CMD_UTILITY)
-			{
-				/* Utility commands require no planning. */
-				stmt = makeNode(PlannedStmt);
-				stmt->commandType = CMD_UTILITY;
-				stmt->canSetTag = queryTree->canSetTag;
-				stmt->utilityStmt = queryTree->utilityStmt;
-				stmt->stmt_location = queryTree->stmt_location;
-				stmt->stmt_len = queryTree->stmt_len;
-			}
+				stmt = queryTree->utilityStmt;
 			else
-				stmt = pg_plan_query(queryTree,
-									 fcache->src,
-									 CURSOR_OPT_PARALLEL_OK,
-									 NULL);
+				stmt = (Node *) pg_plan_query(queryTree, 0, NULL);
 
-			/*
-			 * Precheck all commands for validity in a function.  This should
-			 * generally match the restrictions spi.c applies.
-			 */
-			if (stmt->commandType == CMD_UTILITY)
-			{
-				if (IsA(stmt->utilityStmt, CopyStmt) &&
-					((CopyStmt *) stmt->utilityStmt)->filename == NULL)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("cannot COPY to/from client in a SQL function")));
-
-				if (IsA(stmt->utilityStmt, TransactionStmt))
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					/* translator: %s is a SQL statement name */
-							 errmsg("%s is not allowed in a SQL function",
-									CreateCommandName(stmt->utilityStmt))));
-			}
+			/* Precheck all commands for validity in a function */
+			if (IsA(stmt, TransactionStmt))
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				/* translator: %s is a SQL statement name */
+						 errmsg("%s is not allowed in a SQL function",
+								CreateCommandTag(stmt))));
 
 			if (fcache->readonly_func && !CommandIsReadOnly(stmt))
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				/* translator: %s is a SQL statement name */
-						 errmsg("%s is not allowed in a non-volatile function",
-								CreateCommandName((Node *) stmt))));
+					   errmsg("%s is not allowed in a non-volatile function",
+							  CreateCommandTag(stmt))));
 
 			/* OK, build the execution_state for this query */
 			newes = (execution_state *) palloc(sizeof(execution_state));
@@ -577,15 +548,22 @@ init_execution_state(List *queryTree_list,
 	 *
 	 * Note: don't set setsResult if the function returns VOID, as evidenced
 	 * by not having made a junkfilter.  This ensures we'll throw away any
-	 * output from the last statement in such a function.
+	 * output from a utility statement that check_sql_fn_retval deemed to not
+	 * have output.
 	 */
 	if (lasttages && fcache->junkFilter)
 	{
 		lasttages->setsResult = true;
 		if (lazyEvalOK &&
-			lasttages->stmt->commandType == CMD_SELECT &&
-			!lasttages->stmt->hasModifyingCTE)
-			fcache->lazyEval = lasttages->lazyEval = true;
+			IsA(lasttages->stmt, PlannedStmt))
+		{
+			PlannedStmt *ps = (PlannedStmt *) lasttages->stmt;
+
+			if (ps->commandType == CMD_SELECT &&
+				ps->utilityStmt == NULL &&
+				!ps->hasModifyingCTE)
+				fcache->lazyEval = lasttages->lazyEval = true;
+		}
 	}
 
 	return eslist;
@@ -595,20 +573,18 @@ init_execution_state(List *queryTree_list,
  * Initialize the SQLFunctionCache for a SQL function
  */
 static void
-init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
+init_sql_fcache(FmgrInfo *finfo, Oid collation, bool lazyEvalOK)
 {
-	FmgrInfo   *finfo = fcinfo->flinfo;
 	Oid			foid = finfo->fn_oid;
 	MemoryContext fcontext;
 	MemoryContext oldcontext;
 	Oid			rettype;
-	TupleDesc	rettupdesc;
 	HeapTuple	procedureTuple;
 	Form_pg_proc procedureStruct;
 	SQLFunctionCachePtr fcache;
 	List	   *raw_parsetree_list;
 	List	   *queryTree_list;
-	List	   *resulttlist;
+	List	   *flat_query_list;
 	ListCell   *lc;
 	Datum		tmp;
 	bool		isNull;
@@ -618,8 +594,10 @@ init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
 	 * must be a child of whatever context holds the FmgrInfo.
 	 */
 	fcontext = AllocSetContextCreate(finfo->fn_mcxt,
-									 "SQL function",
-									 ALLOCSET_DEFAULT_SIZES);
+									 "SQL function data",
+									 ALLOCSET_DEFAULT_MINSIZE,
+									 ALLOCSET_DEFAULT_INITSIZE,
+									 ALLOCSET_DEFAULT_MAXSIZE);
 
 	oldcontext = MemoryContextSwitchTo(fcontext);
 
@@ -641,17 +619,25 @@ init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
 	procedureStruct = (Form_pg_proc) GETSTRUCT(procedureTuple);
 
 	/*
-	 * copy function name immediately for use by error reporting callback, and
-	 * for use as memory context identifier
+	 * copy function name immediately for use by error reporting callback
 	 */
 	fcache->fname = pstrdup(NameStr(procedureStruct->proname));
-	MemoryContextSetIdentifier(fcontext, fcache->fname);
 
 	/*
-	 * Resolve any polymorphism, obtaining the actual result type, and the
-	 * corresponding tupdesc if it's a rowtype.
+	 * get the result type from the procedure tuple, and check for polymorphic
+	 * result type; if so, find out the actual result type.
 	 */
-	(void) get_call_result_type(fcinfo, &rettype, &rettupdesc);
+	rettype = procedureStruct->prorettype;
+
+	if (IsPolymorphicType(rettype))
+	{
+		rettype = get_fn_expr_rettype(finfo);
+		if (rettype == InvalidOid)		/* this probably should not happen */
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("could not determine actual result type for function declared to return type %s",
+							format_type_be(procedureStruct->prorettype))));
+	}
 
 	fcache->rettype = rettype;
 
@@ -687,7 +673,13 @@ init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
 
 	/*
 	 * Parse and rewrite the queries in the function text.  Use sublists to
-	 * keep track of the original query boundaries.
+	 * keep track of the original query boundaries.  But we also build a
+	 * "flat" list of the rewritten queries to pass to check_sql_fn_retval.
+	 * This is because the last canSetTag query determines the result type
+	 * independently of query boundaries --- and it might not be in the last
+	 * sublist, for example if the last query rewrites to DO INSTEAD NOTHING.
+	 * (It might not be unreasonable to throw an error in such a case, but
+	 * this is the historical behavior and it doesn't seem worth changing.)
 	 *
 	 * Note: since parsing and planning is done in fcontext, we will generate
 	 * a lot of cruft that lives as long as the fcache does.  This is annoying
@@ -697,33 +689,27 @@ init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
 	raw_parsetree_list = pg_parse_query(fcache->src);
 
 	queryTree_list = NIL;
+	flat_query_list = NIL;
 	foreach(lc, raw_parsetree_list)
 	{
-		RawStmt    *parsetree = lfirst_node(RawStmt, lc);
+		Node	   *parsetree = (Node *) lfirst(lc);
 		List	   *queryTree_sublist;
 
 		queryTree_sublist = pg_analyze_and_rewrite_params(parsetree,
 														  fcache->src,
-														  (ParserSetupHook) sql_fn_parser_setup,
-														  fcache->pinfo,
-														  NULL);
+									   (ParserSetupHook) sql_fn_parser_setup,
+														  fcache->pinfo);
 		queryTree_list = lappend(queryTree_list, queryTree_sublist);
+		flat_query_list = list_concat(flat_query_list,
+									  list_copy(queryTree_sublist));
 	}
-
-	/*
-	 * Check that there are no statements we don't want to allow.
-	 */
-	check_sql_fn_statements(queryTree_list);
 
 	/*
 	 * Check that the function returns the type it claims to.  Although in
 	 * simple cases this was already done when the function was defined, we
 	 * have to recheck because database objects used in the function's queries
-	 * might have changed type.  We'd have to recheck anyway if the function
-	 * had any polymorphic arguments.  Moreover, check_sql_fn_retval takes
-	 * care of injecting any required column type coercions.  (But we don't
-	 * ask it to insert nulls for dropped columns; the junkfilter handles
-	 * that.)
+	 * might have changed type.  We'd have to do it anyway if the function had
+	 * any polymorphic arguments.
 	 *
 	 * Note: we set fcache->returnsTuple according to whether we are returning
 	 * the whole tuple result or just a single column.  In the latter case we
@@ -732,40 +718,16 @@ init_sql_fcache(FunctionCallInfo fcinfo, Oid collation, bool lazyEvalOK)
 	 * lazy eval mode in that case; otherwise we'd need extra code to expand
 	 * the rowtype column into multiple columns, since we have no way to
 	 * notify the caller that it should do that.)
+	 *
+	 * check_sql_fn_retval will also construct a JunkFilter we can use to
+	 * coerce the returned rowtype to the desired form (unless the result type
+	 * is VOID, in which case there's nothing to coerce to).
 	 */
-	fcache->returnsTuple = check_sql_fn_retval(queryTree_list,
+	fcache->returnsTuple = check_sql_fn_retval(foid,
 											   rettype,
-											   rettupdesc,
-											   false,
-											   &resulttlist);
-
-	/*
-	 * Construct a JunkFilter we can use to coerce the returned rowtype to the
-	 * desired form, unless the result type is VOID, in which case there's
-	 * nothing to coerce to.  (XXX Frequently, the JunkFilter isn't doing
-	 * anything very interesting, but much of this module expects it to be
-	 * there anyway.)
-	 */
-	if (rettype != VOIDOID)
-	{
-		TupleTableSlot *slot = MakeSingleTupleTableSlot(NULL,
-														&TTSOpsMinimalTuple);
-
-		/*
-		 * If the result is composite, *and* we are returning the whole tuple
-		 * result, we need to insert nulls for any dropped columns.  In the
-		 * single-column-result case, there might be dropped columns within
-		 * the composite column value, but it's not our problem here.  There
-		 * should be no resjunk entries in resulttlist, so in the second case
-		 * the JunkFilter is certainly a no-op.
-		 */
-		if (rettupdesc && fcache->returnsTuple)
-			fcache->junkFilter = ExecInitJunkFilterConversion(resulttlist,
-															  rettupdesc,
-															  slot);
-		else
-			fcache->junkFilter = ExecInitJunkFilter(resulttlist, slot);
-	}
+											   flat_query_list,
+											   NULL,
+											   &fcache->junkFilter);
 
 	if (fcache->returnsTuple)
 	{
@@ -827,17 +789,22 @@ postquel_start(execution_state *es, SQLFunctionCachePtr fcache)
 	else
 		dest = None_Receiver;
 
-	es->qd = CreateQueryDesc(es->stmt,
-							 fcache->src,
-							 GetActiveSnapshot(),
-							 InvalidSnapshot,
-							 dest,
-							 fcache->paramLI,
-							 es->qd ? es->qd->queryEnv : NULL,
-							 0);
+	if (IsA(es->stmt, PlannedStmt))
+		es->qd = CreateQueryDesc((PlannedStmt *) es->stmt,
+								 fcache->src,
+								 GetActiveSnapshot(),
+								 InvalidSnapshot,
+								 dest,
+								 fcache->paramLI, 0);
+	else
+		es->qd = CreateUtilityQueryDesc(es->stmt,
+										fcache->src,
+										GetActiveSnapshot(),
+										dest,
+										fcache->paramLI);
 
 	/* Utility commands don't need Executor. */
-	if (es->qd->operation != CMD_UTILITY)
+	if (es->qd->utilitystmt == NULL)
 	{
 		/*
 		 * In lazyEval mode, do not let the executor set up an AfterTrigger
@@ -865,13 +832,15 @@ postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache)
 {
 	bool		result;
 
-	if (es->qd->operation == CMD_UTILITY)
+	if (es->qd->utilitystmt)
 	{
-		ProcessUtility(es->qd->plannedstmt,
+		/* ProcessUtility needs the PlannedStmt for DECLARE CURSOR */
+		ProcessUtility((es->qd->plannedstmt ?
+						(Node *) es->qd->plannedstmt :
+						es->qd->utilitystmt),
 					   fcache->src,
 					   PROCESS_UTILITY_QUERY,
 					   es->qd->params,
-					   es->qd->queryEnv,
 					   es->qd->dest,
 					   NULL);
 		result = true;			/* never stops early */
@@ -879,15 +848,15 @@ postquel_getnext(execution_state *es, SQLFunctionCachePtr fcache)
 	else
 	{
 		/* Run regular commands to completion unless lazyEval */
-		uint64		count = (es->lazyEval) ? 1 : 0;
+		long		count = (es->lazyEval) ? 1L : 0L;
 
-		ExecutorRun(es->qd, ForwardScanDirection, count, !fcache->returnsSet || !es->lazyEval);
+		ExecutorRun(es->qd, ForwardScanDirection, count);
 
 		/*
 		 * If we requested run to completion OR there was no tuple returned,
 		 * command must be complete.
 		 */
-		result = (count == 0 || es->qd->estate->es_processed == 0);
+		result = (count == 0L || es->qd->estate->es_processed == 0);
 	}
 
 	return result;
@@ -901,13 +870,13 @@ postquel_end(execution_state *es)
 	es->status = F_EXEC_DONE;
 
 	/* Utility commands don't need Executor. */
-	if (es->qd->operation != CMD_UTILITY)
+	if (es->qd->utilitystmt == NULL)
 	{
 		ExecutorFinish(es->qd);
 		ExecutorEnd(es->qd);
 	}
 
-	es->qd->dest->rDestroy(es->qd->dest);
+	(*es->qd->dest->rDestroy) (es->qd->dest);
 
 	FreeQueryDesc(es->qd);
 	es->qd = NULL;
@@ -923,10 +892,19 @@ postquel_sub_params(SQLFunctionCachePtr fcache,
 	if (nargs > 0)
 	{
 		ParamListInfo paramLI;
+		int			i;
 
 		if (fcache->paramLI == NULL)
 		{
-			paramLI = makeParamList(nargs);
+			/* sizeof(ParamListInfoData) includes the first array element */
+			paramLI = (ParamListInfo) palloc(sizeof(ParamListInfoData) +
+									  (nargs - 1) * sizeof(ParamExternData));
+			/* we have static list of params, so no hooks needed */
+			paramLI->paramFetch = NULL;
+			paramLI->paramFetchArg = NULL;
+			paramLI->parserSetup = NULL;
+			paramLI->parserSetupArg = NULL;
+			paramLI->numParams = nargs;
 			fcache->paramLI = paramLI;
 		}
 		else
@@ -935,12 +913,12 @@ postquel_sub_params(SQLFunctionCachePtr fcache,
 			Assert(paramLI->numParams == nargs);
 		}
 
-		for (int i = 0; i < nargs; i++)
+		for (i = 0; i < nargs; i++)
 		{
 			ParamExternData *prm = &paramLI->params[i];
 
-			prm->value = fcinfo->args[i].value;
-			prm->isnull = fcinfo->args[i].isnull;
+			prm->value = fcinfo->arg[i];
+			prm->isnull = fcinfo->argnull[i];
 			prm->pflags = 0;
 			prm->ptype = fcache->pinfo->argtypes[i];
 		}
@@ -975,7 +953,7 @@ postquel_get_single_result(TupleTableSlot *slot,
 	{
 		/* We must return the whole tuple as a Datum. */
 		fcinfo->isnull = false;
-		value = ExecFetchSlotHeapTupleDatum(slot);
+		value = ExecFetchSlotTupleDatum(slot);
 	}
 	else
 	{
@@ -1067,7 +1045,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 
 	if (fcache == NULL)
 	{
-		init_sql_fcache(fcinfo, PG_GET_COLLATION(), lazyEvalOK);
+		init_sql_fcache(fcinfo->flinfo, PG_GET_COLLATION(), lazyEvalOK);
 		fcache = (SQLFunctionCachePtr) fcinfo->flinfo->fn_extra;
 	}
 
@@ -1198,7 +1176,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 		es = es->next;
 		while (!es)
 		{
-			eslc = lnext(eslist, eslc);
+			eslc = lnext(eslc);
 			if (!eslc)
 				break;			/* end of function */
 
@@ -1295,7 +1273,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 			rsi->returnMode = SFRM_Materialize;
 			rsi->setResult = fcache->tstore;
 			fcache->tstore = NULL;
-			/* must copy desc because execSRF.c will free it */
+			/* must copy desc because execQual will free it */
 			if (fcache->junkFilter)
 				rsi->setDesc = CreateTupleDescCopy(fcache->junkFilter->jf_cleanTupType);
 
@@ -1332,7 +1310,7 @@ fmgr_sql(PG_FUNCTION_ARGS)
 		}
 		else
 		{
-			/* Should only get here for VOID functions and procedures */
+			/* Should only get here for VOID functions */
 			Assert(fcache->rettype == VOIDOID);
 			fcinfo->isnull = true;
 			result = (Datum) 0;
@@ -1496,75 +1474,20 @@ ShutdownSQLFunction(Datum arg)
 	fcache->shutdown_reg = false;
 }
 
-/*
- * check_sql_fn_statements
- *
- * Check statements in an SQL function.  Error out if there is anything that
- * is not acceptable.
- */
-void
-check_sql_fn_statements(List *queryTreeLists)
-{
-	ListCell   *lc;
-
-	/* We are given a list of sublists of Queries */
-	foreach(lc, queryTreeLists)
-	{
-		List	   *sublist = lfirst_node(List, lc);
-		ListCell   *lc2;
-
-		foreach(lc2, sublist)
-		{
-			Query	   *query = lfirst_node(Query, lc2);
-
-			/*
-			 * Disallow procedures with output arguments.  The current
-			 * implementation would just throw the output values away, unless
-			 * the statement is the last one.  Per SQL standard, we should
-			 * assign the output values by name.  By disallowing this here, we
-			 * preserve an opportunity for future improvement.
-			 */
-			if (query->commandType == CMD_UTILITY &&
-				IsA(query->utilityStmt, CallStmt))
-			{
-				CallStmt   *stmt = castNode(CallStmt, query->utilityStmt);
-				HeapTuple	tuple;
-				int			numargs;
-				Oid		   *argtypes;
-				char	  **argnames;
-				char	   *argmodes;
-				int			i;
-
-				tuple = SearchSysCache1(PROCOID,
-										ObjectIdGetDatum(stmt->funcexpr->funcid));
-				if (!HeapTupleIsValid(tuple))
-					elog(ERROR, "cache lookup failed for function %u",
-						 stmt->funcexpr->funcid);
-				numargs = get_func_arg_info(tuple,
-											&argtypes, &argnames, &argmodes);
-				ReleaseSysCache(tuple);
-
-				for (i = 0; i < numargs; i++)
-				{
-					if (argmodes && (argmodes[i] == PROARGMODE_INOUT ||
-									 argmodes[i] == PROARGMODE_OUT))
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("calling procedures with output arguments is not supported in SQL functions")));
-				}
-			}
-		}
-	}
-}
 
 /*
- * check_sql_fn_retval()
- *		Check return value of a list of lists of sql parse trees.
+ * check_sql_fn_retval() -- check return value of a list of sql parse trees.
  *
  * The return value of a sql function is the value returned by the last
- * canSetTag query in the function.  We do some ad-hoc type checking and
- * coercion here to ensure that the function returns what it's supposed to.
- * Note that we may actually modify the last query to make it match!
+ * canSetTag query in the function.  We do some ad-hoc type checking here
+ * to be sure that the user is returning the type he claims.  There are
+ * also a couple of strange-looking features to assist callers in dealing
+ * with allowed special cases, such as binary-compatible result types.
+ *
+ * For a polymorphic function the passed rettype must be the actual resolved
+ * output type of the function; we should never see a polymorphic pseudotype
+ * such as ANYELEMENT as rettype.  (This means we can't check the type during
+ * function definition of a polymorphic function.)
  *
  * This function returns true if the sql function returns the entire tuple
  * result of its final statement, or false if it returns just the first column
@@ -1574,81 +1497,58 @@ check_sql_fn_statements(List *queryTreeLists)
  * Note that because we allow "SELECT rowtype_expression", the result can be
  * false even when the declared function return type is a rowtype.
  *
- * For a polymorphic function the passed rettype must be the actual resolved
- * output type of the function.  (This means we can't check the type during
- * function definition of a polymorphic function.)  If we do see a polymorphic
- * rettype we'll throw an error, saying it is not a supported rettype.
+ * If modifyTargetList isn't NULL, the function will modify the final
+ * statement's targetlist in two cases:
+ * (1) if the tlist returns values that are binary-coercible to the expected
+ * type rather than being exactly the expected type.  RelabelType nodes will
+ * be inserted to make the result types match exactly.
+ * (2) if there are dropped columns in the declared result rowtype.  NULL
+ * output columns will be inserted in the tlist to match them.
+ * (Obviously the caller must pass a parsetree that is okay to modify when
+ * using this flag.)  Note that this flag does not affect whether the tlist is
+ * considered to be a legal match to the result type, only how we react to
+ * allowed not-exact-match cases.  *modifyTargetList will be set true iff
+ * we had to make any "dangerous" changes that could modify the semantics of
+ * the statement.  If it is set true, the caller should not use the modified
+ * statement, but for simplicity we apply the changes anyway.
  *
- * If the function returns composite, the passed rettupdesc should describe
- * the expected output.  If rettupdesc is NULL, we can't verify that the
- * output matches; that should only happen in fmgr_sql_validator(), or when
- * the function returns RECORD and the caller doesn't actually care which
- * composite type it is.
- *
- * (Typically, rettype and rettupdesc are computed by get_call_result_type
- * or a sibling function.)
- *
- * In addition to coercing individual output columns, we can modify the
- * output to include dummy NULL columns for any dropped columns appearing
- * in rettupdesc.  This is done only if the caller asks for it.
- *
- * If resultTargetList isn't NULL, then *resultTargetList is set to the
- * targetlist that defines the final statement's result.  Exception: if the
- * function is defined to return VOID then *resultTargetList is set to NIL.
+ * If junkFilter isn't NULL, then *junkFilter is set to a JunkFilter defined
+ * to convert the function's tuple result to the correct output tuple type.
+ * Exception: if the function is defined to return VOID then *junkFilter is
+ * set to NULL.
  */
 bool
-check_sql_fn_retval(List *queryTreeLists,
-					Oid rettype, TupleDesc rettupdesc,
-					bool insertDroppedCols,
-					List **resultTargetList)
+check_sql_fn_retval(Oid func_id, Oid rettype, List *queryTreeList,
+					bool *modifyTargetList,
+					JunkFilter **junkFilter)
 {
-	bool		is_tuple_result = false;
 	Query	   *parse;
-	ListCell   *parse_cell;
+	List	  **tlist_ptr;
 	List	   *tlist;
 	int			tlistlen;
-	bool		tlist_is_modifiable;
 	char		fn_typtype;
-	List	   *upper_tlist = NIL;
-	bool		upper_tlist_nontrivial = false;
+	Oid			restype;
 	ListCell   *lc;
 
-	if (resultTargetList)
-		*resultTargetList = NIL;	/* initialize in case of VOID result */
+	AssertArg(!IsPolymorphicType(rettype));
+
+	if (modifyTargetList)
+		*modifyTargetList = false;		/* initialize for no change */
+	if (junkFilter)
+		*junkFilter = NULL;		/* initialize in case of VOID result */
 
 	/*
-	 * If it's declared to return VOID, we don't care what's in the function.
-	 * (This takes care of the procedure case, as well.)
-	 */
-	if (rettype == VOIDOID)
-		return false;
-
-	/*
-	 * Find the last canSetTag query in the function body (which is presented
-	 * to us as a list of sublists of Query nodes).  This isn't necessarily
-	 * the last parsetree, because rule rewriting can insert queries after
-	 * what the user wrote.  Note that it might not even be in the last
-	 * sublist, for example if the last query rewrites to DO INSTEAD NOTHING.
-	 * (It might not be unreasonable to throw an error in such a case, but
-	 * this is the historical behavior and it doesn't seem worth changing.)
+	 * Find the last canSetTag query in the list.  This isn't necessarily the
+	 * last parsetree, because rule rewriting can insert queries after what
+	 * the user wrote.
 	 */
 	parse = NULL;
-	parse_cell = NULL;
-	foreach(lc, queryTreeLists)
+	foreach(lc, queryTreeList)
 	{
-		List	   *sublist = lfirst_node(List, lc);
-		ListCell   *lc2;
+		Query	   *q = (Query *) lfirst(lc);
 
-		foreach(lc2, sublist)
-		{
-			Query	   *q = lfirst_node(Query, lc2);
-
-			if (q->canSetTag)
-			{
-				parse = q;
-				parse_cell = lc2;
-			}
-		}
+		if (q->canSetTag)
+			parse = q;
 	}
 
 	/*
@@ -1663,11 +1563,11 @@ check_sql_fn_retval(List *queryTreeLists,
 	 * entities.
 	 */
 	if (parse &&
-		parse->commandType == CMD_SELECT)
+		parse->commandType == CMD_SELECT &&
+		parse->utilityStmt == NULL)
 	{
+		tlist_ptr = &parse->targetList;
 		tlist = parse->targetList;
-		/* tlist is modifiable unless it's a dummy in a setop query */
-		tlist_is_modifiable = (parse->setOperations == NULL);
 	}
 	else if (parse &&
 			 (parse->commandType == CMD_INSERT ||
@@ -1675,29 +1575,27 @@ check_sql_fn_retval(List *queryTreeLists,
 			  parse->commandType == CMD_DELETE) &&
 			 parse->returningList)
 	{
+		tlist_ptr = &parse->returningList;
 		tlist = parse->returningList;
-		/* returningList can always be modified */
-		tlist_is_modifiable = true;
 	}
 	else
 	{
 		/* Empty function body, or last statement is a utility command */
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-				 errmsg("return type mismatch in function declared to return %s",
-						format_type_be(rettype)),
-				 errdetail("Function's final statement must be SELECT or INSERT/UPDATE/DELETE RETURNING.")));
-		return false;			/* keep compiler quiet */
+		if (rettype != VOIDOID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+			 errmsg("return type mismatch in function declared to return %s",
+					format_type_be(rettype)),
+					 errdetail("Function's final statement must be SELECT or INSERT/UPDATE/DELETE RETURNING.")));
+		return false;
 	}
 
 	/*
 	 * OK, check that the targetlist returns something matching the declared
-	 * type, and modify it if necessary.  If possible, we insert any coercion
-	 * steps right into the final statement's targetlist.  However, that might
-	 * risk changes in the statement's semantics --- we can't safely change
-	 * the output type of a grouping column, for instance.  In such cases we
-	 * handle coercions by inserting an extra level of Query that effectively
-	 * just does a projection.
+	 * type.  (We used to insist that the declared type not be VOID in this
+	 * case, but that makes it hard to write a void function that exits after
+	 * calling another void function.  Instead, we insist that the tlist
+	 * return void ... so void is treated as if it were a scalar type below.)
 	 */
 
 	/*
@@ -1710,66 +1608,70 @@ check_sql_fn_retval(List *queryTreeLists,
 	if (fn_typtype == TYPTYPE_BASE ||
 		fn_typtype == TYPTYPE_DOMAIN ||
 		fn_typtype == TYPTYPE_ENUM ||
-		fn_typtype == TYPTYPE_RANGE)
+		fn_typtype == TYPTYPE_RANGE ||
+		rettype == VOIDOID)
 	{
 		/*
 		 * For scalar-type returns, the target list must have exactly one
-		 * non-junk entry, and its type must be coercible to rettype.
+		 * non-junk entry, and its type must agree with what the user
+		 * declared; except we allow binary-compatible types too.
 		 */
 		TargetEntry *tle;
 
 		if (tlistlen != 1)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("return type mismatch in function declared to return %s",
-							format_type_be(rettype)),
-					 errdetail("Final statement must return exactly one column.")));
+			 errmsg("return type mismatch in function declared to return %s",
+					format_type_be(rettype)),
+			  errdetail("Final statement must return exactly one column.")));
 
 		/* We assume here that non-junk TLEs must come first in tlists */
 		tle = (TargetEntry *) linitial(tlist);
 		Assert(!tle->resjunk);
 
-		if (!coerce_fn_result_column(tle, rettype, -1,
-									 tlist_is_modifiable,
-									 &upper_tlist,
-									 &upper_tlist_nontrivial))
+		restype = exprType((Node *) tle->expr);
+		if (!IsBinaryCoercible(restype, rettype))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-					 errmsg("return type mismatch in function declared to return %s",
-							format_type_be(rettype)),
+			 errmsg("return type mismatch in function declared to return %s",
+					format_type_be(rettype)),
 					 errdetail("Actual return type is %s.",
-							   format_type_be(exprType((Node *) tle->expr)))));
+							   format_type_be(restype))));
+		if (modifyTargetList && restype != rettype)
+		{
+			tle->expr = (Expr *) makeRelabelType(tle->expr,
+												 rettype,
+												 -1,
+												 get_typcollation(rettype),
+												 COERCE_IMPLICIT_CAST);
+			/* Relabel is dangerous if TLE is a sort/group or setop column */
+			if (tle->ressortgroupref != 0 || parse->setOperations)
+				*modifyTargetList = true;
+		}
+
+		/* Set up junk filter if needed */
+		if (junkFilter)
+			*junkFilter = ExecInitJunkFilter(tlist, false, NULL);
 	}
 	else if (fn_typtype == TYPTYPE_COMPOSITE || rettype == RECORDOID)
 	{
-		/*
-		 * Returns a rowtype.
-		 *
-		 * Note that we will not consider a domain over composite to be a
-		 * "rowtype" return type; it goes through the scalar case above.  This
-		 * is because we only provide column-by-column implicit casting, and
-		 * will not cast the complete record result.  So the only way to
-		 * produce a domain-over-composite result is to compute it as an
-		 * explicit single-column result.  The single-composite-column code
-		 * path just below could handle such cases, but it won't be reached.
-		 */
+		/* Returns a rowtype */
+		TupleDesc	tupdesc;
 		int			tupnatts;	/* physical number of columns in tuple */
 		int			tuplogcols; /* # of nondeleted columns in tuple */
 		int			colindex;	/* physical column index */
+		List	   *newtlist;	/* new non-junk tlist entries */
+		List	   *junkattrs;	/* new junk tlist entries */
 
 		/*
-		 * If the target list has one non-junk entry, and that expression has
-		 * or can be coerced to the declared return type, take it as the
-		 * result.  This allows, for example, 'SELECT func2()', where func2
-		 * has the same composite return type as the function that's calling
-		 * it.  This provision creates some ambiguity --- maybe the expression
-		 * was meant to be the lone field of the composite result --- but it
-		 * works well enough as long as we don't get too enthusiastic about
-		 * inventing coercions from scalar to composite types.
+		 * If the target list is of length 1, and the type of the varnode in
+		 * the target list matches the declared return type, this is okay.
+		 * This can happen, for example, where the body of the function is
+		 * 'SELECT func2()', where func2 has the same composite return type as
+		 * the function that's calling it.
 		 *
-		 * XXX Note that if rettype is RECORD and the expression is of a named
-		 * composite type, or vice versa, this coercion will succeed, whether
-		 * or not the record type really matches.  For the moment we rely on
+		 * XXX Note that if rettype is RECORD, the IsBinaryCoercible check
+		 * will succeed for any composite restype.  For the moment we rely on
 		 * runtime type checking to catch any discrepancy, but it'd be nice to
 		 * do better at parse time.
 		 */
@@ -1778,46 +1680,65 @@ check_sql_fn_retval(List *queryTreeLists,
 			TargetEntry *tle = (TargetEntry *) linitial(tlist);
 
 			Assert(!tle->resjunk);
-			if (coerce_fn_result_column(tle, rettype, -1,
-										tlist_is_modifiable,
-										&upper_tlist,
-										&upper_tlist_nontrivial))
+			restype = exprType((Node *) tle->expr);
+			if (IsBinaryCoercible(restype, rettype))
 			{
-				/* Note that we're NOT setting is_tuple_result */
-				goto tlist_coercion_finished;
+				if (modifyTargetList && restype != rettype)
+				{
+					tle->expr = (Expr *) makeRelabelType(tle->expr,
+														 rettype,
+														 -1,
+												   get_typcollation(rettype),
+													   COERCE_IMPLICIT_CAST);
+					/* Relabel is dangerous if sort/group or setop column */
+					if (tle->ressortgroupref != 0 || parse->setOperations)
+						*modifyTargetList = true;
+				}
+				/* Set up junk filter if needed */
+				if (junkFilter)
+					*junkFilter = ExecInitJunkFilter(tlist, false, NULL);
+				return false;	/* NOT returning whole tuple */
 			}
 		}
 
-		/*
-		 * If the caller didn't provide an expected tupdesc, we can't do any
-		 * further checking.  Assume we're returning the whole tuple.
-		 */
-		if (rettupdesc == NULL)
+		/* Is the rowtype fixed, or determined only at runtime? */
+		if (get_func_result_type(func_id, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		{
-			/* Return tlist if requested */
-			if (resultTargetList)
-				*resultTargetList = tlist;
+			/*
+			 * Assume we are returning the whole tuple. Crosschecking against
+			 * what the caller expects will happen at runtime.
+			 */
+			if (junkFilter)
+				*junkFilter = ExecInitJunkFilter(tlist, false, NULL);
 			return true;
 		}
+		Assert(tupdesc);
 
 		/*
-		 * Verify that the targetlist matches the return tuple type.  We scan
-		 * the non-resjunk columns, and coerce them if necessary to match the
-		 * datatypes of the non-deleted attributes.  For deleted attributes,
-		 * insert NULL result columns if the caller asked for that.
+		 * Verify that the targetlist matches the return tuple type. We scan
+		 * the non-deleted attributes to ensure that they match the datatypes
+		 * of the non-resjunk columns.  For deleted attributes, insert NULL
+		 * result columns if the caller asked for that.
 		 */
-		tupnatts = rettupdesc->natts;
+		tupnatts = tupdesc->natts;
 		tuplogcols = 0;			/* we'll count nondeleted cols as we go */
 		colindex = 0;
+		newtlist = NIL;			/* these are only used if modifyTargetList */
+		junkattrs = NIL;
 
 		foreach(lc, tlist)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 			Form_pg_attribute attr;
+			Oid			tletype;
+			Oid			atttype;
 
-			/* resjunk columns can simply be ignored */
 			if (tle->resjunk)
+			{
+				if (modifyTargetList)
+					junkattrs = lappend(junkattrs, tle);
 				continue;
+			}
 
 			do
 			{
@@ -1827,9 +1748,9 @@ check_sql_fn_retval(List *queryTreeLists,
 							(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 							 errmsg("return type mismatch in function declared to return %s",
 									format_type_be(rettype)),
-							 errdetail("Final statement returns too many columns.")));
-				attr = TupleDescAttr(rettupdesc, colindex - 1);
-				if (attr->attisdropped && insertDroppedCols)
+					errdetail("Final statement returns too many columns.")));
+				attr = tupdesc->attrs[colindex - 1];
+				if (attr->attisdropped && modifyTargetList)
 				{
 					Expr	   *null_expr;
 
@@ -1839,43 +1760,59 @@ check_sql_fn_retval(List *queryTreeLists,
 												   InvalidOid,
 												   sizeof(int32),
 												   (Datum) 0,
-												   true,	/* isnull */
+												   true,		/* isnull */
 												   true /* byval */ );
-					upper_tlist = lappend(upper_tlist,
-										  makeTargetEntry(null_expr,
-														  list_length(upper_tlist) + 1,
-														  NULL,
-														  false));
-					upper_tlist_nontrivial = true;
+					newtlist = lappend(newtlist,
+									   makeTargetEntry(null_expr,
+													   colindex,
+													   NULL,
+													   false));
+					/* NULL insertion is dangerous in a setop */
+					if (parse->setOperations)
+						*modifyTargetList = true;
 				}
 			} while (attr->attisdropped);
 			tuplogcols++;
 
-			if (!coerce_fn_result_column(tle,
-										 attr->atttypid, attr->atttypmod,
-										 tlist_is_modifiable,
-										 &upper_tlist,
-										 &upper_tlist_nontrivial))
+			tletype = exprType((Node *) tle->expr);
+			atttype = attr->atttypid;
+			if (!IsBinaryCoercible(tletype, atttype))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 						 errmsg("return type mismatch in function declared to return %s",
 								format_type_be(rettype)),
 						 errdetail("Final statement returns %s instead of %s at column %d.",
-								   format_type_be(exprType((Node *) tle->expr)),
-								   format_type_be(attr->atttypid),
+								   format_type_be(tletype),
+								   format_type_be(atttype),
 								   tuplogcols)));
+			if (modifyTargetList)
+			{
+				if (tletype != atttype)
+				{
+					tle->expr = (Expr *) makeRelabelType(tle->expr,
+														 atttype,
+														 -1,
+												   get_typcollation(atttype),
+													   COERCE_IMPLICIT_CAST);
+					/* Relabel is dangerous if sort/group or setop column */
+					if (tle->ressortgroupref != 0 || parse->setOperations)
+						*modifyTargetList = true;
+				}
+				tle->resno = colindex;
+				newtlist = lappend(newtlist, tle);
+			}
 		}
 
-		/* remaining columns in rettupdesc had better all be dropped */
+		/* remaining columns in tupdesc had better all be dropped */
 		for (colindex++; colindex <= tupnatts; colindex++)
 		{
-			if (!TupleDescAttr(rettupdesc, colindex - 1)->attisdropped)
+			if (!tupdesc->attrs[colindex - 1]->attisdropped)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 						 errmsg("return type mismatch in function declared to return %s",
 								format_type_be(rettype)),
-						 errdetail("Final statement returns too few columns.")));
-			if (insertDroppedCols)
+					 errdetail("Final statement returns too few columns.")));
+			if (modifyTargetList)
 			{
 				Expr	   *null_expr;
 
@@ -1887,17 +1824,38 @@ check_sql_fn_retval(List *queryTreeLists,
 											   (Datum) 0,
 											   true,	/* isnull */
 											   true /* byval */ );
-				upper_tlist = lappend(upper_tlist,
-									  makeTargetEntry(null_expr,
-													  list_length(upper_tlist) + 1,
-													  NULL,
-													  false));
-				upper_tlist_nontrivial = true;
+				newtlist = lappend(newtlist,
+								   makeTargetEntry(null_expr,
+												   colindex,
+												   NULL,
+												   false));
+				/* NULL insertion is dangerous in a setop */
+				if (parse->setOperations)
+					*modifyTargetList = true;
 			}
 		}
 
+		if (modifyTargetList)
+		{
+			/* ensure resjunk columns are numbered correctly */
+			foreach(lc, junkattrs)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+				tle->resno = colindex++;
+			}
+			/* replace the tlist with the modified one */
+			*tlist_ptr = list_concat(newtlist, junkattrs);
+		}
+
+		/* Set up junk filter if needed */
+		if (junkFilter)
+			*junkFilter = ExecInitJunkFilterConversion(tlist,
+												CreateTupleDescCopy(tupdesc),
+													   NULL);
+
 		/* Report that we are returning entire tuple result */
-		is_tuple_result = true;
+		return true;
 	}
 	else
 		ereport(ERROR,
@@ -1905,137 +1863,7 @@ check_sql_fn_retval(List *queryTreeLists,
 				 errmsg("return type %s is not supported for SQL functions",
 						format_type_be(rettype))));
 
-tlist_coercion_finished:
-
-	/*
-	 * If necessary, modify the final Query by injecting an extra Query level
-	 * that just performs a projection.  (It'd be dubious to do this to a
-	 * non-SELECT query, but we never have to; RETURNING lists can always be
-	 * modified in-place.)
-	 */
-	if (upper_tlist_nontrivial)
-	{
-		Query	   *newquery;
-		List	   *colnames;
-		RangeTblEntry *rte;
-		RangeTblRef *rtr;
-
-		Assert(parse->commandType == CMD_SELECT);
-
-		/* Most of the upper Query struct can be left as zeroes/nulls */
-		newquery = makeNode(Query);
-		newquery->commandType = CMD_SELECT;
-		newquery->querySource = parse->querySource;
-		newquery->canSetTag = true;
-		newquery->targetList = upper_tlist;
-
-		/* We need a moderately realistic colnames list for the subquery RTE */
-		colnames = NIL;
-		foreach(lc, parse->targetList)
-		{
-			TargetEntry *tle = (TargetEntry *) lfirst(lc);
-
-			if (tle->resjunk)
-				continue;
-			colnames = lappend(colnames,
-							   makeString(tle->resname ? tle->resname : ""));
-		}
-
-		/* Build a suitable RTE for the subquery */
-		rte = makeNode(RangeTblEntry);
-		rte->rtekind = RTE_SUBQUERY;
-		rte->subquery = parse;
-		rte->eref = rte->alias = makeAlias("*SELECT*", colnames);
-		rte->lateral = false;
-		rte->inh = false;
-		rte->inFromCl = true;
-		newquery->rtable = list_make1(rte);
-
-		rtr = makeNode(RangeTblRef);
-		rtr->rtindex = 1;
-		newquery->jointree = makeFromExpr(list_make1(rtr), NULL);
-
-		/* Replace original query in the correct element of the query list */
-		lfirst(parse_cell) = newquery;
-	}
-
-	/* Return tlist (possibly modified) if requested */
-	if (resultTargetList)
-		*resultTargetList = upper_tlist;
-
-	return is_tuple_result;
-}
-
-/*
- * Process one function result column for check_sql_fn_retval
- *
- * Coerce the output value to the required type/typmod, and add a column
- * to *upper_tlist for it.  Set *upper_tlist_nontrivial to true if we
- * add an upper tlist item that's not just a Var.
- *
- * Returns true if OK, false if could not coerce to required type
- * (in which case, no changes have been made)
- */
-static bool
-coerce_fn_result_column(TargetEntry *src_tle,
-						Oid res_type,
-						int32 res_typmod,
-						bool tlist_is_modifiable,
-						List **upper_tlist,
-						bool *upper_tlist_nontrivial)
-{
-	TargetEntry *new_tle;
-	Expr	   *new_tle_expr;
-	Node	   *cast_result;
-
-	/*
-	 * If the TLE has a sortgroupref marking, don't change it, as it probably
-	 * is referenced by ORDER BY, DISTINCT, etc, and changing its type would
-	 * break query semantics.  Otherwise, it's safe to modify in-place unless
-	 * the query as a whole has issues with that.
-	 */
-	if (tlist_is_modifiable && src_tle->ressortgroupref == 0)
-	{
-		/* OK to modify src_tle in place, if necessary */
-		cast_result = coerce_to_target_type(NULL,
-											(Node *) src_tle->expr,
-											exprType((Node *) src_tle->expr),
-											res_type, res_typmod,
-											COERCION_ASSIGNMENT,
-											COERCE_IMPLICIT_CAST,
-											-1);
-		if (cast_result == NULL)
-			return false;
-		assign_expr_collations(NULL, cast_result);
-		src_tle->expr = (Expr *) cast_result;
-		/* Make a Var referencing the possibly-modified TLE */
-		new_tle_expr = (Expr *) makeVarFromTargetEntry(1, src_tle);
-	}
-	else
-	{
-		/* Any casting must happen in the upper tlist */
-		Var		   *var = makeVarFromTargetEntry(1, src_tle);
-
-		cast_result = coerce_to_target_type(NULL,
-											(Node *) var,
-											var->vartype,
-											res_type, res_typmod,
-											COERCION_ASSIGNMENT,
-											COERCE_IMPLICIT_CAST,
-											-1);
-		if (cast_result == NULL)
-			return false;
-		assign_expr_collations(NULL, cast_result);
-		/* Did the coercion actually do anything? */
-		if (cast_result != (Node *) var)
-			*upper_tlist_nontrivial = true;
-		new_tle_expr = (Expr *) cast_result;
-	}
-	new_tle = makeTargetEntry(new_tle_expr,
-							  list_length(*upper_tlist) + 1,
-							  src_tle->resname, false);
-	*upper_tlist = lappend(*upper_tlist, new_tle);
-	return true;
+	return false;
 }
 
 
@@ -2070,7 +1898,7 @@ sqlfunction_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 /*
  * sqlfunction_receive --- receive one tuple
  */
-static bool
+static void
 sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self)
 {
 	DR_sqlfunction *myState = (DR_sqlfunction *) self;
@@ -2080,8 +1908,6 @@ sqlfunction_receive(TupleTableSlot *slot, DestReceiver *self)
 
 	/* Store the filtered tuple into the tuplestore */
 	tuplestore_puttupleslot(myState->tstore, slot);
-
-	return true;
 }
 
 /*

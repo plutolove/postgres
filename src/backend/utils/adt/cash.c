@@ -21,8 +21,8 @@
 #include <limits.h>
 #include <ctype.h>
 #include <math.h>
+#include <locale.h>
 
-#include "common/int.h"
 #include "libpq/pqformat.h"
 #include "utils/builtins.h"
 #include "utils/cash.h"
@@ -39,13 +39,13 @@ static const char *
 num_word(Cash value)
 {
 	static char buf[128];
-	static const char *const small[] = {
+	static const char *small[] = {
 		"zero", "one", "two", "three", "four", "five", "six", "seven",
 		"eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
 		"fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
 		"thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"
 	};
-	const char *const *big = small + 18;
+	const char **big = small + 18;
 	int			tu = value % 100;
 
 	/* deal with the simple cases first */
@@ -85,7 +85,7 @@ num_word(Cash value)
 	}
 
 	return buf;
-}								/* num_word() */
+}	/* num_word() */
 
 /* cash_in()
  * Convert a string to a cash data type.
@@ -133,7 +133,7 @@ cash_in(PG_FUNCTION_ARGS)
 		dsymbol = '.';
 	if (*lconvert->mon_thousands_sep != '\0')
 		ssymbol = lconvert->mon_thousands_sep;
-	else						/* ssymbol should not equal dsymbol */
+	else	/* ssymbol should not equal dsymbol */
 		ssymbol = (dsymbol != ',') ? "," : ".";
 	csymbol = (*lconvert->currency_symbol != '\0') ? lconvert->currency_symbol : "$";
 	psymbol = (*lconvert->positive_sign != '\0') ? lconvert->positive_sign : "+";
@@ -189,31 +189,13 @@ cash_in(PG_FUNCTION_ARGS)
 	printf("cashin- string is '%s'\n", s);
 #endif
 
-	/*
-	 * We accumulate the absolute amount in "value" and then apply the sign at
-	 * the end.  (The sign can appear before or after the digits, so it would
-	 * be more complicated to do otherwise.)  Because of the larger range of
-	 * negative signed integers, we build "value" in the negative and then
-	 * flip the sign at the end, catching most-negative-number overflow if
-	 * necessary.
-	 */
-
 	for (; *s; s++)
 	{
-		/*
-		 * We look for digits as long as we have found less than the required
-		 * number of decimal places.
-		 */
+		/* we look for digits as long as we have found less */
+		/* than the required number of decimal places */
 		if (isdigit((unsigned char) *s) && (!seen_dot || dec < fpoint))
 		{
-			int8		digit = *s - '0';
-
-			if (pg_mul_s64_overflow(value, 10, &value) ||
-				pg_sub_s64_overflow(value, digit, &value))
-				ereport(ERROR,
-						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-						 errmsg("value \"%s\" is out of range for type %s",
-								str, "money")));
+			value = (value * 10) + (*s - '0');
 
 			if (seen_dot)
 				dec++;
@@ -232,24 +214,11 @@ cash_in(PG_FUNCTION_ARGS)
 
 	/* round off if there's another digit */
 	if (isdigit((unsigned char) *s) && *s >= '5')
-	{
-		/* remember we build the value in the negative */
-		if (pg_sub_s64_overflow(value, 1, &value))
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value \"%s\" is out of range for type %s",
-							str, "money")));
-	}
+		value++;
 
 	/* adjust for less than required decimal places */
 	for (; dec < fpoint; dec++)
-	{
-		if (pg_mul_s64_overflow(value, 10, &value))
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value \"%s\" is out of range for type %s",
-							str, "money")));
-	}
+		value *= 10;
 
 	/*
 	 * should only be trailing digits followed by whitespace, right paren,
@@ -274,25 +243,11 @@ cash_in(PG_FUNCTION_ARGS)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for type %s: \"%s\"",
-							"money", str)));
+					 errmsg("invalid input syntax for type money: \"%s\"",
+							str)));
 	}
 
-	/*
-	 * If the value is supposed to be positive, flip the sign, but check for
-	 * the most negative number.
-	 */
-	if (sgn > 0)
-	{
-		if (value == PG_INT64_MIN)
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value \"%s\" is out of range for type %s",
-							str, "money")));
-		result = -value;
-	}
-	else
-		result = value;
+	result = value * sgn;
 
 #ifdef CASHDEBUG
 	printf("cashin- result is " INT64_FORMAT "\n", result);
@@ -346,7 +301,7 @@ cash_out(PG_FUNCTION_ARGS)
 		dsymbol = '.';
 	if (*lconvert->mon_thousands_sep != '\0')
 		ssymbol = lconvert->mon_thousands_sep;
-	else						/* ssymbol should not equal dsymbol */
+	else	/* ssymbol should not equal dsymbol */
 		ssymbol = (dsymbol != ',') ? "," : ".";
 	csymbol = (*lconvert->currency_symbol != '\0') ? lconvert->currency_symbol : "$";
 
@@ -666,7 +621,7 @@ cash_mul_flt8(PG_FUNCTION_ARGS)
 	float8		f = PG_GETARG_FLOAT8(1);
 	Cash		result;
 
-	result = rint(c * f);
+	result = c * f;
 	PG_RETURN_CASH(result);
 }
 
@@ -681,7 +636,7 @@ flt8_mul_cash(PG_FUNCTION_ARGS)
 	Cash		c = PG_GETARG_CASH(1);
 	Cash		result;
 
-	result = rint(f * c);
+	result = f * c;
 	PG_RETURN_CASH(result);
 }
 
@@ -716,7 +671,7 @@ cash_mul_flt4(PG_FUNCTION_ARGS)
 	float4		f = PG_GETARG_FLOAT4(1);
 	Cash		result;
 
-	result = rint(c * (float8) f);
+	result = c * f;
 	PG_RETURN_CASH(result);
 }
 
@@ -731,7 +686,7 @@ flt4_mul_cash(PG_FUNCTION_ARGS)
 	Cash		c = PG_GETARG_CASH(1);
 	Cash		result;
 
-	result = rint((float8) f * c);
+	result = f * c;
 	PG_RETURN_CASH(result);
 }
 
@@ -752,7 +707,7 @@ cash_div_flt4(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_DIVISION_BY_ZERO),
 				 errmsg("division by zero")));
 
-	result = rint(c / (float8) f);
+	result = rint(c / f);
 	PG_RETURN_CASH(result);
 }
 
@@ -801,7 +756,7 @@ cash_div_int8(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_DIVISION_BY_ZERO),
 				 errmsg("division by zero")));
 
-	result = c / i;
+	result = rint(c / i);
 
 	PG_RETURN_CASH(result);
 }
@@ -853,7 +808,7 @@ cash_div_int4(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_DIVISION_BY_ZERO),
 				 errmsg("division by zero")));
 
-	result = c / i;
+	result = rint(c / i);
 
 	PG_RETURN_CASH(result);
 }
@@ -903,7 +858,7 @@ cash_div_int2(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_DIVISION_BY_ZERO),
 				 errmsg("division by zero")));
 
-	result = c / s;
+	result = rint(c / s);
 	PG_RETURN_CASH(result);
 }
 
@@ -938,7 +893,7 @@ cashsmaller(PG_FUNCTION_ARGS)
 }
 
 /* cash_words()
- * This converts an int4 as well but to a representation using words
+ * This converts a int4 as well but to a representation using words
  * Obviously way North American centric - sorry
  */
 Datum
@@ -970,10 +925,10 @@ cash_words(PG_FUNCTION_ARGS)
 	val = (uint64) value;
 
 	m0 = val % INT64CONST(100); /* cents */
-	m1 = (val / INT64CONST(100)) % 1000;	/* hundreds */
-	m2 = (val / INT64CONST(100000)) % 1000; /* thousands */
+	m1 = (val / INT64CONST(100)) % 1000;		/* hundreds */
+	m2 = (val / INT64CONST(100000)) % 1000;		/* thousands */
 	m3 = (val / INT64CONST(100000000)) % 1000;	/* millions */
-	m4 = (val / INT64CONST(100000000000)) % 1000;	/* billions */
+	m4 = (val / INT64CONST(100000000000)) % 1000;		/* billions */
 	m5 = (val / INT64CONST(100000000000000)) % 1000;	/* trillions */
 	m6 = (val / INT64CONST(100000000000000000)) % 1000; /* quadrillions */
 
@@ -1032,8 +987,13 @@ Datum
 cash_numeric(PG_FUNCTION_ARGS)
 {
 	Cash		money = PG_GETARG_CASH(0);
-	Datum		result;
+	Numeric		result;
 	int			fpoint;
+	int64		scale;
+	int			i;
+	Datum		amount;
+	Datum		numeric_scale;
+	Datum		quotient;
 	struct lconv *lconvert = PGLC_localeconv();
 
 	/* see comments about frac_digits in cash_in() */
@@ -1041,45 +1001,22 @@ cash_numeric(PG_FUNCTION_ARGS)
 	if (fpoint < 0 || fpoint > 10)
 		fpoint = 2;
 
-	/* convert the integral money value to numeric */
-	result = DirectFunctionCall1(int8_numeric, Int64GetDatum(money));
+	/* compute required scale factor */
+	scale = 1;
+	for (i = 0; i < fpoint; i++)
+		scale *= 10;
 
-	/* scale appropriately, if needed */
-	if (fpoint > 0)
-	{
-		int64		scale;
-		int			i;
-		Datum		numeric_scale;
-		Datum		quotient;
+	/* form the result as money / scale */
+	amount = DirectFunctionCall1(int8_numeric, Int64GetDatum(money));
+	numeric_scale = DirectFunctionCall1(int8_numeric, Int64GetDatum(scale));
+	quotient = DirectFunctionCall2(numeric_div, amount, numeric_scale);
 
-		/* compute required scale factor */
-		scale = 1;
-		for (i = 0; i < fpoint; i++)
-			scale *= 10;
-		numeric_scale = DirectFunctionCall1(int8_numeric,
-											Int64GetDatum(scale));
+	/* forcibly round to exactly the intended number of digits */
+	result = DatumGetNumeric(DirectFunctionCall2(numeric_round,
+												 quotient,
+												 Int32GetDatum(fpoint)));
 
-		/*
-		 * Given integral inputs approaching INT64_MAX, select_div_scale()
-		 * might choose a result scale of zero, causing loss of fractional
-		 * digits in the quotient.  We can ensure an exact result by setting
-		 * the dscale of either input to be at least as large as the desired
-		 * result scale.  numeric_round() will do that for us.
-		 */
-		numeric_scale = DirectFunctionCall2(numeric_round,
-											numeric_scale,
-											Int32GetDatum(fpoint));
-
-		/* Now we can safely divide ... */
-		quotient = DirectFunctionCall2(numeric_div, result, numeric_scale);
-
-		/* ... and forcibly round to exactly the intended number of digits */
-		result = DirectFunctionCall2(numeric_round,
-									 quotient,
-									 Int32GetDatum(fpoint));
-	}
-
-	PG_RETURN_DATUM(result);
+	PG_RETURN_NUMERIC(result);
 }
 
 /* numeric_cash()

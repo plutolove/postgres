@@ -6,35 +6,23 @@ SELECT getdatabaseencoding();
  UTF8
 (1 row)
 
-SET client_encoding TO 'UTF8';
+SET client_encoding TO 'KOI8';
 SELECT unaccent('foobar');
  unaccent 
 ----------
  foobar
 (1 row)
 
-SELECT unaccent('ёлка');
+SELECT unaccent('����');
  unaccent 
 ----------
- елка
+ ����
 (1 row)
 
-SELECT unaccent('ЁЖИК');
+SELECT unaccent('����');
  unaccent 
 ----------
- ЕЖИК
-(1 row)
-
-SELECT unaccent('˃˖˗˜');
- unaccent 
-----------
- >+-~
-(1 row)
-
-SELECT unaccent('À');  -- Remove combining diacritical 0x0300
- unaccent 
-----------
- A
+ ����
 (1 row)
 
 SELECT unaccent('unaccent', 'foobar');
@@ -43,28 +31,16 @@ SELECT unaccent('unaccent', 'foobar');
  foobar
 (1 row)
 
-SELECT unaccent('unaccent', 'ёлка');
+SELECT unaccent('unaccent', '����');
  unaccent 
 ----------
- елка
+ ����
 (1 row)
 
-SELECT unaccent('unaccent', 'ЁЖИК');
+SELECT unaccent('unaccent', '����');
  unaccent 
 ----------
- ЕЖИК
-(1 row)
-
-SELECT unaccent('unaccent', '˃˖˗˜');
- unaccent 
-----------
- >+-~
-(1 row)
-
-SELECT unaccent('unaccent', 'À');
- unaccent 
-----------
- A
+ ����
 (1 row)
 
 SELECT ts_lexize('unaccent', 'foobar');
@@ -73,27 +49,15 @@ SELECT ts_lexize('unaccent', 'foobar');
  
 (1 row)
 
-SELECT ts_lexize('unaccent', 'ёлка');
+SELECT ts_lexize('unaccent', '����');
  ts_lexize 
 -----------
- {елка}
+ {����}
 (1 row)
 
-SELECT ts_lexize('unaccent', 'ЁЖИК');
+SELECT ts_lexize('unaccent', '����');
  ts_lexize 
 -----------
- {ЕЖИК}
-(1 row)
-
-SELECT ts_lexize('unaccent', '˃˖˗˜');
- ts_lexize 
------------
- {>+-~}
-(1 row)
-
-SELECT ts_lexize('unaccent', 'À');
- ts_lexize 
------------
- {A}
+ {����}
 (1 row)
 

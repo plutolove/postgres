@@ -3,7 +3,7 @@
  * tsvector.c
  *	  I/O functions for tsvector
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -17,7 +17,6 @@
 #include "libpq/pqformat.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
 
 typedef struct
@@ -29,8 +28,8 @@ typedef struct
 
 
 /* Compare two WordEntryPos values for qsort */
-int
-compareWordEntryPos(const void *a, const void *b)
+static int
+comparePos(const void *a, const void *b)
 {
 	int			apos = WEP_GETPOS(*(const WordEntryPos *) a);
 	int			bpos = WEP_GETPOS(*(const WordEntryPos *) b);
@@ -41,9 +40,8 @@ compareWordEntryPos(const void *a, const void *b)
 }
 
 /*
- * Removes duplicate pos entries. If there's two entries with same pos but
- * different weight, the higher weight is retained, so we can't use
- * qunique here.
+ * Removes duplicate pos entries. If there's two entries with same pos
+ * but different weight, the higher weight is retained.
  *
  * Returns new length.
  */
@@ -56,7 +54,7 @@ uniquePos(WordEntryPos *a, int l)
 	if (l <= 1)
 		return l;
 
-	qsort((void *) a, l, sizeof(WordEntryPos), compareWordEntryPos);
+	qsort((void *) a, l, sizeof(WordEntryPos), comparePos);
 
 	res = a;
 	ptr = a + 1;
@@ -201,7 +199,7 @@ tsvectorin(PG_FUNCTION_ARGS)
 	char	   *cur;
 	int			buflen = 256;	/* allocated size of tmpbuf */
 
-	state = init_tsvector_parser(buf, 0);
+	state = init_tsvector_parser(buf, false, false);
 
 	arrlen = 64;
 	arr = (WordEntryIN *) palloc(sizeof(WordEntryIN) * arrlen);
@@ -411,7 +409,7 @@ tsvectorsend(PG_FUNCTION_ARGS)
 
 	pq_begintypsend(&buf);
 
-	pq_sendint32(&buf, vec->size);
+	pq_sendint(&buf, vec->size, sizeof(int32));
 	for (i = 0; i < vec->size; i++)
 	{
 		uint16		npos;
@@ -424,14 +422,14 @@ tsvectorsend(PG_FUNCTION_ARGS)
 		pq_sendbyte(&buf, '\0');
 
 		npos = POSDATALEN(vec, weptr);
-		pq_sendint16(&buf, npos);
+		pq_sendint(&buf, npos, sizeof(uint16));
 
 		if (npos > 0)
 		{
 			WordEntryPos *wepptr = POSDATAPTR(vec, weptr);
 
 			for (j = 0; j < npos; j++)
-				pq_sendint16(&buf, wepptr[j]);
+				pq_sendint(&buf, wepptr[j], sizeof(WordEntryPos));
 		}
 		weptr++;
 	}

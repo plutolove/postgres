@@ -3,7 +3,7 @@
  * tsquery_op.c
  *	  Various operations with tsquery
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -14,9 +14,7 @@
 
 #include "postgres.h"
 
-#include "lib/qunique.h"
 #include "tsearch/ts_utils.h"
-#include "utils/builtins.h"
 
 Datum
 tsquery_numnode(PG_FUNCTION_ARGS)
@@ -29,7 +27,7 @@ tsquery_numnode(PG_FUNCTION_ARGS)
 }
 
 static QTNode *
-join_tsqueries(TSQuery a, TSQuery b, int8 operator, uint16 distance)
+join_tsqueries(TSQuery a, TSQuery b, int8 operator)
 {
 	QTNode	   *res = (QTNode *) palloc0(sizeof(QTNode));
 
@@ -38,8 +36,6 @@ join_tsqueries(TSQuery a, TSQuery b, int8 operator, uint16 distance)
 	res->valnode = (QueryItem *) palloc0(sizeof(QueryItem));
 	res->valnode->type = QI_OPR;
 	res->valnode->qoperator.oper = operator;
-	if (operator == OP_PHRASE)
-		res->valnode->qoperator.distance = distance;
 
 	res->child = (QTNode **) palloc0(sizeof(QTNode *) * 2);
 	res->child[0] = QT2QTN(GETQUERY(b), GETOPERAND(b));
@@ -68,7 +64,7 @@ tsquery_and(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(a);
 	}
 
-	res = join_tsqueries(a, b, OP_AND, 0);
+	res = join_tsqueries(a, b, OP_AND);
 
 	query = QTN2QT(res);
 
@@ -98,7 +94,7 @@ tsquery_or(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(a);
 	}
 
-	res = join_tsqueries(a, b, OP_OR, 0);
+	res = join_tsqueries(a, b, OP_OR);
 
 	query = QTN2QT(res);
 
@@ -106,52 +102,7 @@ tsquery_or(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(a, 0);
 	PG_FREE_IF_COPY(b, 1);
 
-	PG_RETURN_TSQUERY(query);
-}
-
-Datum
-tsquery_phrase_distance(PG_FUNCTION_ARGS)
-{
-	TSQuery		a = PG_GETARG_TSQUERY_COPY(0);
-	TSQuery		b = PG_GETARG_TSQUERY_COPY(1);
-	QTNode	   *res;
-	TSQuery		query;
-	int32		distance = PG_GETARG_INT32(2);
-
-	if (distance < 0 || distance > MAXENTRYPOS)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("distance in phrase operator should be non-negative and less than %d",
-						MAXENTRYPOS)));
-	if (a->size == 0)
-	{
-		PG_FREE_IF_COPY(a, 1);
-		PG_RETURN_POINTER(b);
-	}
-	else if (b->size == 0)
-	{
-		PG_FREE_IF_COPY(b, 1);
-		PG_RETURN_POINTER(a);
-	}
-
-	res = join_tsqueries(a, b, OP_PHRASE, (uint16) distance);
-
-	query = QTN2QT(res);
-
-	QTNFree(res);
-	PG_FREE_IF_COPY(a, 0);
-	PG_FREE_IF_COPY(b, 1);
-
-	PG_RETURN_TSQUERY(query);
-}
-
-Datum
-tsquery_phrase(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_POINTER(DirectFunctionCall3(tsquery_phrase_distance,
-										  PG_GETARG_DATUM(0),
-										  PG_GETARG_DATUM(1),
-										  Int32GetDatum(1)));
+	PG_RETURN_POINTER(query);
 }
 
 Datum
@@ -296,10 +247,32 @@ collectTSQueryValues(TSQuery a, int *nvalues_p)
 static int
 cmp_string(const void *a, const void *b)
 {
-	const char *sa = *((char *const *) a);
-	const char *sb = *((char *const *) b);
-
+	const char *sa = *((const char **) a);
+	const char *sb = *((const char **) b);
 	return strcmp(sa, sb);
+}
+
+static int
+remove_duplicates(char **strings, int n)
+{
+	if (n <= 1)
+		return n;
+	else
+	{
+		int			i;
+		char	   *prev = strings[0];
+		int			new_n = 1;
+
+		for (i = 1; i < n; i++)
+		{
+			if (strcmp(strings[i], prev) != 0)
+			{
+				strings[new_n++] = strings[i];
+				prev = strings[i];
+			}
+		}
+		return new_n;
+	}
 }
 
 Datum
@@ -319,17 +292,16 @@ tsq_mcontains(PG_FUNCTION_ARGS)
 
 	/* Sort and remove duplicates from both arrays */
 	qsort(query_values, query_nvalues, sizeof(char *), cmp_string);
-	query_nvalues = qunique(query_values, query_nvalues, sizeof(char *),
-							cmp_string);
+	query_nvalues = remove_duplicates(query_values, query_nvalues);
 	qsort(ex_values, ex_nvalues, sizeof(char *), cmp_string);
-	ex_nvalues = qunique(ex_values, ex_nvalues, sizeof(char *), cmp_string);
+	ex_nvalues = remove_duplicates(ex_values, ex_nvalues);
 
 	if (ex_nvalues > query_nvalues)
 		result = false;
 	else
 	{
-		int			i;
-		int			j = 0;
+		int i;
+		int j = 0;
 
 		for (i = 0; i < ex_nvalues; i++)
 		{
@@ -352,7 +324,11 @@ tsq_mcontains(PG_FUNCTION_ARGS)
 Datum
 tsq_mcontained(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_DATUM(DirectFunctionCall2(tsq_mcontains,
+	PG_RETURN_DATUM(
+					DirectFunctionCall2(
+										tsq_mcontains,
 										PG_GETARG_DATUM(1),
-										PG_GETARG_DATUM(0)));
+										PG_GETARG_DATUM(0)
+										)
+		);
 }

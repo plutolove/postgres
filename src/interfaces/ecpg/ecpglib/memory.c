@@ -4,10 +4,10 @@
 #include "postgres_fe.h"
 
 #include "ecpg-pthread-win32.h"
-#include "ecpgerrno.h"
-#include "ecpglib.h"
-#include "ecpglib_extern.h"
 #include "ecpgtype.h"
+#include "ecpglib.h"
+#include "ecpgerrno.h"
+#include "extern.h"
 
 void
 ecpg_free(void *ptr)
@@ -26,7 +26,7 @@ ecpg_alloc(long size, int lineno)
 		return NULL;
 	}
 
-	return new;
+	return (new);
 }
 
 char *
@@ -40,7 +40,7 @@ ecpg_realloc(void *ptr, long size, int lineno)
 		return NULL;
 	}
 
-	return new;
+	return (new);
 }
 
 char *
@@ -58,7 +58,7 @@ ecpg_strdup(const char *string, int lineno)
 		return NULL;
 	}
 
-	return new;
+	return (new);
 }
 
 /* keep a list of memory we allocated for the user */
@@ -93,7 +93,7 @@ get_auto_allocs(void)
 }
 
 static void
-set_auto_allocs(struct auto_mem *am)
+set_auto_allocs(struct auto_mem * am)
 {
 	pthread_setspecific(auto_mem_key, am);
 }
@@ -107,7 +107,7 @@ static struct auto_mem *auto_allocs = NULL;
 char *
 ecpg_auto_alloc(long size, int lineno)
 {
-	void	   *ptr = (void *) ecpg_alloc(size, lineno);
+	void	*ptr = (void *) ecpg_alloc(size, lineno);
 
 	if (!ptr)
 		return NULL;

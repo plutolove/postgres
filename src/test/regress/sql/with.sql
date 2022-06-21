@@ -69,67 +69,14 @@ SELECT * FROM t LIMIT 10;
 
 -- Test behavior with an unknown-type literal in the WITH
 WITH q AS (SELECT 'foo' AS x)
-SELECT x, x IS OF (text) AS is_text FROM q;
+SELECT x, x IS OF (unknown) as is_unknown FROM q;
 
 WITH RECURSIVE t(n) AS (
     SELECT 'foo'
 UNION ALL
     SELECT n || ' bar' FROM t WHERE length(n) < 20
 )
-SELECT n, n IS OF (text) AS is_text FROM t;
-
--- In a perfect world, this would work and resolve the literal as int ...
--- but for now, we have to be content with resolving to text too soon.
-WITH RECURSIVE t(n) AS (
-    SELECT '7'
-UNION ALL
-    SELECT n+1 FROM t WHERE n < 10
-)
-SELECT n, n IS OF (int) AS is_int FROM t;
-
--- Deeply nested WITH caused a list-munging problem in v13
--- Detection of cross-references and self-references
-WITH RECURSIVE w1(c1) AS
- (WITH w2(c2) AS
-  (WITH w3(c3) AS
-   (WITH w4(c4) AS
-    (WITH w5(c5) AS
-     (WITH RECURSIVE w6(c6) AS
-      (WITH w6(c6) AS
-       (WITH w8(c8) AS
-        (SELECT 1)
-        SELECT * FROM w8)
-       SELECT * FROM w6)
-      SELECT * FROM w6)
-     SELECT * FROM w5)
-    SELECT * FROM w4)
-   SELECT * FROM w3)
-  SELECT * FROM w2)
-SELECT * FROM w1;
--- Detection of invalid self-references
-WITH RECURSIVE outermost(x) AS (
- SELECT 1
- UNION (WITH innermost1 AS (
-  SELECT 2
-  UNION (WITH innermost2 AS (
-   SELECT 3
-   UNION (WITH innermost3 AS (
-    SELECT 4
-    UNION (WITH innermost4 AS (
-     SELECT 5
-     UNION (WITH innermost5 AS (
-      SELECT 6
-      UNION (WITH innermost6 AS
-       (SELECT 7)
-       SELECT * FROM innermost6))
-      SELECT * FROM innermost5))
-     SELECT * FROM innermost4))
-    SELECT * FROM innermost3))
-   SELECT * FROM innermost2))
-  SELECT * FROM outermost
-  UNION SELECT * FROM innermost1)
- )
- SELECT * FROM outermost ORDER BY 1;
+SELECT n, n IS OF (text) as is_text FROM t;
 
 --
 -- Some examples with a tree
@@ -628,7 +575,7 @@ WITH outermost(x) AS (
          SELECT * FROM innermost
          UNION SELECT 3)
 )
-SELECT * FROM outermost ORDER BY 1;
+SELECT * FROM outermost;
 
 WITH outermost(x) AS (
   SELECT 1
@@ -636,7 +583,7 @@ WITH outermost(x) AS (
          SELECT * FROM outermost  -- fail
          UNION SELECT * FROM innermost)
 )
-SELECT * FROM outermost ORDER BY 1;
+SELECT * FROM outermost;
 
 WITH RECURSIVE outermost(x) AS (
   SELECT 1
@@ -644,14 +591,14 @@ WITH RECURSIVE outermost(x) AS (
          SELECT * FROM outermost
          UNION SELECT * FROM innermost)
 )
-SELECT * FROM outermost ORDER BY 1;
+SELECT * FROM outermost;
 
 WITH RECURSIVE outermost(x) AS (
   WITH innermost as (SELECT 2 FROM outermost) -- fail
     SELECT * FROM innermost
     UNION SELECT * from outermost
 )
-SELECT * FROM outermost ORDER BY 1;
+SELECT * FROM outermost;
 
 --
 -- This test will fail with the old implementation of PARAM_EXEC parameter
@@ -848,64 +795,6 @@ SELECT * FROM t LIMIT 10;
 
 SELECT * FROM y;
 
--- data-modifying WITH containing INSERT...ON CONFLICT DO UPDATE
-CREATE TABLE withz AS SELECT i AS k, (i || ' v')::text v FROM generate_series(1, 16, 3) i;
-ALTER TABLE withz ADD UNIQUE (k);
-
-WITH t AS (
-    INSERT INTO withz SELECT i, 'insert'
-    FROM generate_series(0, 16) i
-    ON CONFLICT (k) DO UPDATE SET v = withz.v || ', now update'
-    RETURNING *
-)
-SELECT * FROM t JOIN y ON t.k = y.a ORDER BY a, k;
-
--- Test EXCLUDED.* reference within CTE
-WITH aa AS (
-    INSERT INTO withz VALUES(1, 5) ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v
-    WHERE withz.k != EXCLUDED.k
-    RETURNING *
-)
-SELECT * FROM aa;
-
--- New query/snapshot demonstrates side-effects of previous query.
-SELECT * FROM withz ORDER BY k;
-
---
--- Ensure subqueries within the update clause work, even if they
--- reference outside values
---
-WITH aa AS (SELECT 1 a, 2 b)
-INSERT INTO withz VALUES(1, 'insert')
-ON CONFLICT (k) DO UPDATE SET v = (SELECT b || ' update' FROM aa WHERE a = 1 LIMIT 1);
-WITH aa AS (SELECT 1 a, 2 b)
-INSERT INTO withz VALUES(1, 'insert')
-ON CONFLICT (k) DO UPDATE SET v = ' update' WHERE withz.k = (SELECT a FROM aa);
-WITH aa AS (SELECT 1 a, 2 b)
-INSERT INTO withz VALUES(1, 'insert')
-ON CONFLICT (k) DO UPDATE SET v = (SELECT b || ' update' FROM aa WHERE a = 1 LIMIT 1);
-WITH aa AS (SELECT 'a' a, 'b' b UNION ALL SELECT 'a' a, 'b' b)
-INSERT INTO withz VALUES(1, 'insert')
-ON CONFLICT (k) DO UPDATE SET v = (SELECT b || ' update' FROM aa WHERE a = 'a' LIMIT 1);
-WITH aa AS (SELECT 1 a, 2 b)
-INSERT INTO withz VALUES(1, (SELECT b || ' insert' FROM aa WHERE a = 1 ))
-ON CONFLICT (k) DO UPDATE SET v = (SELECT b || ' update' FROM aa WHERE a = 1 LIMIT 1);
-
--- Update a row more than once, in different parts of a wCTE. That is
--- an allowed, presumably very rare, edge case, but since it was
--- broken in the past, having a test seems worthwhile.
-WITH simpletup AS (
-  SELECT 2 k, 'Green' v),
-upsert_cte AS (
-  INSERT INTO withz VALUES(2, 'Blue') ON CONFLICT (k) DO
-    UPDATE SET (k, v) = (SELECT k, v FROM simpletup WHERE simpletup.k = withz.k)
-    RETURNING k, v)
-INSERT INTO withz VALUES(2, 'Red') ON CONFLICT (k) DO
-UPDATE SET (k, v) = (SELECT k, v FROM upsert_cte WHERE upsert_cte.k = withz.k)
-RETURNING k, v;
-
-DROP TABLE withz;
-
 -- check that run to completion happens in proper ordering
 
 TRUNCATE TABLE y;
@@ -1067,19 +956,3 @@ WITH t AS (
 )
 VALUES(FALSE);
 DROP RULE y_rule ON y;
-
--- check that parser lookahead for WITH doesn't cause any odd behavior
-create table foo (with baz);  -- fail, WITH is a reserved word
-create table foo (with ordinality);  -- fail, WITH is a reserved word
-with ordinality as (select 1 as x) select * from ordinality;
-
--- check sane response to attempt to modify CTE relation
-WITH test AS (SELECT 42) INSERT INTO test VALUES (1);
-
--- check response to attempt to modify table with same name as a CTE (perhaps
--- surprisingly it works, because CTEs don't hide tables from data-modifying
--- statements)
-create temp table test (i int);
-with test as (select 42) insert into test select * from test;
-select * from test;
-drop table test;

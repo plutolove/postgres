@@ -3,10 +3,11 @@
  */
 #include "postgres.h"
 
+#include "btree_gist.h"
+
 #include <math.h>
 #include <float.h>
 
-#include "btree_gist.h"
 #include "btree_utils_var.h"
 #include "utils/builtins.h"
 #include "utils/numeric.h"
@@ -26,7 +27,7 @@ PG_FUNCTION_INFO_V1(gbt_numeric_same);
 /* define for comparison */
 
 static bool
-gbt_numeric_gt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_gt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(numeric_gt,
 											PointerGetDatum(a),
@@ -34,7 +35,7 @@ gbt_numeric_gt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_numeric_ge(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_ge(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(numeric_ge,
 											PointerGetDatum(a),
@@ -42,7 +43,7 @@ gbt_numeric_ge(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_numeric_eq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_eq(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(numeric_eq,
 											PointerGetDatum(a),
@@ -50,7 +51,7 @@ gbt_numeric_eq(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_numeric_le(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_le(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(numeric_le,
 											PointerGetDatum(a),
@@ -58,7 +59,7 @@ gbt_numeric_le(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_numeric_lt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_lt(const void *a, const void *b, Oid collation)
 {
 	return DatumGetBool(DirectFunctionCall2(numeric_lt,
 											PointerGetDatum(a),
@@ -66,7 +67,7 @@ gbt_numeric_lt(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 }
 
 static int32
-gbt_numeric_cmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
+gbt_numeric_cmp(const void *a, const void *b, Oid collation)
 {
 	return DatumGetInt32(DirectFunctionCall2(numeric_cmp,
 											 PointerGetDatum(a),
@@ -78,7 +79,7 @@ static const gbtree_vinfo tinfo =
 {
 	gbt_t_numeric,
 	0,
-	false,
+	FALSE,
 	gbt_numeric_gt,
 	gbt_numeric_ge,
 	gbt_numeric_eq,
@@ -121,7 +122,7 @@ gbt_numeric_consistent(PG_FUNCTION_ARGS)
 	*recheck = false;
 
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), &tinfo, fcinfo->flinfo);
+								GIST_LEAF(entry), &tinfo);
 	PG_RETURN_BOOL(retval);
 }
 
@@ -134,7 +135,7 @@ gbt_numeric_union(PG_FUNCTION_ARGS)
 	int32	   *size = (int *) PG_GETARG_POINTER(1);
 
 	PG_RETURN_POINTER(gbt_var_union(entryvec, size, PG_GET_COLLATION(),
-									&tinfo, fcinfo->flinfo));
+									&tinfo));
 }
 
 
@@ -145,7 +146,7 @@ gbt_numeric_same(PG_FUNCTION_ARGS)
 	Datum		d2 = PG_GETARG_DATUM(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
+	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo);
 	PG_RETURN_POINTER(result);
 }
 
@@ -169,22 +170,28 @@ gbt_numeric_penalty(PG_FUNCTION_ARGS)
 				uk;
 
 	rk = gbt_var_key_readable(org);
-	uni = PointerGetDatum(gbt_var_key_copy(&rk));
-	gbt_var_bin_union(&uni, newe, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
+	uni = PointerGetDatum(gbt_var_key_copy(&rk, TRUE));
+	gbt_var_bin_union(&uni, newe, PG_GET_COLLATION(), &tinfo);
 	ok = gbt_var_key_readable(org);
 	uk = gbt_var_key_readable((GBT_VARKEY *) DatumGetPointer(uni));
 
-	us = DatumGetNumeric(DirectFunctionCall2(numeric_sub,
+	us = DatumGetNumeric(DirectFunctionCall2(
+											 numeric_sub,
 											 PointerGetDatum(uk.upper),
-											 PointerGetDatum(uk.lower)));
+											 PointerGetDatum(uk.lower)
+											 ));
 
-	os = DatumGetNumeric(DirectFunctionCall2(numeric_sub,
+	os = DatumGetNumeric(DirectFunctionCall2(
+											 numeric_sub,
 											 PointerGetDatum(ok.upper),
-											 PointerGetDatum(ok.lower)));
+											 PointerGetDatum(ok.lower)
+											 ));
 
-	ds = DatumGetNumeric(DirectFunctionCall2(numeric_sub,
+	ds = DatumGetNumeric(DirectFunctionCall2(
+											 numeric_sub,
 											 NumericGetDatum(us),
-											 NumericGetDatum(os)));
+											 NumericGetDatum(os)
+											 ));
 
 	if (numeric_is_nan(us))
 	{
@@ -202,9 +209,11 @@ gbt_numeric_penalty(PG_FUNCTION_ARGS)
 		if (DirectFunctionCall2(numeric_gt, NumericGetDatum(ds), NumericGetDatum(nul)))
 		{
 			*result += FLT_MIN;
-			os = DatumGetNumeric(DirectFunctionCall2(numeric_div,
+			os = DatumGetNumeric(DirectFunctionCall2(
+													 numeric_div,
 													 NumericGetDatum(ds),
-													 NumericGetDatum(us)));
+													 NumericGetDatum(us)
+													 ));
 			*result += (float4) DatumGetFloat8(DirectFunctionCall1(numeric_float8_no_overflow, NumericGetDatum(os)));
 		}
 	}
@@ -224,6 +233,6 @@ gbt_numeric_picksplit(PG_FUNCTION_ARGS)
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
 
 	gbt_var_picksplit(entryvec, v, PG_GET_COLLATION(),
-					  &tinfo, fcinfo->flinfo);
+					  &tinfo);
 	PG_RETURN_POINTER(v);
 }

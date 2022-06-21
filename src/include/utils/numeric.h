@@ -5,7 +5,7 @@
  *
  * Original coding 1998, Jan Wieck.  Heavily revised 2003, Tom Lane.
  *
- * Copyright (c) 1998-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2014, PostgreSQL Global Development Group
  *
  * src/include/utils/numeric.h
  *
@@ -17,9 +17,8 @@
 #include "fmgr.h"
 
 /*
- * Limit on the precision (and hence scale) specifiable in a NUMERIC typmod.
- * Note that the implementation limit on the length of a numeric value is
- * much larger --- beware of what you use this for!
+ * Hardcoded precision limit - arbitrary, but must be small enough that
+ * dscale values will fit in 14 bits.
  */
 #define NUMERIC_MAX_PRECISION		1000
 
@@ -61,16 +60,4 @@ int32		numeric_maximum_size(int32 typmod);
 extern char *numeric_out_sci(Numeric num, int scale);
 extern char *numeric_normalize(Numeric num);
 
-extern Numeric numeric_add_opt_error(Numeric num1, Numeric num2,
-									 bool *have_error);
-extern Numeric numeric_sub_opt_error(Numeric num1, Numeric num2,
-									 bool *have_error);
-extern Numeric numeric_mul_opt_error(Numeric num1, Numeric num2,
-									 bool *have_error);
-extern Numeric numeric_div_opt_error(Numeric num1, Numeric num2,
-									 bool *have_error);
-extern Numeric numeric_mod_opt_error(Numeric num1, Numeric num2,
-									 bool *have_error);
-extern int32 numeric_int4_opt_error(Numeric num, bool *error);
-
-#endif							/* _PG_NUMERIC_H_ */
+#endif   /* _PG_NUMERIC_H_ */

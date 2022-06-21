@@ -4,7 +4,7 @@
  *	  implementation of Value nodes
  *
  *
- * Copyright (c) 2003-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2003-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -20,7 +20,7 @@
  *	makeInteger
  */
 Value *
-makeInteger(int i)
+makeInteger(long i)
 {
 	Value	   *v = makeNode(Value);
 

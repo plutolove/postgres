@@ -16,7 +16,6 @@ typedef struct float4key
 ** float4 ops
 */
 PG_FUNCTION_INFO_V1(gbt_float4_compress);
-PG_FUNCTION_INFO_V1(gbt_float4_fetch);
 PG_FUNCTION_INFO_V1(gbt_float4_union);
 PG_FUNCTION_INFO_V1(gbt_float4_picksplit);
 PG_FUNCTION_INFO_V1(gbt_float4_consistent);
@@ -25,33 +24,33 @@ PG_FUNCTION_INFO_V1(gbt_float4_penalty);
 PG_FUNCTION_INFO_V1(gbt_float4_same);
 
 static bool
-gbt_float4gt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4gt(const void *a, const void *b)
 {
 	return (*((const float4 *) a) > *((const float4 *) b));
 }
 static bool
-gbt_float4ge(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4ge(const void *a, const void *b)
 {
 	return (*((const float4 *) a) >= *((const float4 *) b));
 }
 static bool
-gbt_float4eq(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4eq(const void *a, const void *b)
 {
 	return (*((const float4 *) a) == *((const float4 *) b));
 }
 static bool
-gbt_float4le(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4le(const void *a, const void *b)
 {
 	return (*((const float4 *) a) <= *((const float4 *) b));
 }
 static bool
-gbt_float4lt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4lt(const void *a, const void *b)
 {
 	return (*((const float4 *) a) < *((const float4 *) b));
 }
 
 static int
-gbt_float4key_cmp(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4key_cmp(const void *a, const void *b)
 {
 	float4KEY  *ia = (float4KEY *) (((const Nsrt *) a)->t);
 	float4KEY  *ib = (float4KEY *) (((const Nsrt *) b)->t);
@@ -68,7 +67,7 @@ gbt_float4key_cmp(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static float8
-gbt_float4_dist(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_float4_dist(const void *a, const void *b)
 {
 	return GET_FLOAT_DISTANCE(float4, a, b);
 }
@@ -113,17 +112,11 @@ Datum
 gbt_float4_compress(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+	GISTENTRY  *retval = NULL;
 
-	PG_RETURN_POINTER(gbt_num_compress(entry, &tinfo));
+	PG_RETURN_POINTER(gbt_num_compress(retval, entry, &tinfo));
 }
 
-Datum
-gbt_float4_fetch(PG_FUNCTION_ARGS)
-{
-	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-
-	PG_RETURN_POINTER(gbt_num_fetch(entry, &tinfo));
-}
 
 Datum
 gbt_float4_consistent(PG_FUNCTION_ARGS)
@@ -143,9 +136,9 @@ gbt_float4_consistent(PG_FUNCTION_ARGS)
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_BOOL(gbt_num_consistent(&key, (void *) &query, &strategy,
-									  GIST_LEAF(entry), &tinfo,
-									  fcinfo->flinfo));
+	PG_RETURN_BOOL(
+				   gbt_num_consistent(&key, (void *) &query, &strategy, GIST_LEAF(entry), &tinfo)
+		);
 }
 
 
@@ -162,8 +155,9 @@ gbt_float4_distance(PG_FUNCTION_ARGS)
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_FLOAT8(gbt_num_distance(&key, (void *) &query, GIST_LEAF(entry),
-									  &tinfo, fcinfo->flinfo));
+	PG_RETURN_FLOAT8(
+			gbt_num_distance(&key, (void *) &query, GIST_LEAF(entry), &tinfo)
+		);
 }
 
 
@@ -174,7 +168,7 @@ gbt_float4_union(PG_FUNCTION_ARGS)
 	void	   *out = palloc(sizeof(float4KEY));
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(float4KEY);
-	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo));
 }
 
 
@@ -194,9 +188,11 @@ gbt_float4_penalty(PG_FUNCTION_ARGS)
 Datum
 gbt_float4_picksplit(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_POINTER(gbt_num_picksplit((GistEntryVector *) PG_GETARG_POINTER(0),
-										(GIST_SPLITVEC *) PG_GETARG_POINTER(1),
-										&tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_picksplit(
+									(GistEntryVector *) PG_GETARG_POINTER(0),
+									  (GIST_SPLITVEC *) PG_GETARG_POINTER(1),
+										&tinfo
+										));
 }
 
 Datum
@@ -206,6 +202,6 @@ gbt_float4_same(PG_FUNCTION_ARGS)
 	float4KEY  *b2 = (float4KEY *) PG_GETARG_POINTER(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo, fcinfo->flinfo);
+	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo);
 	PG_RETURN_POINTER(result);
 }

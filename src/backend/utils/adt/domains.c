@@ -12,14 +12,15 @@
  * The overhead required for constraint checking can be high, since examining
  * the catalogs to discover the constraints for a given domain is not cheap.
  * We have three mechanisms for minimizing this cost:
- *	1.  We rely on the typcache to keep up-to-date copies of the constraints.
- *	2.  In a nest of domains, we flatten the checking of all the levels
- *		into just one operation (the typcache does this for us).
+ *	1.  In a nest of domains, we flatten the checking of all the levels
+ *		into just one operation.
+ *	2.  We cache the list of constraint items in the FmgrInfo struct
+ *		passed by the caller.
  *	3.  If there are CHECK constraints, we cache a standalone ExprContext
  *		to evaluate them in.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,13 +33,12 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
+#include "commands/typecmds.h"
 #include "executor/executor.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
-#include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-#include "utils/typcache.h"
 
 
 /*
@@ -52,8 +52,8 @@ typedef struct DomainIOData
 	Oid			typioparam;
 	int32		typtypmod;
 	FmgrInfo	proc;
-	/* Reference to cached list of constraint items to check */
-	DomainConstraintRef constraint_ref;
+	/* List of constraint items to check */
+	List	   *constraint_list;
 	/* Context for evaluating CHECK constraints in */
 	ExprContext *econtext;
 	/* Memory context this cache is in */
@@ -63,38 +63,25 @@ typedef struct DomainIOData
 
 /*
  * domain_state_setup - initialize the cache for a new domain type.
- *
- * Note: we can't re-use the same cache struct for a new domain type,
- * since there's no provision for releasing the DomainConstraintRef.
- * If a call site needs to deal with a new domain type, we just leak
- * the old struct for the duration of the query.
  */
-static DomainIOData *
-domain_state_setup(Oid domainType, bool binary, MemoryContext mcxt)
+static void
+domain_state_setup(DomainIOData *my_extra, Oid domainType, bool binary,
+				   MemoryContext mcxt)
 {
-	DomainIOData *my_extra;
-	TypeCacheEntry *typentry;
 	Oid			baseType;
+	MemoryContext oldcontext;
 
-	my_extra = (DomainIOData *) MemoryContextAlloc(mcxt, sizeof(DomainIOData));
+	/* Mark cache invalid */
+	my_extra->domain_type = InvalidOid;
 
-	/*
-	 * Verify that domainType represents a valid domain type.  We need to be
-	 * careful here because domain_in and domain_recv can be called from SQL,
-	 * possibly with incorrect arguments.  We use lookup_type_cache mainly
-	 * because it will throw a clean user-facing error for a bad OID; but also
-	 * it can cache the underlying base type info.
-	 */
-	typentry = lookup_type_cache(domainType, TYPECACHE_DOMAIN_BASE_INFO);
-	if (typentry->typtype != TYPTYPE_DOMAIN)
+	/* Find out the base type */
+	my_extra->typtypmod = -1;
+	baseType = getBaseTypeAndTypmod(domainType, &my_extra->typtypmod);
+	if (baseType == domainType)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("type %s is not a domain",
 						format_type_be(domainType))));
-
-	/* Find out the base type */
-	baseType = typentry->domainBaseType;
-	my_extra->typtypmod = typentry->domainBaseTypmod;
 
 	/* Look up underlying I/O function */
 	if (binary)
@@ -108,7 +95,9 @@ domain_state_setup(Oid domainType, bool binary, MemoryContext mcxt)
 	fmgr_info_cxt(my_extra->typiofunc, &my_extra->proc, mcxt);
 
 	/* Look up constraints for domain */
-	InitDomainConstraintRef(domainType, &my_extra->constraint_ref, mcxt, true);
+	oldcontext = MemoryContextSwitchTo(mcxt);
+	my_extra->constraint_list = GetDomainConstraints(domainType);
+	MemoryContextSwitchTo(oldcontext);
 
 	/* We don't make an ExprContext until needed */
 	my_extra->econtext = NULL;
@@ -116,16 +105,12 @@ domain_state_setup(Oid domainType, bool binary, MemoryContext mcxt)
 
 	/* Mark cache valid */
 	my_extra->domain_type = domainType;
-
-	return my_extra;
 }
 
 /*
  * domain_check_input - apply the cached checks.
  *
- * This is roughly similar to the handling of CoerceToDomain nodes in
- * execExpr*.c, but we execute each constraint separately, rather than
- * compiling them in-line within a larger expression.
+ * This is extremely similar to ExecEvalCoerceToDomain in execQual.c.
  */
 static void
 domain_check_input(Datum value, bool isnull, DomainIOData *my_extra)
@@ -133,10 +118,7 @@ domain_check_input(Datum value, bool isnull, DomainIOData *my_extra)
 	ExprContext *econtext = my_extra->econtext;
 	ListCell   *l;
 
-	/* Make sure we have up-to-date constraints */
-	UpdateDomainConstraintRef(&my_extra->constraint_ref);
-
-	foreach(l, my_extra->constraint_ref.constraints)
+	foreach(l, my_extra->constraint_list)
 	{
 		DomainConstraintState *con = (DomainConstraintState *) lfirst(l);
 
@@ -152,6 +134,9 @@ domain_check_input(Datum value, bool isnull, DomainIOData *my_extra)
 				break;
 			case DOM_CONSTRAINT_CHECK:
 				{
+					Datum		conResult;
+					bool		conIsNull;
+
 					/* Make the econtext if we didn't already */
 					if (econtext == NULL)
 					{
@@ -165,20 +150,19 @@ domain_check_input(Datum value, bool isnull, DomainIOData *my_extra)
 
 					/*
 					 * Set up value to be returned by CoerceToDomainValue
-					 * nodes.  Unlike in the generic expression case, this
-					 * econtext couldn't be shared with anything else, so no
-					 * need to save and restore fields.  But we do need to
-					 * protect the passed-in value against being changed by
-					 * called functions.  (It couldn't be a R/W expanded
-					 * object for most uses, but that seems possible for
-					 * domain_check().)
+					 * nodes.  Unlike ExecEvalCoerceToDomain, this econtext
+					 * couldn't be shared with anything else, so no need to
+					 * save and restore fields.
 					 */
-					econtext->domainValue_datum =
-						MakeExpandedObjectReadOnly(value, isnull,
-												   my_extra->constraint_ref.tcache->typlen);
+					econtext->domainValue_datum = value;
 					econtext->domainValue_isNull = isnull;
 
-					if (!ExecCheck(con->check_exprstate, econtext))
+					conResult = ExecEvalExprSwitchContext(con->check_expr,
+														  econtext,
+														  &conIsNull, NULL);
+
+					if (!conIsNull &&
+						!DatumGetBool(conResult))
 						ereport(ERROR,
 								(errcode(ERRCODE_CHECK_VIOLATION),
 								 errmsg("value for domain %s violates check constraint \"%s\"",
@@ -231,16 +215,20 @@ domain_in(PG_FUNCTION_ARGS)
 
 	/*
 	 * We arrange to look up the needed info just once per series of calls,
-	 * assuming the domain type doesn't change underneath us (which really
-	 * shouldn't happen, but cope if it does).
+	 * assuming the domain type doesn't change underneath us.
 	 */
 	my_extra = (DomainIOData *) fcinfo->flinfo->fn_extra;
-	if (my_extra == NULL || my_extra->domain_type != domainType)
+	if (my_extra == NULL)
 	{
-		my_extra = domain_state_setup(domainType, false,
-									  fcinfo->flinfo->fn_mcxt);
+		my_extra = (DomainIOData *) MemoryContextAlloc(fcinfo->flinfo->fn_mcxt,
+													   sizeof(DomainIOData));
+		domain_state_setup(my_extra, domainType, false,
+						   fcinfo->flinfo->fn_mcxt);
 		fcinfo->flinfo->fn_extra = (void *) my_extra;
 	}
+	else if (my_extra->domain_type != domainType)
+		domain_state_setup(my_extra, domainType, false,
+						   fcinfo->flinfo->fn_mcxt);
 
 	/*
 	 * Invoke the base type's typinput procedure to convert the data.
@@ -287,16 +275,20 @@ domain_recv(PG_FUNCTION_ARGS)
 
 	/*
 	 * We arrange to look up the needed info just once per series of calls,
-	 * assuming the domain type doesn't change underneath us (which really
-	 * shouldn't happen, but cope if it does).
+	 * assuming the domain type doesn't change underneath us.
 	 */
 	my_extra = (DomainIOData *) fcinfo->flinfo->fn_extra;
-	if (my_extra == NULL || my_extra->domain_type != domainType)
+	if (my_extra == NULL)
 	{
-		my_extra = domain_state_setup(domainType, true,
-									  fcinfo->flinfo->fn_mcxt);
+		my_extra = (DomainIOData *) MemoryContextAlloc(fcinfo->flinfo->fn_mcxt,
+													   sizeof(DomainIOData));
+		domain_state_setup(my_extra, domainType, true,
+						   fcinfo->flinfo->fn_mcxt);
 		fcinfo->flinfo->fn_extra = (void *) my_extra;
 	}
+	else if (my_extra->domain_type != domainType)
+		domain_state_setup(my_extra, domainType, true,
+						   fcinfo->flinfo->fn_mcxt);
 
 	/*
 	 * Invoke the base type's typreceive procedure to convert the data.
@@ -334,17 +326,20 @@ domain_check(Datum value, bool isnull, Oid domainType,
 
 	/*
 	 * We arrange to look up the needed info just once per series of calls,
-	 * assuming the domain type doesn't change underneath us (which really
-	 * shouldn't happen, but cope if it does).
+	 * assuming the domain type doesn't change underneath us.
 	 */
 	if (extra)
 		my_extra = (DomainIOData *) *extra;
-	if (my_extra == NULL || my_extra->domain_type != domainType)
+	if (my_extra == NULL)
 	{
-		my_extra = domain_state_setup(domainType, true, mcxt);
+		my_extra = (DomainIOData *) MemoryContextAlloc(mcxt,
+													   sizeof(DomainIOData));
+		domain_state_setup(my_extra, domainType, true, mcxt);
 		if (extra)
 			*extra = (void *) my_extra;
 	}
+	else if (my_extra->domain_type != domainType)
+		domain_state_setup(my_extra, domainType, true, mcxt);
 
 	/*
 	 * Do the necessary checks to ensure it's a valid domain value.

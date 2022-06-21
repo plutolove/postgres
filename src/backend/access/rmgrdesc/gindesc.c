@@ -3,7 +3,7 @@
  * gindesc.c
  *	  rmgr descriptor routines for access/transam/gin/ginxlog.c
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,10 +14,16 @@
  */
 #include "postgres.h"
 
-#include "access/ginxlog.h"
-#include "access/xlogutils.h"
+#include "access/gin_private.h"
 #include "lib/stringinfo.h"
 #include "storage/relfilenode.h"
+
+static void
+desc_node(StringInfo buf, RelFileNode node, BlockNumber blkno)
+{
+	appendStringInfo(buf, "node: %u/%u/%u blkno: %u",
+					 node.spcNode, node.dbNode, node.relNode, blkno);
+}
 
 static void
 desc_recompress_leaf(StringInfo buf, ginxlogRecompressDataLeaf *insertData)
@@ -71,26 +77,32 @@ desc_recompress_leaf(StringInfo buf, ginxlogRecompressDataLeaf *insertData)
 }
 
 void
-gin_desc(StringInfo buf, XLogReaderState *record)
+gin_desc(StringInfo buf, uint8 xl_info, char *rec)
 {
-	char	   *rec = XLogRecGetData(record);
-	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	uint8		info = xl_info & ~XLR_INFO_MASK;
 
 	switch (info)
 	{
+		case XLOG_GIN_CREATE_INDEX:
+			appendStringInfoString(buf, "Create index, ");
+			desc_node(buf, *(RelFileNode *) rec, GIN_ROOT_BLKNO);
+			break;
 		case XLOG_GIN_CREATE_PTREE:
-			/* no further information */
+			appendStringInfoString(buf, "Create posting tree, ");
+			desc_node(buf, ((ginxlogCreatePostingTree *) rec)->node, ((ginxlogCreatePostingTree *) rec)->blkno);
 			break;
 		case XLOG_GIN_INSERT:
 			{
 				ginxlogInsert *xlrec = (ginxlogInsert *) rec;
+				char	   *payload = rec + sizeof(ginxlogInsert);
 
-				appendStringInfo(buf, "isdata: %c isleaf: %c",
-								 (xlrec->flags & GIN_INSERT_ISDATA) ? 'T' : 'F',
-								 (xlrec->flags & GIN_INSERT_ISLEAF) ? 'T' : 'F');
+				appendStringInfoString(buf, "Insert item, ");
+				desc_node(buf, xlrec->node, xlrec->blkno);
+				appendStringInfo(buf, " isdata: %c isleaf: %c",
+							  (xlrec->flags & GIN_INSERT_ISDATA) ? 'T' : 'F',
+							 (xlrec->flags & GIN_INSERT_ISLEAF) ? 'T' : 'F');
 				if (!(xlrec->flags & GIN_INSERT_ISLEAF))
 				{
-					char	   *payload = rec + sizeof(ginxlogInsert);
 					BlockNumber leftChildBlkno;
 					BlockNumber rightChildBlkno;
 
@@ -101,32 +113,27 @@ gin_desc(StringInfo buf, XLogReaderState *record)
 					appendStringInfo(buf, " children: %u/%u",
 									 leftChildBlkno, rightChildBlkno);
 				}
-				if (XLogRecHasBlockImage(record, 0))
+				if (!(xlrec->flags & GIN_INSERT_ISDATA))
+					appendStringInfo(buf, " isdelete: %c",
+					(((ginxlogInsertEntry *) payload)->isDelete) ? 'T' : 'F');
+				else if (xlrec->flags & GIN_INSERT_ISLEAF)
 				{
-					if (XLogRecBlockImageApply(record, 0))
-						appendStringInfoString(buf, " (full page image)");
+					ginxlogRecompressDataLeaf *insertData =
+					(ginxlogRecompressDataLeaf *) payload;
+
+					if (xl_info & XLR_BKP_BLOCK(0))
+						appendStringInfo(buf, " (full page image)");
 					else
-						appendStringInfoString(buf, " (full page image, for WAL verification)");
+						desc_recompress_leaf(buf, insertData);
 				}
 				else
 				{
-					char	   *payload = XLogRecGetBlockData(record, 0, NULL);
+					ginxlogInsertDataInternal *insertData = (ginxlogInsertDataInternal *) payload;
 
-					if (!(xlrec->flags & GIN_INSERT_ISDATA))
-						appendStringInfo(buf, " isdelete: %c",
-										 (((ginxlogInsertEntry *) payload)->isDelete) ? 'T' : 'F');
-					else if (xlrec->flags & GIN_INSERT_ISLEAF)
-						desc_recompress_leaf(buf, (ginxlogRecompressDataLeaf *) payload);
-					else
-					{
-						ginxlogInsertDataInternal *insertData =
-						(ginxlogInsertDataInternal *) payload;
-
-						appendStringInfo(buf, " pitem: %u-%u/%u",
-										 PostingItemGetBlockNumber(&insertData->newitem),
-										 ItemPointerGetBlockNumber(&insertData->newitem.key),
-										 ItemPointerGetOffsetNumber(&insertData->newitem.key));
-					}
+					appendStringInfo(buf, " pitem: %u-%u/%u",
+							 PostingItemGetBlockNumber(&insertData->newitem),
+						 ItemPointerGetBlockNumber(&insertData->newitem.key),
+					   ItemPointerGetOffsetNumber(&insertData->newitem.key));
 				}
 			}
 			break;
@@ -134,85 +141,48 @@ gin_desc(StringInfo buf, XLogReaderState *record)
 			{
 				ginxlogSplit *xlrec = (ginxlogSplit *) rec;
 
-				appendStringInfo(buf, "isrootsplit: %c",
-								 (((ginxlogSplit *) rec)->flags & GIN_SPLIT_ROOT) ? 'T' : 'F');
+				appendStringInfoString(buf, "Page split, ");
+				desc_node(buf, ((ginxlogSplit *) rec)->node, ((ginxlogSplit *) rec)->lblkno);
+				appendStringInfo(buf, " isrootsplit: %c", (((ginxlogSplit *) rec)->flags & GIN_SPLIT_ROOT) ? 'T' : 'F');
 				appendStringInfo(buf, " isdata: %c isleaf: %c",
-								 (xlrec->flags & GIN_INSERT_ISDATA) ? 'T' : 'F',
-								 (xlrec->flags & GIN_INSERT_ISLEAF) ? 'T' : 'F');
+							  (xlrec->flags & GIN_INSERT_ISDATA) ? 'T' : 'F',
+							 (xlrec->flags & GIN_INSERT_ISLEAF) ? 'T' : 'F');
 			}
 			break;
 		case XLOG_GIN_VACUUM_PAGE:
-			/* no further information */
+			appendStringInfoString(buf, "Vacuum page, ");
+			desc_node(buf, ((ginxlogVacuumPage *) rec)->node, ((ginxlogVacuumPage *) rec)->blkno);
 			break;
 		case XLOG_GIN_VACUUM_DATA_LEAF_PAGE:
 			{
-				if (XLogRecHasBlockImage(record, 0))
-				{
-					if (XLogRecBlockImageApply(record, 0))
-						appendStringInfoString(buf, " (full page image)");
-					else
-						appendStringInfoString(buf, " (full page image, for WAL verification)");
-				}
-				else
-				{
-					ginxlogVacuumDataLeafPage *xlrec =
-					(ginxlogVacuumDataLeafPage *) XLogRecGetBlockData(record, 0, NULL);
+				ginxlogVacuumDataLeafPage *xlrec = (ginxlogVacuumDataLeafPage *) rec;
 
+				appendStringInfoString(buf, "Vacuum data leaf page, ");
+				desc_node(buf, xlrec->node, xlrec->blkno);
+				if (xl_info & XLR_BKP_BLOCK(0))
+					appendStringInfo(buf, " (full page image)");
+				else
 					desc_recompress_leaf(buf, &xlrec->data);
-				}
 			}
 			break;
 		case XLOG_GIN_DELETE_PAGE:
-			/* no further information */
+			appendStringInfoString(buf, "Delete page, ");
+			desc_node(buf, ((ginxlogDeletePage *) rec)->node, ((ginxlogDeletePage *) rec)->blkno);
 			break;
 		case XLOG_GIN_UPDATE_META_PAGE:
-			/* no further information */
+			appendStringInfoString(buf, "Update metapage, ");
+			desc_node(buf, ((ginxlogUpdateMeta *) rec)->node, GIN_METAPAGE_BLKNO);
 			break;
 		case XLOG_GIN_INSERT_LISTPAGE:
-			/* no further information */
+			appendStringInfoString(buf, "Insert new list page, ");
+			desc_node(buf, ((ginxlogInsertListPage *) rec)->node, ((ginxlogInsertListPage *) rec)->blkno);
 			break;
 		case XLOG_GIN_DELETE_LISTPAGE:
-			appendStringInfo(buf, "ndeleted: %d",
-							 ((ginxlogDeleteListPages *) rec)->ndeleted);
+			appendStringInfo(buf, "Delete list pages (%d), ", ((ginxlogDeleteListPages *) rec)->ndeleted);
+			desc_node(buf, ((ginxlogDeleteListPages *) rec)->node, GIN_METAPAGE_BLKNO);
+			break;
+		default:
+			appendStringInfo(buf, "unknown gin op code %u", info);
 			break;
 	}
-}
-
-const char *
-gin_identify(uint8 info)
-{
-	const char *id = NULL;
-
-	switch (info & ~XLR_INFO_MASK)
-	{
-		case XLOG_GIN_CREATE_PTREE:
-			id = "CREATE_PTREE";
-			break;
-		case XLOG_GIN_INSERT:
-			id = "INSERT";
-			break;
-		case XLOG_GIN_SPLIT:
-			id = "SPLIT";
-			break;
-		case XLOG_GIN_VACUUM_PAGE:
-			id = "VACUUM_PAGE";
-			break;
-		case XLOG_GIN_VACUUM_DATA_LEAF_PAGE:
-			id = "VACUUM_DATA_LEAF_PAGE";
-			break;
-		case XLOG_GIN_DELETE_PAGE:
-			id = "DELETE_PAGE";
-			break;
-		case XLOG_GIN_UPDATE_META_PAGE:
-			id = "UPDATE_META_PAGE";
-			break;
-		case XLOG_GIN_INSERT_LISTPAGE:
-			id = "INSERT_LISTPAGE";
-			break;
-		case XLOG_GIN_DELETE_LISTPAGE:
-			id = "DELETE_LISTPAGE";
-			break;
-	}
-
-	return id;
 }

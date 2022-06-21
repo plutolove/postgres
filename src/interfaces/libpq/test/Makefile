@@ -3,11 +3,11 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 ifeq ($(PORTNAME), win32)
-LDFLAGS += -lws2_32
+LDLIBS += -lws2_32
 endif
 
 override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
-LDFLAGS_INTERNAL += $(libpq_pgport)
+override LDLIBS := $(libpq_pgport) $(LDLIBS)
 
 PROGS = uri-regress
 
@@ -18,5 +18,5 @@ installcheck: all
 		   $(PERL) $(top_srcdir)/$(subdir)/regress.pl
 
 clean distclean maintainer-clean:
-	rm -f $(PROGS) *.o
+	rm -f $(PROGS)
 	rm -f regress.out regress.diff

@@ -1,8 +1,5 @@
 #  src/pl/plperl/plc_perlboot.pl
 
-use strict;
-use warnings;
-
 use 5.008001;
 use vars qw(%_SHARED $_TD);
 
@@ -52,9 +49,8 @@ sub ::encode_array_constructor
 }
 
 {
-#<<< protect next line from perltidy so perlcritic annotation works
-	package PostgreSQL::InServer;  ## no critic (RequireFilenameMatchesPackage)
-#>>>
+
+	package PostgreSQL::InServer;
 	use strict;
 	use warnings;
 
@@ -63,7 +59,6 @@ sub ::encode_array_constructor
 		(my $msg = shift) =~ s/\(eval \d+\) //g;
 		chomp $msg;
 		&::elog(&::WARNING, $msg);
-		return;
 	}
 	$SIG{__WARN__} = \&plperl_warn;
 
@@ -89,13 +84,11 @@ sub ::encode_array_constructor
 
 	sub mkfunc
 	{
-		## no critic (ProhibitNoStrict, ProhibitStringyEval);
 		no strict;      # default to no strict for the eval
 		no warnings;    # default to no warnings for the eval
 		my $ret = eval(mkfuncsrc(@_));
 		$@ =~ s/\(eval \d+\) //g if $@;
 		return $ret;
-		## use critic
 	}
 
 	1;

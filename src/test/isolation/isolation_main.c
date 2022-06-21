@@ -2,15 +2,13 @@
  *
  * isolation_main --- pg_regress test launcher for isolation tests
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/isolation/isolation_main.c
  *
  *-------------------------------------------------------------------------
  */
-
-#include "postgres_fe.h"
 
 #include "pg_regress.h"
 
@@ -36,7 +34,6 @@ isolation_start_test(const char *testname,
 	char		expectfile[MAXPGPATH];
 	char		psql_cmd[MAXPGPATH * 3];
 	size_t		offset = 0;
-	char	   *appnameenv;
 
 	/* need to do the path lookup here, check isolation_init() for details */
 	if (!looked_up_isolation_exec)
@@ -76,30 +73,15 @@ isolation_start_test(const char *testname,
 	add_stringlist_item(expectfiles, expectfile);
 
 	if (launcher)
-	{
 		offset += snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
 						   "%s ", launcher);
-		if (offset >= sizeof(psql_cmd))
-		{
-			fprintf(stderr, _("command too long\n"));
-			exit(2);
-		}
-	}
 
-	offset += snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
-					   "\"%s\" \"dbname=%s\" < \"%s\" > \"%s\" 2>&1",
-					   isolation_exec,
-					   dblist->str,
-					   infile,
-					   outfile);
-	if (offset >= sizeof(psql_cmd))
-	{
-		fprintf(stderr, _("command too long\n"));
-		exit(2);
-	}
-
-	appnameenv = psprintf("PGAPPNAME=isolation/%s", testname);
-	putenv(appnameenv);
+	snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
+			 "\"%s\" \"dbname=%s\" < \"%s\" > \"%s\" 2>&1",
+			 isolation_exec,
+			 dblist->str,
+			 infile,
+			 outfile);
 
 	pid = spawn_process(psql_cmd);
 
@@ -109,9 +91,6 @@ isolation_start_test(const char *testname,
 				testname);
 		exit(2);
 	}
-
-	unsetenv("PGAPPNAME");
-	free(appnameenv);
 
 	return pid;
 }
@@ -133,13 +112,13 @@ isolation_init(int argc, char **argv)
 	argv0_len = strlcpy(saved_argv0, argv[0], MAXPGPATH);
 	if (argv0_len >= MAXPGPATH)
 	{
-		fprintf(stderr, _("path for isolationtester executable is longer than %d bytes\n"),
+		fprintf(stderr, _("path for isolationtester executable is longer than %i bytes\n"),
 				(int) (MAXPGPATH - 1));
 		exit(2);
 	}
 
 	/* set default regression database name */
-	add_stringlist_item(&dblist, "isolation_regression");
+	add_stringlist_item(&dblist, "isolationtest");
 }
 
 int

@@ -8,14 +8,15 @@
 
 #include "postgres.h"
 
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
-#include "libpq/ifaddr.h"
+#include "libpq/ip.h"
 
 
 static void
-print_addr(struct sockaddr *addr)
+print_addr(struct sockaddr * addr)
 {
 	char		buffer[256];
 	int			ret,
@@ -45,7 +46,7 @@ print_addr(struct sockaddr *addr)
 }
 
 static void
-callback(struct sockaddr *addr, struct sockaddr *mask, void *unused)
+callback(struct sockaddr * addr, struct sockaddr * mask, void *unused)
 {
 	printf("addr: ");
 	print_addr(addr);

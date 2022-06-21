@@ -5,7 +5,6 @@
 
 #include "btree_gist.h"
 #include "btree_utils_num.h"
-#include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/timestamp.h"
 
@@ -20,7 +19,6 @@ typedef struct
 */
 PG_FUNCTION_INFO_V1(gbt_time_compress);
 PG_FUNCTION_INFO_V1(gbt_timetz_compress);
-PG_FUNCTION_INFO_V1(gbt_time_fetch);
 PG_FUNCTION_INFO_V1(gbt_time_union);
 PG_FUNCTION_INFO_V1(gbt_time_picksplit);
 PG_FUNCTION_INFO_V1(gbt_time_consistent);
@@ -38,7 +36,7 @@ PG_FUNCTION_INFO_V1(gbt_time_same);
 
 
 static bool
-gbt_timegt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timegt(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -49,7 +47,7 @@ gbt_timegt(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_timege(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timege(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -60,7 +58,7 @@ gbt_timege(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_timeeq(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timeeq(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -71,7 +69,7 @@ gbt_timeeq(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_timele(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timele(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -82,7 +80,7 @@ gbt_timele(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static bool
-gbt_timelt(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timelt(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -95,7 +93,7 @@ gbt_timelt(const void *a, const void *b, FmgrInfo *flinfo)
 
 
 static int
-gbt_timekey_cmp(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_timekey_cmp(const void *a, const void *b)
 {
 	timeKEY    *ia = (timeKEY *) (((const Nsrt *) a)->t);
 	timeKEY    *ib = (timeKEY *) (((const Nsrt *) b)->t);
@@ -109,7 +107,7 @@ gbt_timekey_cmp(const void *a, const void *b, FmgrInfo *flinfo)
 }
 
 static float8
-gbt_time_dist(const void *a, const void *b, FmgrInfo *flinfo)
+gbt_time_dist(const void *a, const void *b)
 {
 	const TimeADT *aa = (const TimeADT *) a;
 	const TimeADT *bb = (const TimeADT *) b;
@@ -159,8 +157,9 @@ Datum
 gbt_time_compress(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+	GISTENTRY  *retval = NULL;
 
-	PG_RETURN_POINTER(gbt_num_compress(entry, &tinfo));
+	PG_RETURN_POINTER(gbt_num_compress(retval, entry, &tinfo));
 }
 
 
@@ -179,24 +178,21 @@ gbt_timetz_compress(PG_FUNCTION_ARGS)
 		retval = palloc(sizeof(GISTENTRY));
 
 		/* We are using the time + zone only to compress */
+#ifdef HAVE_INT64_TIMESTAMP
 		tmp = tz->time + (tz->zone * INT64CONST(1000000));
+#else
+		tmp = (tz->time + tz->zone);
+#endif
 		r->lower = r->upper = tmp;
 		gistentryinit(*retval, PointerGetDatum(r),
 					  entry->rel, entry->page,
-					  entry->offset, false);
+					  entry->offset, FALSE);
 	}
 	else
 		retval = entry;
 	PG_RETURN_POINTER(retval);
 }
 
-Datum
-gbt_time_fetch(PG_FUNCTION_ARGS)
-{
-	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-
-	PG_RETURN_POINTER(gbt_num_fetch(entry, &tinfo));
-}
 
 Datum
 gbt_time_consistent(PG_FUNCTION_ARGS)
@@ -216,8 +212,9 @@ gbt_time_consistent(PG_FUNCTION_ARGS)
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_BOOL(gbt_num_consistent(&key, (void *) &query, &strategy,
-									  GIST_LEAF(entry), &tinfo, fcinfo->flinfo));
+	PG_RETURN_BOOL(
+				   gbt_num_consistent(&key, (void *) &query, &strategy, GIST_LEAF(entry), &tinfo)
+		);
 }
 
 Datum
@@ -233,8 +230,9 @@ gbt_time_distance(PG_FUNCTION_ARGS)
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_FLOAT8(gbt_num_distance(&key, (void *) &query, GIST_LEAF(entry),
-									  &tinfo, fcinfo->flinfo));
+	PG_RETURN_FLOAT8(
+			gbt_num_distance(&key, (void *) &query, GIST_LEAF(entry), &tinfo)
+		);
 }
 
 Datum
@@ -253,13 +251,18 @@ gbt_timetz_consistent(PG_FUNCTION_ARGS)
 	/* All cases served by this function are inexact */
 	*recheck = true;
 
+#ifdef HAVE_INT64_TIMESTAMP
 	qqq = query->time + (query->zone * INT64CONST(1000000));
+#else
+	qqq = (query->time + query->zone);
+#endif
 
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_BOOL(gbt_num_consistent(&key, (void *) &qqq, &strategy,
-									  GIST_LEAF(entry), &tinfo, fcinfo->flinfo));
+	PG_RETURN_BOOL(
+				   gbt_num_consistent(&key, (void *) &qqq, &strategy, GIST_LEAF(entry), &tinfo)
+		);
 }
 
 
@@ -270,7 +273,7 @@ gbt_time_union(PG_FUNCTION_ARGS)
 	void	   *out = palloc(sizeof(timeKEY));
 
 	*(int *) PG_GETARG_POINTER(1) = sizeof(timeKEY);
-	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_union((void *) out, entryvec, &tinfo));
 }
 
 
@@ -284,15 +287,17 @@ gbt_time_penalty(PG_FUNCTION_ARGS)
 	double		res;
 	double		res2;
 
-	intr = DatumGetIntervalP(DirectFunctionCall2(time_mi_time,
-												 TimeADTGetDatumFast(newentry->upper),
-												 TimeADTGetDatumFast(origentry->upper)));
+	intr = DatumGetIntervalP(DirectFunctionCall2(
+												 time_mi_time,
+										TimeADTGetDatumFast(newentry->upper),
+									 TimeADTGetDatumFast(origentry->upper)));
 	res = INTERVAL_TO_SEC(intr);
 	res = Max(res, 0);
 
-	intr = DatumGetIntervalP(DirectFunctionCall2(time_mi_time,
-												 TimeADTGetDatumFast(origentry->lower),
-												 TimeADTGetDatumFast(newentry->lower)));
+	intr = DatumGetIntervalP(DirectFunctionCall2(
+												 time_mi_time,
+									   TimeADTGetDatumFast(origentry->lower),
+									  TimeADTGetDatumFast(newentry->lower)));
 	res2 = INTERVAL_TO_SEC(intr);
 	res2 = Max(res2, 0);
 
@@ -302,9 +307,10 @@ gbt_time_penalty(PG_FUNCTION_ARGS)
 
 	if (res > 0)
 	{
-		intr = DatumGetIntervalP(DirectFunctionCall2(time_mi_time,
-													 TimeADTGetDatumFast(origentry->upper),
-													 TimeADTGetDatumFast(origentry->lower)));
+		intr = DatumGetIntervalP(DirectFunctionCall2(
+													 time_mi_time,
+									   TimeADTGetDatumFast(origentry->upper),
+									 TimeADTGetDatumFast(origentry->lower)));
 		*result += FLT_MIN;
 		*result += (float) (res / (res + INTERVAL_TO_SEC(intr)));
 		*result *= (FLT_MAX / (((GISTENTRY *) PG_GETARG_POINTER(0))->rel->rd_att->natts + 1));
@@ -317,9 +323,11 @@ gbt_time_penalty(PG_FUNCTION_ARGS)
 Datum
 gbt_time_picksplit(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_POINTER(gbt_num_picksplit((GistEntryVector *) PG_GETARG_POINTER(0),
-										(GIST_SPLITVEC *) PG_GETARG_POINTER(1),
-										&tinfo, fcinfo->flinfo));
+	PG_RETURN_POINTER(gbt_num_picksplit(
+									(GistEntryVector *) PG_GETARG_POINTER(0),
+									  (GIST_SPLITVEC *) PG_GETARG_POINTER(1),
+										&tinfo
+										));
 }
 
 Datum
@@ -329,6 +337,6 @@ gbt_time_same(PG_FUNCTION_ARGS)
 	timeKEY    *b2 = (timeKEY *) PG_GETARG_POINTER(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo, fcinfo->flinfo);
+	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo);
 	PG_RETURN_POINTER(result);
 }

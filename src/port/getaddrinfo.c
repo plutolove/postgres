@@ -13,7 +13,7 @@
  * use the Windows native routines, but if not, we use our own.
  *
  *
- * Copyright (c) 2003-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2003-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/port/getaddrinfo.c
@@ -31,7 +31,6 @@
 
 #include "getaddrinfo.h"
 #include "libpq/pqcomm.h"		/* needed for struct sockaddr_storage */
-#include "port/pg_bswap.h"
 
 
 #ifdef WIN32
@@ -41,17 +40,17 @@
  * Here we need to declare what the function pointers look like
  */
 typedef int (__stdcall * getaddrinfo_ptr_t) (const char *nodename,
-											 const char *servname,
-											 const struct addrinfo *hints,
-											 struct addrinfo **res);
+														 const char *servname,
+											   const struct addrinfo * hints,
+													 struct addrinfo ** res);
 
-typedef void (__stdcall * freeaddrinfo_ptr_t) (struct addrinfo *ai);
+typedef void (__stdcall * freeaddrinfo_ptr_t) (struct addrinfo * ai);
 
-typedef int (__stdcall * getnameinfo_ptr_t) (const struct sockaddr *sa,
-											 int salen,
-											 char *node, int nodelen,
-											 char *service, int servicelen,
-											 int flags);
+typedef int (__stdcall * getnameinfo_ptr_t) (const struct sockaddr * sa,
+														 int salen,
+													 char *host, int hostlen,
+													 char *serv, int servlen,
+														 int flags);
 
 /* static pointers to the native routines, so we only do the lookup once. */
 static getaddrinfo_ptr_t getaddrinfo_ptr = NULL;
@@ -69,10 +68,28 @@ haveNativeWindowsIPv6routines(void)
 		return (getaddrinfo_ptr != NULL);
 
 	/*
-	 * For Windows XP and later versions, the IPv6 routines are present in the
-	 * WinSock 2 library (ws2_32.dll).
+	 * For Windows XP and Windows 2003 (and longhorn/vista), the IPv6 routines
+	 * are present in the WinSock 2 library (ws2_32.dll). Try that first
 	 */
+
 	hLibrary = LoadLibraryA("ws2_32");
+
+	if (hLibrary == NULL || GetProcAddress(hLibrary, "getaddrinfo") == NULL)
+	{
+		/*
+		 * Well, ws2_32 doesn't exist, or more likely doesn't have
+		 * getaddrinfo.
+		 */
+		if (hLibrary != NULL)
+			FreeLibrary(hLibrary);
+
+		/*
+		 * In Windows 2000, there was only the IPv6 Technology Preview look in
+		 * the IPv6 WinSock library (wship6.dll).
+		 */
+
+		hLibrary = LoadLibraryA("wship6");
+	}
 
 	/* If hLibrary is null, we couldn't find a dll with functions */
 	if (hLibrary != NULL)
@@ -82,7 +99,7 @@ haveNativeWindowsIPv6routines(void)
 		getaddrinfo_ptr = (getaddrinfo_ptr_t) GetProcAddress(hLibrary,
 															 "getaddrinfo");
 		freeaddrinfo_ptr = (freeaddrinfo_ptr_t) GetProcAddress(hLibrary,
-															   "freeaddrinfo");
+															 "freeaddrinfo");
 		getnameinfo_ptr = (getnameinfo_ptr_t) GetProcAddress(hLibrary,
 															 "getnameinfo");
 
@@ -118,8 +135,8 @@ haveNativeWindowsIPv6routines(void)
  */
 int
 getaddrinfo(const char *node, const char *service,
-			const struct addrinfo *hintp,
-			struct addrinfo **res)
+			const struct addrinfo * hintp,
+			struct addrinfo ** res)
 {
 	struct addrinfo *ai;
 	struct sockaddr_in sin,
@@ -161,7 +178,7 @@ getaddrinfo(const char *node, const char *service,
 	if (node)
 	{
 		if (node[0] == '\0')
-			sin.sin_addr.s_addr = pg_hton32(INADDR_ANY);
+			sin.sin_addr.s_addr = htonl(INADDR_ANY);
 		else if (hints.ai_flags & AI_NUMERICHOST)
 		{
 			if (!inet_aton(node, &sin.sin_addr))
@@ -204,13 +221,13 @@ getaddrinfo(const char *node, const char *service,
 	else
 	{
 		if (hints.ai_flags & AI_PASSIVE)
-			sin.sin_addr.s_addr = pg_hton32(INADDR_ANY);
+			sin.sin_addr.s_addr = htonl(INADDR_ANY);
 		else
-			sin.sin_addr.s_addr = pg_hton32(INADDR_LOOPBACK);
+			sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	}
 
 	if (service)
-		sin.sin_port = pg_hton16((unsigned short) atoi(service));
+		sin.sin_port = htons((unsigned short) atoi(service));
 
 #ifdef HAVE_STRUCT_SOCKADDR_STORAGE_SS_LEN
 	sin.sin_len = sizeof(sin);
@@ -245,7 +262,7 @@ getaddrinfo(const char *node, const char *service,
 
 
 void
-freeaddrinfo(struct addrinfo *res)
+freeaddrinfo(struct addrinfo * res)
 {
 	if (res)
 	{
@@ -311,7 +328,7 @@ gai_strerror(int errcode)
 		case EAI_MEMORY:
 			return "Not enough memory";
 #endif
-#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME /* MSVC/WIN64 duplicate */
+#if defined(EAI_NODATA) && EAI_NODATA != EAI_NONAME		/* MSVC/WIN64 duplicate */
 		case EAI_NODATA:
 			return "No host data of that type was found";
 #endif
@@ -326,7 +343,7 @@ gai_strerror(int errcode)
 		default:
 			return "Unknown server error";
 	}
-#endif							/* HAVE_HSTRERROR */
+#endif   /* HAVE_HSTRERROR */
 }
 
 /*
@@ -337,7 +354,7 @@ gai_strerror(int errcode)
  *		- No IPv6 support.
  */
 int
-getnameinfo(const struct sockaddr *sa, int salen,
+getnameinfo(const struct sockaddr * sa, int salen,
 			char *node, int nodelen,
 			char *service, int servicelen, int flags)
 {
@@ -369,10 +386,9 @@ getnameinfo(const struct sockaddr *sa, int salen,
 	{
 		if (sa->sa_family == AF_INET)
 		{
-			if (pg_inet_net_ntop(AF_INET,
-								 &((struct sockaddr_in *) sa)->sin_addr,
-								 sa->sa_family == AF_INET ? 32 : 128,
-								 node, nodelen) == NULL)
+			if (inet_net_ntop(AF_INET, &((struct sockaddr_in *) sa)->sin_addr,
+							  sa->sa_family == AF_INET ? 32 : 128,
+							  node, nodelen) == NULL)
 				return EAI_MEMORY;
 		}
 		else
@@ -386,9 +402,9 @@ getnameinfo(const struct sockaddr *sa, int salen,
 		if (sa->sa_family == AF_INET)
 		{
 			ret = snprintf(service, servicelen, "%d",
-						   pg_ntoh16(((struct sockaddr_in *) sa)->sin_port));
+						   ntohs(((struct sockaddr_in *) sa)->sin_port));
 		}
-		if (ret < 0 || ret >= servicelen)
+		if (ret == -1 || ret >= servicelen)
 			return EAI_MEMORY;
 	}
 

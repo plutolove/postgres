@@ -1,7 +1,6 @@
 # contrib/auth_delay/Makefile
 
 MODULES = auth_delay
-PGFILEDESC = "auth_delay - delay authentication failure reports"
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

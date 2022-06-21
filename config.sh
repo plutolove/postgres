@@ -1,1 +1,0 @@
-./configure --prefix=`pwd` --with-llvm LLVM_CONFIG='/usr/bin/llvm-config' --enable-depend --enable-cassert --enable-debug

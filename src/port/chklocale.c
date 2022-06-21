@@ -4,7 +4,7 @@
  *		Functions for handling locale-related info
  *
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -19,6 +19,7 @@
 #include "postgres_fe.h"
 #endif
 
+#include <locale.h>
 #ifdef HAVE_LANGINFO_H
 #include <langinfo.h>
 #endif
@@ -195,16 +196,6 @@ static const struct encoding_match encoding_match_list[] = {
  * locale machinery determine the code page.  See comments at IsoLocaleName().
  * For other compilers, follow the locale's predictable format.
  *
- * Visual Studio 2015 should still be able to do the same, but the declaration
- * of lc_codepage is missing in _locale_t, causing this code compilation to
- * fail, hence this falls back instead on GetLocaleInfoEx. VS 2015 may be an
- * exception and post-VS2015 versions should be able to handle properly the
- * codepage number using _create_locale(). So, instead of the same logic as
- * VS 2012 and VS 2013, this routine uses GetLocaleInfoEx to parse short
- * locale names like "de-DE", "fr-FR", etc. If those cannot be parsed correctly
- * process falls back to the pre-VS-2010 manual parsing done with
- * using <Language>_<Country>.<CodePage> as a base.
- *
  * Returns a malloc()'d string for the caller to free.
  */
 static char *
@@ -212,7 +203,7 @@ win32_langinfo(const char *ctype)
 {
 	char	   *r = NULL;
 
-#if defined(_MSC_VER) && (_MSC_VER < 1900)
+#if (_MSC_VER >= 1700)
 	_locale_t	loct = NULL;
 
 	loct = _create_locale(LC_CTYPE, ctype);
@@ -226,59 +217,20 @@ win32_langinfo(const char *ctype)
 #else
 	char	   *codepage;
 
-#if defined(_MSC_VER) && (_MSC_VER >= 1900)
-	uint32		cp;
-	WCHAR		wctype[LOCALE_NAME_MAX_LENGTH];
-
-	memset(wctype, 0, sizeof(wctype));
-	MultiByteToWideChar(CP_ACP, 0, ctype, -1, wctype, LOCALE_NAME_MAX_LENGTH);
-
-	if (GetLocaleInfoEx(wctype,
-						LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER,
-						(LPWSTR) &cp, sizeof(cp) / sizeof(WCHAR)) > 0)
+	/*
+	 * Locale format on Win32 is <Language>_<Country>.<CodePage> . For
+	 * example, English_United States.1252.
+	 */
+	codepage = strrchr(ctype, '.');
+	if (codepage != NULL)
 	{
-		r = malloc(16);			/* excess */
+		int			ln;
+
+		codepage++;
+		ln = strlen(codepage);
+		r = malloc(ln + 3);
 		if (r != NULL)
-		{
-			/*
-			 * If the return value is CP_ACP that means no ANSI code page is
-			 * available, so only Unicode can be used for the locale.
-			 */
-			if (cp == CP_ACP)
-				strcpy(r, "utf8");
-			else
-				sprintf(r, "CP%u", cp);
-		}
-	}
-	else
-#endif
-	{
-		/*
-		 * Locale format on Win32 is <Language>_<Country>.<CodePage>.  For
-		 * example, English_United States.1252.  If we see digits after the
-		 * last dot, assume it's a codepage number.  Otherwise, we might be
-		 * dealing with a Unix-style locale string; Windows' setlocale() will
-		 * take those even though GetLocaleInfoEx() won't, so we end up here.
-		 * In that case, just return what's after the last dot and hope we can
-		 * find it in our table.
-		 */
-		codepage = strrchr(ctype, '.');
-		if (codepage != NULL)
-		{
-			size_t		ln;
-
-			codepage++;
-			ln = strlen(codepage);
-			r = malloc(ln + 3);
-			if (r != NULL)
-			{
-				if (strspn(codepage, "0123456789") == ln)
-					sprintf(r, "CP%s", codepage);
-				else
-					strcpy(r, codepage);
-			}
-		}
-
+			sprintf(r, "CP%s", codepage);
 	}
 #endif
 
@@ -304,12 +256,13 @@ pg_codepage_to_encoding(UINT cp)
 			return encoding_match_list[i].pg_enc_code;
 
 	ereport(WARNING,
-			(errmsg("could not determine encoding for codeset \"%s\"", sys)));
+			(errmsg("could not determine encoding for codeset \"%s\"", sys),
+		   errdetail("Please report this to <pgsql-bugs@postgresql.org>.")));
 
 	return -1;
 }
 #endif
-#endif							/* WIN32 */
+#endif   /* WIN32 */
 
 #if (defined(HAVE_LANGINFO_H) && defined(CODESET)) || defined(WIN32)
 
@@ -408,7 +361,7 @@ pg_get_encoding_from_locale(const char *ctype, bool write_message)
 #ifdef __darwin__
 
 	/*
-	 * Current macOS has many locales that report an empty string for CODESET,
+	 * Current OS X has many locales that report an empty string for CODESET,
 	 * but they all seem to actually use UTF-8.
 	 */
 	if (strlen(sys) == 0)
@@ -432,7 +385,8 @@ pg_get_encoding_from_locale(const char *ctype, bool write_message)
 #else
 		ereport(WARNING,
 				(errmsg("could not determine encoding for locale \"%s\": codeset is \"%s\"",
-						ctype, sys)));
+						ctype, sys),
+		   errdetail("Please report this to <pgsql-bugs@postgresql.org>.")));
 #endif
 	}
 
@@ -454,4 +408,4 @@ pg_get_encoding_from_locale(const char *ctype, bool write_message)
 	return PG_SQL_ASCII;
 }
 
-#endif							/* (HAVE_LANGINFO_H && CODESET) || WIN32 */
+#endif   /* (HAVE_LANGINFO_H && CODESET) || WIN32 */

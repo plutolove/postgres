@@ -45,16 +45,15 @@
 	padding_XLogRecData_CRC
 	Memcheck:Value8
 
-	fun:pg_comp_crc32c*
-	fun:XLogRecordAssemble
+	fun:XLogInsert
 }
 
 {
 	padding_XLogRecData_write
 	Memcheck:Param
-	pwrite64(buf)
+	write(buf)
 
-	...
+    ...
 	fun:XLogWrite
 }
 
@@ -89,9 +88,9 @@
 {
 	padding_twophase_CRC
 	Memcheck:Value8
-	fun:pg_comp_crc32c*
 	fun:EndPrepare
 }
+
 
 {
 	padding_bootstrap_initial_xlog_write
@@ -103,11 +102,25 @@
 }
 
 {
+	padding_bootstrap_initial_xlog_CRC
+	Memcheck:Value8
+	fun:BootStrapXLOG
+	fun:AuxiliaryProcessMain
+}
+
+{
 	padding_bootstrap_control_file_write
 	Memcheck:Param
 	write(buf)
 
 	...
+	fun:WriteControlFile
+	fun:BootStrapXLOG
+}
+
+{
+	padding_bootstrap_control_file_CRC
+	Memcheck:Value8
 	fun:WriteControlFile
 	fun:BootStrapXLOG
 }
@@ -133,6 +146,7 @@
 
 	fun:IsBinaryCoercible
 }
+
 
 # Python's allocator does some low-level tricks for efficiency. Those
 # can be disabled for better instrumentation; but few people testing

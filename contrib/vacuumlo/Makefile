@@ -4,14 +4,10 @@ PGFILEDESC = "vacuumlo - removes orphaned large objects"
 PGAPPICON = win32
 
 PROGRAM = vacuumlo
-OBJS = \
-	$(WIN32RES) \
-	vacuumlo.o
-
-TAP_TESTS = 1
+OBJS	= vacuumlo.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
-PG_LIBS_INTERNAL = $(libpq_pgport)
+PG_LIBS = $(libpq_pgport)
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

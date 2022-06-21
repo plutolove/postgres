@@ -3,7 +3,7 @@
  * rewriteRemove.c
  *	  routines for removing rewrite rules
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,10 +15,9 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
-#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -29,8 +28,8 @@
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
-#include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
 
 /*
  * Guts of rule deletion.
@@ -48,13 +47,13 @@ RemoveRewriteRuleById(Oid ruleOid)
 	/*
 	 * Open the pg_rewrite relation.
 	 */
-	RewriteRelation = table_open(RewriteRelationId, RowExclusiveLock);
+	RewriteRelation = heap_open(RewriteRelationId, RowExclusiveLock);
 
 	/*
 	 * Find the tuple for the target rule.
 	 */
 	ScanKeyInit(&skey[0],
-				Anum_pg_rewrite_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(ruleOid));
 
@@ -72,22 +71,16 @@ RemoveRewriteRuleById(Oid ruleOid)
 	 * suffice if it's not an ON SELECT rule.)
 	 */
 	eventRelationOid = ((Form_pg_rewrite) GETSTRUCT(tuple))->ev_class;
-	event_relation = table_open(eventRelationOid, AccessExclusiveLock);
-
-	if (!allowSystemTableMods && IsSystemRelation(event_relation))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("permission denied: \"%s\" is a system catalog",
-						RelationGetRelationName(event_relation))));
+	event_relation = heap_open(eventRelationOid, AccessExclusiveLock);
 
 	/*
 	 * Now delete the pg_rewrite tuple for the rule
 	 */
-	CatalogTupleDelete(RewriteRelation, &tuple->t_self);
+	simple_heap_delete(RewriteRelation, &tuple->t_self);
 
 	systable_endscan(rcscan);
 
-	table_close(RewriteRelation, RowExclusiveLock);
+	heap_close(RewriteRelation, RowExclusiveLock);
 
 	/*
 	 * Issue shared-inval notice to force all backends (including me!) to
@@ -96,5 +89,5 @@ RemoveRewriteRuleById(Oid ruleOid)
 	CacheInvalidateRelcache(event_relation);
 
 	/* Close rel, but keep lock till commit... */
-	table_close(event_relation, NoLock);
+	heap_close(event_relation, NoLock);
 }

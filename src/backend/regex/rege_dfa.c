@@ -39,8 +39,8 @@
  * Internal errors also return NULL, with v->err set.
  */
 static chr *
-longest(struct vars *v,
-		struct dfa *d,
+longest(struct vars * v,
+		struct dfa * d,
 		chr *start,				/* where the match should start */
 		chr *stop,				/* match must end at or before here */
 		int *hitstopp)			/* record whether hit v->stop, if non-NULL */
@@ -165,8 +165,8 @@ longest(struct vars *v,
  * Internal errors also return NULL, with v->err set.
  */
 static chr *
-shortest(struct vars *v,
-		 struct dfa *d,
+shortest(struct vars * v,
+		 struct dfa * d,
 		 chr *start,			/* where the match should start */
 		 chr *min,				/* match must end at or after here */
 		 chr *max,				/* match must end at or before here */
@@ -287,135 +287,11 @@ shortest(struct vars *v,
 }
 
 /*
- * matchuntil - incremental matching engine
- *
- * This is meant for use with a search-style NFA (that is, the pattern is
- * known to act as though it had a leading .*).  We determine whether a
- * match exists starting at v->start and ending at probe.  Multiple calls
- * require only O(N) time not O(N^2) so long as the probe values are
- * nondecreasing.  *lastcss and *lastcp must be initialized to NULL before
- * starting a series of calls.
- *
- * Returns 1 if a match exists, 0 if not.
- * Internal errors also return 0, with v->err set.
- */
-static int
-matchuntil(struct vars *v,
-		   struct dfa *d,
-		   chr *probe,			/* we want to know if a match ends here */
-		   struct sset **lastcss,	/* state storage across calls */
-		   chr **lastcp)		/* state storage across calls */
-{
-	chr		   *cp = *lastcp;
-	color		co;
-	struct sset *css = *lastcss;
-	struct sset *ss;
-	struct colormap *cm = d->cm;
-
-	/* initialize and startup, or restart, if necessary */
-	if (cp == NULL || cp > probe)
-	{
-		cp = v->start;
-		css = initialize(v, d, cp);
-		if (css == NULL)
-			return 0;
-
-		FDEBUG((">>> startup >>>\n"));
-		co = d->cnfa->bos[(v->eflags & REG_NOTBOL) ? 0 : 1];
-		FDEBUG(("color %ld\n", (long) co));
-
-		css = miss(v, d, css, co, cp, v->start);
-		if (css == NULL)
-			return 0;
-		css->lastseen = cp;
-	}
-	else if (css == NULL)
-	{
-		/* we previously found that no match is possible beyond *lastcp */
-		return 0;
-	}
-	ss = css;
-
-	/*
-	 * This is the main text-scanning loop.  It seems worth having two copies
-	 * to avoid the overhead of REG_FTRACE tests here, even in REG_DEBUG
-	 * builds, when you're not actively tracing.
-	 */
-#ifdef REG_DEBUG
-	if (v->eflags & REG_FTRACE)
-	{
-		while (cp < probe)
-		{
-			FDEBUG((">>> at c%d >>>\n", (int) (css - d->ssets)));
-			co = GETCOLOR(cm, *cp);
-			FDEBUG(("char %c, color %ld\n", (char) *cp, (long) co));
-			ss = css->outs[co];
-			if (ss == NULL)
-			{
-				ss = miss(v, d, css, co, cp + 1, v->start);
-				if (ss == NULL)
-					break;		/* NOTE BREAK OUT */
-			}
-			cp++;
-			ss->lastseen = cp;
-			css = ss;
-		}
-	}
-	else
-#endif
-	{
-		while (cp < probe)
-		{
-			co = GETCOLOR(cm, *cp);
-			ss = css->outs[co];
-			if (ss == NULL)
-			{
-				ss = miss(v, d, css, co, cp + 1, v->start);
-				if (ss == NULL)
-					break;		/* NOTE BREAK OUT */
-			}
-			cp++;
-			ss->lastseen = cp;
-			css = ss;
-		}
-	}
-
-	*lastcss = ss;
-	*lastcp = cp;
-
-	if (ss == NULL)
-		return 0;				/* impossible match, or internal error */
-
-	/* We need to process one more chr, or the EOS symbol, to check match */
-	if (cp < v->stop)
-	{
-		FDEBUG((">>> at c%d >>>\n", (int) (css - d->ssets)));
-		co = GETCOLOR(cm, *cp);
-		FDEBUG(("char %c, color %ld\n", (char) *cp, (long) co));
-		ss = css->outs[co];
-		if (ss == NULL)
-			ss = miss(v, d, css, co, cp + 1, v->start);
-	}
-	else
-	{
-		assert(cp == v->stop);
-		co = d->cnfa->eos[(v->eflags & REG_NOTEOL) ? 0 : 1];
-		FDEBUG(("color %ld\n", (long) co));
-		ss = miss(v, d, css, co, cp, v->start);
-	}
-
-	if (ss == NULL || !(ss->flags & POSTSTATE))
-		return 0;
-
-	return 1;
-}
-
-/*
  * lastcold - determine last point at which no progress had been made
  */
 static chr *					/* endpoint, or NULL */
-lastcold(struct vars *v,
-		 struct dfa *d)
+lastcold(struct vars * v,
+		 struct dfa * d)
 {
 	struct sset *ss;
 	chr		   *nopr;
@@ -434,10 +310,10 @@ lastcold(struct vars *v,
  * newdfa - set up a fresh DFA
  */
 static struct dfa *
-newdfa(struct vars *v,
-	   struct cnfa *cnfa,
-	   struct colormap *cm,
-	   struct smalldfa *sml)	/* preallocated space, may be NULL */
+newdfa(struct vars * v,
+	   struct cnfa * cnfa,
+	   struct colormap * cm,
+	   struct smalldfa * sml)	/* preallocated space, may be NULL */
 {
 	struct dfa *d;
 	size_t		nss = cnfa->nstates * 2;
@@ -514,7 +390,7 @@ newdfa(struct vars *v,
  * freedfa - free a DFA
  */
 static void
-freedfa(struct dfa *d)
+freedfa(struct dfa * d)
 {
 	if (d->cptsmalloced)
 	{
@@ -554,8 +430,8 @@ hash(unsigned *uv,
  * initialize - hand-craft a cache entry for startup, otherwise get ready
  */
 static struct sset *
-initialize(struct vars *v,
-		   struct dfa *d,
+initialize(struct vars * v,
+		   struct dfa * d,
 		   chr *start)
 {
 	struct sset *ss;
@@ -600,10 +476,10 @@ initialize(struct vars *v,
  * Internal errors also return NULL, with v->err set.
  */
 static struct sset *
-miss(struct vars *v,
-	 struct dfa *d,
-	 struct sset *css,
-	 color co,
+miss(struct vars * v,
+	 struct dfa * d,
+	 struct sset * css,
+	 pcolor co,
 	 chr *cp,					/* next chr */
 	 chr *start)				/* where the attempt got started */
 {
@@ -672,15 +548,15 @@ miss(struct vars *v,
 				for (ca = cnfa->states[i]; ca->co != COLORLESS; ca++)
 				{
 					if (ca->co < cnfa->ncolors)
-						continue;	/* not a LACON arc */
+						continue;		/* not a LACON arc */
 					if (ISBSET(d->work, ca->to))
-						continue;	/* arc would be a no-op anyway */
-					sawlacons = 1;	/* this LACON affects our result */
+						continue;		/* arc would be a no-op anyway */
+					sawlacons = 1;		/* this LACON affects our result */
 					if (!lacon(v, cnfa, cp, ca->co))
 					{
 						if (ISERR())
 							return NULL;
-						continue;	/* LACON arc cannot be traversed */
+						continue;		/* LACON arc cannot be traversed */
 					}
 					if (ISERR())
 						return NULL;
@@ -731,25 +607,25 @@ miss(struct vars *v,
 		css->outs[co] = p;
 		css->inchain[co] = p->ins;
 		p->ins.ss = css;
-		p->ins.co = co;
+		p->ins.co = (color) co;
 	}
 	return p;
 }
 
 /*
- * lacon - lookaround-constraint checker for miss()
+ * lacon - lookahead-constraint checker for miss()
  */
 static int						/* predicate:  constraint satisfied? */
-lacon(struct vars *v,
-	  struct cnfa *pcnfa,		/* parent cnfa */
+lacon(struct vars * v,
+	  struct cnfa * pcnfa,		/* parent cnfa */
 	  chr *cp,
-	  color co)					/* "color" of the lookaround constraint */
+	  pcolor co)				/* "color" of the lookahead constraint */
 {
 	int			n;
 	struct subre *sub;
 	struct dfa *d;
+	struct smalldfa sd;
 	chr		   *end;
-	int			satisfied;
 
 	/* Since this is recursive, it could be driven to stack overflow */
 	if (STACK_TOO_DEEP(v->re))
@@ -759,35 +635,19 @@ lacon(struct vars *v,
 	}
 
 	n = co - pcnfa->ncolors;
-	assert(n > 0 && n < v->g->nlacons && v->g->lacons != NULL);
+	assert(n < v->g->nlacons && v->g->lacons != NULL);
 	FDEBUG(("=== testing lacon %d\n", n));
 	sub = &v->g->lacons[n];
-	d = getladfa(v, n);
+	d = newdfa(v, &sub->cnfa, &v->g->cmap, &sd);
 	if (d == NULL)
+	{
+		ERR(REG_ESPACE);
 		return 0;
-	if (LATYPE_IS_AHEAD(sub->subno))
-	{
-		/* used to use longest() here, but shortest() could be much cheaper */
-		end = shortest(v, d, cp, cp, v->stop,
-					   (chr **) NULL, (int *) NULL);
-		satisfied = LATYPE_IS_POS(sub->subno) ? (end != NULL) : (end == NULL);
 	}
-	else
-	{
-		/*
-		 * To avoid doing O(N^2) work when repeatedly testing a lookbehind
-		 * constraint in an N-character string, we use matchuntil() which can
-		 * cache the DFA state across calls.  We only need to restart if the
-		 * probe point decreases, which is not common.  The NFA we're using is
-		 * a search NFA, so it doesn't mind scanning over stuff before the
-		 * nominal match.
-		 */
-		satisfied = matchuntil(v, d, cp, &v->lblastcss[n], &v->lblastcp[n]);
-		if (!LATYPE_IS_POS(sub->subno))
-			satisfied = !satisfied;
-	}
-	FDEBUG(("=== lacon %d satisfied %d\n", n, satisfied));
-	return satisfied;
+	end = longest(v, d, cp, v->stop, (int *) NULL);
+	freedfa(d);
+	FDEBUG(("=== lacon %d match %d\n", n, (end != NULL)));
+	return (sub->subno) ? (end != NULL) : (end == NULL);
 }
 
 /*
@@ -797,8 +657,8 @@ lacon(struct vars *v,
  * clear the innards of the state set -- that's up to the caller.
  */
 static struct sset *
-getvacant(struct vars *v,
-		  struct dfa *d,
+getvacant(struct vars * v,
+		  struct dfa * d,
 		  chr *cp,
 		  chr *start)
 {
@@ -821,7 +681,7 @@ getvacant(struct vars *v,
 		FDEBUG(("zapping c%d's %ld outarc\n", (int) (p - d->ssets), (long) co));
 		p->outs[co] = NULL;
 		ap = p->inchain[co];
-		p->inchain[co].ss = NULL;	/* paranoia */
+		p->inchain[co].ss = NULL;		/* paranoia */
 	}
 	ss->ins.ss = NULL;
 
@@ -868,8 +728,8 @@ getvacant(struct vars *v,
  * pickss - pick the next stateset to be used
  */
 static struct sset *
-pickss(struct vars *v,
-	   struct dfa *d,
+pickss(struct vars * v,
+	   struct dfa * d,
 	   chr *cp,
 	   chr *start)
 {

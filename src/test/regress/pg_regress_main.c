@@ -8,15 +8,13 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/pg_regress_main.c
  *
  *-------------------------------------------------------------------------
  */
-
-#include "postgres_fe.h"
 
 #include "pg_regress.h"
 
@@ -36,7 +34,6 @@ psql_start_test(const char *testname,
 	char		expectfile[MAXPGPATH];
 	char		psql_cmd[MAXPGPATH * 3];
 	size_t		offset = 0;
-	char	   *appnameenv;
 
 	/*
 	 * Look for files in the output dir first, consistent with a vpath search.
@@ -63,36 +60,16 @@ psql_start_test(const char *testname,
 	add_stringlist_item(expectfiles, expectfile);
 
 	if (launcher)
-	{
 		offset += snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
 						   "%s ", launcher);
-		if (offset >= sizeof(psql_cmd))
-		{
-			fprintf(stderr, _("command too long\n"));
-			exit(2);
-		}
-	}
 
-	/*
-	 * Use HIDE_TABLEAM to hide different AMs to allow to use regression tests
-	 * against different AMs without unnecessary differences.
-	 */
-	offset += snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
-					   "\"%s%spsql\" -X -a -q -d \"%s\" -v %s < \"%s\" > \"%s\" 2>&1",
-					   bindir ? bindir : "",
-					   bindir ? "/" : "",
-					   dblist->str,
-					   "HIDE_TABLEAM=\"on\"",
-					   infile,
-					   outfile);
-	if (offset >= sizeof(psql_cmd))
-	{
-		fprintf(stderr, _("command too long\n"));
-		exit(2);
-	}
-
-	appnameenv = psprintf("PGAPPNAME=pg_regress/%s", testname);
-	putenv(appnameenv);
+	snprintf(psql_cmd + offset, sizeof(psql_cmd) - offset,
+			 "\"%s%spsql\" -X -a -q -d \"%s\" < \"%s\" > \"%s\" 2>&1",
+			 psqldir ? psqldir : "",
+			 psqldir ? "/" : "",
+			 dblist->str,
+			 infile,
+			 outfile);
 
 	pid = spawn_process(psql_cmd);
 
@@ -102,9 +79,6 @@ psql_start_test(const char *testname,
 				testname);
 		exit(2);
 	}
-
-	unsetenv("PGAPPNAME");
-	free(appnameenv);
 
 	return pid;
 }

@@ -8,7 +8,7 @@
  *	  - Does not support interval timer (value->it_interval)
  *	  - Only supports ITIMER_REAL
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/port/win32/timer.c
@@ -48,7 +48,7 @@ pg_timer_thread(LPVOID param)
 		r = WaitForSingleObjectEx(timerCommArea.event, waittime, FALSE);
 		if (r == WAIT_OBJECT_0)
 		{
-			/* Event signaled from main thread, change the timer */
+			/* Event signalled from main thread, change the timer */
 			EnterCriticalSection(&timerCommArea.crit_sec);
 			if (timerCommArea.value.it_value.tv_sec == 0 &&
 				timerCommArea.value.it_value.tv_usec == 0)
@@ -83,7 +83,7 @@ pg_timer_thread(LPVOID param)
  * to handle the timer setting and notification upon timeout.
  */
 int
-setitimer(int which, const struct itimerval *value, struct itimerval *ovalue)
+setitimer(int which, const struct itimerval * value, struct itimerval * ovalue)
 {
 	Assert(value != NULL);
 	Assert(value->it_interval.tv_sec == 0 && value->it_interval.tv_usec == 0);
@@ -95,8 +95,8 @@ setitimer(int which, const struct itimerval *value, struct itimerval *ovalue)
 		timerCommArea.event = CreateEvent(NULL, TRUE, FALSE, NULL);
 		if (timerCommArea.event == NULL)
 			ereport(FATAL,
-					(errmsg_internal("could not create timer event: error code %lu",
-									 GetLastError())));
+			 (errmsg_internal("could not create timer event: error code %lu",
+							  GetLastError())));
 
 		MemSet(&timerCommArea.value, 0, sizeof(struct itimerval));
 
@@ -105,8 +105,8 @@ setitimer(int which, const struct itimerval *value, struct itimerval *ovalue)
 		timerThreadHandle = CreateThread(NULL, 0, pg_timer_thread, NULL, 0, NULL);
 		if (timerThreadHandle == INVALID_HANDLE_VALUE)
 			ereport(FATAL,
-					(errmsg_internal("could not create timer thread: error code %lu",
-									 GetLastError())));
+			(errmsg_internal("could not create timer thread: error code %lu",
+							 GetLastError())));
 	}
 
 	/* Request the timer thread to change settings */

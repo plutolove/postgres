@@ -10,15 +10,3 @@ typedef struct SEG
 	char		l_ext;
 	char		u_ext;
 } SEG;
-
-/* in seg.c */
-extern int	significant_digits(const char *str);
-
-/* in segscan.l */
-extern int	seg_yylex(void);
-extern void seg_yyerror(SEG *result, const char *message) pg_attribute_noreturn();
-extern void seg_scanner_init(const char *str);
-extern void seg_scanner_finish(void);
-
-/* in segparse.y */
-extern int	seg_yyparse(SEG *result);

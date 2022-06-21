@@ -149,11 +149,11 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 (1 row)
 
 SAVEPOINT first_sp;
-SET vacuum_cost_delay TO 80.1;
+SET vacuum_cost_delay TO 80;
 SHOW vacuum_cost_delay;
  vacuum_cost_delay 
 -------------------
- 80100us
+ 80ms
 (1 row)
 
 SET datestyle = 'German, DMY';
@@ -183,7 +183,7 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
 (1 row)
 
 SAVEPOINT second_sp;
-SET vacuum_cost_delay TO '900us';
+SET vacuum_cost_delay TO 90;
 SET datestyle = 'SQL, YMD';
 SHOW datestyle;
  DateStyle 
@@ -222,7 +222,7 @@ ROLLBACK TO third_sp;
 SHOW vacuum_cost_delay;
  vacuum_cost_delay 
 -------------------
- 900us
+ 90ms
 (1 row)
 
 SHOW datestyle;
@@ -506,11 +506,6 @@ SELECT '2006-08-13 12:34:56'::timestamptz;
  Sun Aug 13 12:34:56 2006 PDT
 (1 row)
 
--- Test some simple error cases
-SET seq_page_cost TO 'NaN';
-ERROR:  invalid value for parameter "seq_page_cost": "NaN"
-SET vacuum_cost_delay TO '10s';
-ERROR:  10000 ms is outside the valid range for parameter "vacuum_cost_delay" (0 .. 100)
 --
 -- Test DISCARD TEMP
 --
@@ -536,8 +531,8 @@ PREPARE foo AS SELECT 1;
 LISTEN foo_event;
 SET vacuum_cost_delay = 13;
 CREATE TEMP TABLE tmp_foo (data text) ON COMMIT DELETE ROWS;
-CREATE ROLE regress_guc_user;
-SET SESSION AUTHORIZATION regress_guc_user;
+CREATE ROLE temp_reset_user;
+SET SESSION AUTHORIZATION temp_reset_user;
 -- look changes
 SELECT pg_listening_channels();
  pg_listening_channels 
@@ -569,7 +564,7 @@ SELECT relname from pg_class where relname = 'tmp_foo';
  tmp_foo
 (1 row)
 
-SELECT current_user = 'regress_guc_user';
+SELECT current_user = 'temp_reset_user';
  ?column? 
 ----------
  t
@@ -604,13 +599,13 @@ SELECT relname from pg_class where relname = 'tmp_foo';
 ---------
 (0 rows)
 
-SELECT current_user = 'regress_guc_user';
+SELECT current_user = 'temp_reset_user';
  ?column? 
 ----------
  f
 (1 row)
 
-DROP ROLE regress_guc_user;
+DROP ROLE temp_reset_user;
 --
 -- search_path should react to changes in pg_namespace
 --
@@ -725,37 +720,6 @@ select myfunc(1), current_setting('work_mem');
  2MB    | 2MB
 (1 row)
 
--- check current_setting()'s behavior with invalid setting name
-select current_setting('nosuch.setting');  -- FAIL
-ERROR:  unrecognized configuration parameter "nosuch.setting"
-select current_setting('nosuch.setting', false);  -- FAIL
-ERROR:  unrecognized configuration parameter "nosuch.setting"
-select current_setting('nosuch.setting', true) is null;
- ?column? 
-----------
- t
-(1 row)
-
--- after this, all three cases should yield 'nada'
-set nosuch.setting = 'nada';
-select current_setting('nosuch.setting');
- current_setting 
------------------
- nada
-(1 row)
-
-select current_setting('nosuch.setting', false);
- current_setting 
------------------
- nada
-(1 row)
-
-select current_setting('nosuch.setting', true);
- current_setting 
------------------
- nada
-(1 row)
-
 -- Normally, CREATE FUNCTION should complain about invalid values in
 -- function SET options; but not if check_function_bodies is off,
 -- because that creates ordering hazards for pg_dump
@@ -772,7 +736,3 @@ NOTICE:  text search configuration "no_such_config" does not exist
 select func_with_bad_set();
 ERROR:  invalid value for parameter "default_text_search_config": "no_such_config"
 reset check_function_bodies;
-set default_with_oids to f;
--- Should not allow to set it to true.
-set default_with_oids to t;
-ERROR:  tables declared WITH OIDS are not supported

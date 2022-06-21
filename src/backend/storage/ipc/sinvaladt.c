@@ -3,7 +3,7 @@
  * sinvaladt.c
  *	  POSTGRES shared cache invalidation data manager.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,7 +17,6 @@
 #include <signal.h>
 #include <unistd.h>
 
-#include "access/transam.h"
 #include "miscadmin.h"
 #include "storage/backendid.h"
 #include "storage/ipc.h"
@@ -26,6 +25,8 @@
 #include "storage/shmem.h"
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
+#include "access/transam.h"
+
 
 /*
  * Conceptually, the shared cache invalidation messages are stored in an
@@ -183,9 +184,12 @@ typedef struct SISeg
 	SharedInvalidationMessage buffer[MAXNUMMESSAGES];
 
 	/*
-	 * Per-backend invalidation state info (has MaxBackends entries).
+	 * Per-backend state info.
+	 *
+	 * We declare procState as 1 entry because C wants a fixed-size array, but
+	 * actually it is maxBackends entries long.
 	 */
-	ProcState	procState[FLEXIBLE_ARRAY_MEMBER];
+	ProcState	procState[1];	/* reflects the invalidation state */
 } SISeg;
 
 static SISeg *shmInvalBuffer;	/* pointer to the shared inval buffer */
@@ -217,12 +221,16 @@ SInvalShmemSize(void)
 void
 CreateSharedInvalidationState(void)
 {
+	Size		size;
 	int			i;
 	bool		found;
 
 	/* Allocate space in shared memory */
+	size = offsetof(SISeg, procState);
+	size = add_size(size, mul_size(sizeof(ProcState), MaxBackends));
+
 	shmInvalBuffer = (SISeg *)
-		ShmemInitStruct("shmInvalBuffer", SInvalShmemSize(), &found);
+		ShmemInitStruct("shmInvalBuffer", size, &found);
 	if (found)
 		return;
 
@@ -239,7 +247,7 @@ CreateSharedInvalidationState(void)
 	/* Mark all backends inactive, and initialize nextLXID */
 	for (i = 0; i < shmInvalBuffer->maxBackends; i++)
 	{
-		shmInvalBuffer->procState[i].procPid = 0;	/* inactive */
+		shmInvalBuffer->procState[i].procPid = 0;		/* inactive */
 		shmInvalBuffer->procState[i].proc = NULL;
 		shmInvalBuffer->procState[i].nextMsgNum = 0;	/* meaningless */
 		shmInvalBuffer->procState[i].resetState = false;
@@ -270,7 +278,7 @@ SharedInvalBackendInit(bool sendOnly)
 	/* Look for a free entry in the procState array */
 	for (index = 0; index < segP->lastBackend; index++)
 	{
-		if (segP->procState[index].procPid == 0)	/* inactive slot? */
+		if (segP->procState[index].procPid == 0)		/* inactive slot? */
 		{
 			stateP = &segP->procState[index];
 			break;
@@ -484,9 +492,14 @@ SIInsertDataEntries(const SharedInvalidationMessage *data, int n)
 		}
 
 		/* Update current value of maxMsgNum using spinlock */
-		SpinLockAcquire(&segP->msgnumLock);
-		segP->maxMsgNum = max;
-		SpinLockRelease(&segP->msgnumLock);
+		{
+			/* use volatile pointer to prevent code rearrangement */
+			volatile SISeg *vsegP = segP;
+
+			SpinLockAcquire(&vsegP->msgnumLock);
+			vsegP->maxMsgNum = max;
+			SpinLockRelease(&vsegP->msgnumLock);
+		}
 
 		/*
 		 * Now that the maxMsgNum change is globally visible, we give everyone
@@ -573,9 +586,14 @@ SIGetDataEntries(SharedInvalidationMessage *data, int datasize)
 	stateP->hasMessages = false;
 
 	/* Fetch current value of maxMsgNum using spinlock */
-	SpinLockAcquire(&segP->msgnumLock);
-	max = segP->maxMsgNum;
-	SpinLockRelease(&segP->msgnumLock);
+	{
+		/* use volatile pointer to prevent code rearrangement */
+		volatile SISeg *vsegP = segP;
+
+		SpinLockAcquire(&vsegP->msgnumLock);
+		max = vsegP->maxMsgNum;
+		SpinLockRelease(&vsegP->msgnumLock);
+	}
 
 	if (stateP->resetState)
 	{
@@ -626,7 +644,7 @@ SIGetDataEntries(SharedInvalidationMessage *data, int datasize)
  * SICleanupQueue
  *		Remove messages that have been consumed by all active backends
  *
- * callerHasWriteLock is true if caller is holding SInvalWriteLock.
+ * callerHasWriteLock is TRUE if caller is holding SInvalWriteLock.
  * minFree is the minimum number of message slots to make free.
  *
  * Possible side effects of this routine include marking one or more

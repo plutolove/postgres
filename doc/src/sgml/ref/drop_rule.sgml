@@ -3,7 +3,7 @@ doc/src/sgml/ref/drop_rule.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="sql-droprule">
+<refentry id="SQL-DROPRULE">
  <indexterm zone="sql-droprule">
   <primary>DROP RULE</primary>
  </indexterm>
@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-DROP RULE [ IF EXISTS ] <replaceable class="parameter">name</replaceable> ON <replaceable class="parameter">table_name</replaceable> [ CASCADE | RESTRICT ]
+DROP RULE [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable> ON <replaceable class="PARAMETER">table_name</replaceable> [ CASCADE | RESTRICT ]
 </synopsis>
  </refsynopsisdiv>
 
@@ -71,9 +71,7 @@ DROP RULE [ IF EXISTS ] <replaceable class="parameter">name</replaceable> ON <re
     <term><literal>CASCADE</literal></term>
     <listitem>
      <para>
-      Automatically drop objects that depend on the rule,
-      and in turn all objects that depend on those objects
-      (see <xref linkend="ddl-depend"/>).
+      Automatically drop objects that depend on the rule.
      </para>
     </listitem>
    </varlistentry>
@@ -115,8 +113,8 @@ DROP RULE newrule ON mytable;
   <title>See Also</title>
 
   <simplelist type="inline">
-   <member><xref linkend="sql-createrule"/></member>
-   <member><xref linkend="sql-alterrule"/></member>
+   <member><xref linkend="sql-createrule"></member>
+   <member><xref linkend="sql-alterrule"></member>
   </simplelist>
  </refsect1>
 

@@ -4,7 +4,7 @@
  *	  routines to convert a string (legal ascii representation of node) back
  *	  to nodes
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,37 +21,24 @@
 
 #include <ctype.h>
 
-#include "common/string.h"
 #include "nodes/pg_list.h"
 #include "nodes/readfuncs.h"
 #include "nodes/value.h"
 
 
 /* Static state for pg_strtok */
-static const char *pg_strtok_ptr = NULL;
-
-/* State flag that determines how readfuncs.c should treat location fields */
-#ifdef WRITE_READ_PARSE_PLAN_TREES
-bool		restore_location_fields = false;
-#endif
+static char *pg_strtok_ptr = NULL;
 
 
 /*
  * stringToNode -
- *	  builds a Node tree from its string representation (assumed valid)
- *
- * restore_loc_fields instructs readfuncs.c whether to restore location
- * fields rather than set them to -1.  This is currently only supported
- * in builds with the WRITE_READ_PARSE_PLAN_TREES debugging flag set.
+ *	  returns a Node with a given legal ASCII representation
  */
-static void *
-stringToNodeInternal(const char *str, bool restore_loc_fields)
+void *
+stringToNode(char *str)
 {
+	char	   *save_strtok;
 	void	   *retval;
-	const char *save_strtok;
-#ifdef WRITE_READ_PARSE_PLAN_TREES
-	bool		save_restore_location_fields;
-#endif
 
 	/*
 	 * We save and restore the pre-existing state of pg_strtok. This makes the
@@ -63,44 +50,12 @@ stringToNodeInternal(const char *str, bool restore_loc_fields)
 
 	pg_strtok_ptr = str;		/* point pg_strtok at the string to read */
 
-	/*
-	 * If enabled, likewise save/restore the location field handling flag.
-	 */
-#ifdef WRITE_READ_PARSE_PLAN_TREES
-	save_restore_location_fields = restore_location_fields;
-	restore_location_fields = restore_loc_fields;
-#endif
-
 	retval = nodeRead(NULL, 0); /* do the reading */
 
 	pg_strtok_ptr = save_strtok;
 
-#ifdef WRITE_READ_PARSE_PLAN_TREES
-	restore_location_fields = save_restore_location_fields;
-#endif
-
 	return retval;
 }
-
-/*
- * Externally visible entry points
- */
-void *
-stringToNode(const char *str)
-{
-	return stringToNodeInternal(str, false);
-}
-
-#ifdef WRITE_READ_PARSE_PLAN_TREES
-
-void *
-stringToNodeWithLocations(const char *str)
-{
-	return stringToNodeInternal(str, true);
-}
-
-#endif
-
 
 /*****************************************************************************
  *
@@ -148,11 +103,11 @@ stringToNodeWithLocations(const char *str)
  * code should add backslashes to a string constant to ensure it is treated
  * as a single token.
  */
-const char *
+char *
 pg_strtok(int *length)
 {
-	const char *local_str;		/* working pointer to string */
-	const char *ret_str;		/* start of token to return */
+	char	   *local_str;		/* working pointer to string */
+	char	   *ret_str;		/* start of token to return */
 
 	local_str = pg_strtok_ptr;
 
@@ -210,7 +165,7 @@ pg_strtok(int *length)
  *	  any protective backslashes in the token are removed.
  */
 char *
-debackslash(const char *token, int length)
+debackslash(char *token, int length)
 {
 	char	   *result = palloc(length + 1);
 	char	   *ptr = result;
@@ -242,10 +197,10 @@ debackslash(const char *token, int length)
  *	  Assumption: the ascii representation is legal
  */
 static NodeTag
-nodeTokenType(const char *token, int length)
+nodeTokenType(char *token, int length)
 {
 	NodeTag		retval;
-	const char *numptr;
+	char	   *numptr;
 	int			numlen;
 
 	/*
@@ -260,15 +215,22 @@ nodeTokenType(const char *token, int length)
 	{
 		/*
 		 * Yes.  Figure out whether it is integral or float; this requires
-		 * both a syntax check and a range check. strtoint() can do both for
-		 * us. We know the token will end at a character that strtoint will
-		 * stop at, so we do not need to modify the string.
+		 * both a syntax check and a range check. strtol() can do both for us.
+		 * We know the token will end at a character that strtol will stop at,
+		 * so we do not need to modify the string.
 		 */
+		long		val;
 		char	   *endptr;
 
 		errno = 0;
-		(void) strtoint(token, &endptr, 10);
-		if (endptr != token + length || errno == ERANGE)
+		val = strtol(token, &endptr, 10);
+		(void) val;				/* avoid compiler warning if unused */
+		if (endptr != token + length || errno == ERANGE
+#ifdef HAVE_LONG_INT_64
+		/* if long > 32 bits, check for overflow of int4 */
+			|| val != (long) ((int32) val)
+#endif
+			)
 			return T_Float;
 		return T_Integer;
 	}
@@ -283,7 +245,7 @@ nodeTokenType(const char *token, int length)
 		retval = RIGHT_PAREN;
 	else if (*token == '{')
 		retval = LEFT_BRACE;
-	else if (*token == '"' && length > 1 && token[length - 1] == '"')
+	else if (*token == '\"' && length > 1 && token[length - 1] == '\"')
 		retval = T_String;
 	else if (*token == 'b')
 		retval = T_BitString;
@@ -313,7 +275,7 @@ nodeTokenType(const char *token, int length)
  * this should only be invoked from within a stringToNode operation).
  */
 void *
-nodeRead(const char *token, int tok_len)
+nodeRead(char *token, int tok_len)
 {
 	Node	   *result;
 	NodeTag		type;
@@ -425,9 +387,9 @@ nodeRead(const char *token, int tok_len)
 		case T_Integer:
 
 			/*
-			 * we know that the token terminates on a char atoi will stop at
+			 * we know that the token terminates on a char atol will stop at
 			 */
-			result = (Node *) makeInteger(atoi(token));
+			result = (Node *) makeInteger(atol(token));
 			break;
 		case T_Float:
 			{

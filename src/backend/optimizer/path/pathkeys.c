@@ -7,7 +7,7 @@
  * the nature and use of path keys.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,23 +17,21 @@
  */
 #include "postgres.h"
 
-#include "access/stratnum.h"
-#include "catalog/pg_opfamily.h"
+#include "access/skey.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/clauses.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
-#include "partitioning/partbounds.h"
+#include "optimizer/tlist.h"
 #include "utils/lsyscache.h"
 
 
+static PathKey *make_canonical_pathkey(PlannerInfo *root,
+					   EquivalenceClass *eclass, Oid opfamily,
+					   int strategy, bool nulls_first);
 static bool pathkey_is_redundant(PathKey *new_pathkey, List *pathkeys);
-static bool matches_boolean_partition_clause(RestrictInfo *rinfo,
-											 RelOptInfo *partrel,
-											 int partkeycol);
-static Var *find_var_for_subquery_tle(RelOptInfo *rel, TargetEntry *tle);
 static bool right_merge_direction(PlannerInfo *root, PathKey *pathkey);
 
 
@@ -48,9 +46,11 @@ static bool right_merge_direction(PlannerInfo *root, PathKey *pathkey);
  *	  entry if there's not one already.
  *
  * Note that this function must not be used until after we have completed
- * merging EquivalenceClasses.
+ * merging EquivalenceClasses.  (We don't try to enforce that here; instead,
+ * equivclass.c will complain if a merge occurs after root->canon_pathkeys
+ * has become nonempty.)
  */
-PathKey *
+static PathKey *
 make_canonical_pathkey(PlannerInfo *root,
 					   EquivalenceClass *eclass, Oid opfamily,
 					   int strategy, bool nulls_first)
@@ -58,10 +58,6 @@ make_canonical_pathkey(PlannerInfo *root,
 	PathKey    *pk;
 	ListCell   *lc;
 	MemoryContext oldcontext;
-
-	/* Can't make canonical pathkeys if the set of ECs might still change */
-	if (!root->ec_merging_done)
-		elog(ERROR, "too soon to build canonical pathkeys");
 
 	/* The passed eclass might be non-canonical, so chase up to the top */
 	while (eclass->ec_merged)
@@ -169,8 +165,8 @@ pathkey_is_redundant(PathKey *new_pathkey, List *pathkeys)
  * considered.  Otherwise child members are ignored.  (See the comments for
  * get_eclass_for_sort_expr.)
  *
- * create_it is true if we should create any missing EquivalenceClass
- * needed to represent the sort key.  If it's false, we return NULL if the
+ * create_it is TRUE if we should create any missing EquivalenceClass
+ * needed to represent the sort key.  If it's FALSE, we return NULL if the
  * sort key isn't already present in any EquivalenceClass.
  */
 static PathKey *
@@ -203,9 +199,9 @@ make_pathkey_from_sortinfo(PlannerInfo *root,
 									  opcintype,
 									  opcintype,
 									  BTEqualStrategyNumber);
-	if (!OidIsValid(equality_op))	/* shouldn't happen */
-		elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
-			 BTEqualStrategyNumber, opcintype, opcintype, opfamily);
+	if (!OidIsValid(equality_op))		/* shouldn't happen */
+		elog(ERROR, "could not find equality operator for opfamily %u",
+			 opfamily);
 	opfamilies = get_mergejoin_opfamilies(equality_op);
 	if (!opfamilies)			/* certainly should find some */
 		elog(ERROR, "could not find opfamilies for equality operator %u",
@@ -335,60 +331,6 @@ pathkeys_contained_in(List *keys1, List *keys2)
 }
 
 /*
- * pathkeys_count_contained_in
- *    Same as pathkeys_contained_in, but also sets length of longest
- *    common prefix of keys1 and keys2.
- */
-bool
-pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common)
-{
-	int			n = 0;
-	ListCell   *key1,
-			   *key2;
-
-	/*
-	 * See if we can avoiding looping through both lists. This optimization
-	 * gains us several percent in planning time in a worst-case test.
-	 */
-	if (keys1 == keys2)
-	{
-		*n_common = list_length(keys1);
-		return true;
-	}
-	else if (keys1 == NIL)
-	{
-		*n_common = 0;
-		return true;
-	}
-	else if (keys2 == NIL)
-	{
-		*n_common = 0;
-		return false;
-	}
-
-	/*
-	 * If both lists are non-empty, iterate through both to find out how many
-	 * items are shared.
-	 */
-	forboth(key1, keys1, key2, keys2)
-	{
-		PathKey    *pathkey1 = (PathKey *) lfirst(key1);
-		PathKey    *pathkey2 = (PathKey *) lfirst(key2);
-
-		if (pathkey1 != pathkey2)
-		{
-			*n_common = n;
-			return false;
-		}
-		n++;
-	}
-
-	/* If we ended with a null value, then we've processed the whole list. */
-	*n_common = n;
-	return (key1 == NULL);
-}
-
-/*
  * get_cheapest_path_for_pathkeys
  *	  Find the cheapest path (according to the specified criterion) that
  *	  satisfies the given pathkeys and parameterization.
@@ -398,13 +340,11 @@ pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common)
  * 'pathkeys' represents a required ordering (in canonical form!)
  * 'required_outer' denotes allowable outer relations for parameterized paths
  * 'cost_criterion' is STARTUP_COST or TOTAL_COST
- * 'require_parallel_safe' causes us to consider only parallel-safe paths
  */
 Path *
 get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 							   Relids required_outer,
-							   CostSelector cost_criterion,
-							   bool require_parallel_safe)
+							   CostSelector cost_criterion)
 {
 	Path	   *matched_path = NULL;
 	ListCell   *l;
@@ -419,9 +359,6 @@ get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 		 */
 		if (matched_path != NULL &&
 			compare_path_costs(matched_path, path, cost_criterion) <= 0)
-			continue;
-
-		if (require_parallel_safe && !path->parallel_safe)
 			continue;
 
 		if (pathkeys_contained_in(pathkeys, path->pathkeys) &&
@@ -473,28 +410,6 @@ get_cheapest_fractional_path_for_pathkeys(List *paths,
 	return matched_path;
 }
 
-
-/*
- * get_cheapest_parallel_safe_total_inner
- *	  Find the unparameterized parallel-safe path with the least total cost.
- */
-Path *
-get_cheapest_parallel_safe_total_inner(List *paths)
-{
-	ListCell   *l;
-
-	foreach(l, paths)
-	{
-		Path	   *innerpath = (Path *) lfirst(l);
-
-		if (innerpath->parallel_safe &&
-			bms_is_empty(PATH_REQ_OUTER(innerpath)))
-			return innerpath;
-	}
-
-	return NULL;
-}
-
 /****************************************************************************
  *		NEW PATHKEY FORMATION
  ****************************************************************************/
@@ -508,10 +423,8 @@ get_cheapest_parallel_safe_total_inner(List *paths)
  * If 'scandir' is BackwardScanDirection, build pathkeys representing a
  * backwards scan of the index.
  *
- * We iterate only key columns of covering indexes, since non-key columns
- * don't influence index ordering.  The result is canonical, meaning that
- * redundant pathkeys are removed; it may therefore have fewer entries than
- * there are key columns in the index.
+ * The result is canonical, meaning that redundant pathkeys are removed;
+ * it may therefore have fewer entries than there are index columns.
  *
  * Another reason for stopping early is that we may be able to tell that
  * an index column's sort order is uninteresting for this query.  However,
@@ -539,13 +452,6 @@ build_index_pathkeys(PlannerInfo *root,
 		bool		reverse_sort;
 		bool		nulls_first;
 		PathKey    *cpathkey;
-
-		/*
-		 * INCLUDE columns are stored in index unordered, so they don't
-		 * support ordered index scan.
-		 */
-		if (i >= index->nkeycolumns)
-			break;
 
 		/* We assume we don't need to make a copy of the tlist item */
 		indexkey = indextle->expr;
@@ -577,193 +483,21 @@ build_index_pathkeys(PlannerInfo *root,
 											  index->rel->relids,
 											  false);
 
-		if (cpathkey)
-		{
-			/*
-			 * We found the sort key in an EquivalenceClass, so it's relevant
-			 * for this query.  Add it to list, unless it's redundant.
-			 */
-			if (!pathkey_is_redundant(cpathkey, retval))
-				retval = lappend(retval, cpathkey);
-		}
-		else
-		{
-			/*
-			 * Boolean index keys might be redundant even if they do not
-			 * appear in an EquivalenceClass, because of our special treatment
-			 * of boolean equality conditions --- see the comment for
-			 * indexcol_is_bool_constant_for_query().  If that applies, we can
-			 * continue to examine lower-order index columns.  Otherwise, the
-			 * sort key is not an interesting sort order for this query, so we
-			 * should stop considering index columns; any lower-order sort
-			 * keys won't be useful either.
-			 */
-			if (!indexcol_is_bool_constant_for_query(root, index, i))
-				break;
-		}
+		/*
+		 * If the sort key isn't already present in any EquivalenceClass, then
+		 * it's not an interesting sort order for this query.  So we can stop
+		 * now --- lower-order sort keys aren't useful either.
+		 */
+		if (!cpathkey)
+			break;
+
+		/* Add to list unless redundant */
+		if (!pathkey_is_redundant(cpathkey, retval))
+			retval = lappend(retval, cpathkey);
 
 		i++;
 	}
 
-	return retval;
-}
-
-/*
- * partkey_is_bool_constant_for_query
- *
- * If a partition key column is constrained to have a constant value by the
- * query's WHERE conditions, then it's irrelevant for sort-order
- * considerations.  Usually that means we have a restriction clause
- * WHERE partkeycol = constant, which gets turned into an EquivalenceClass
- * containing a constant, which is recognized as redundant by
- * build_partition_pathkeys().  But if the partition key column is a
- * boolean variable (or expression), then we are not going to see such a
- * WHERE clause, because expression preprocessing will have simplified it
- * to "WHERE partkeycol" or "WHERE NOT partkeycol".  So we are not going
- * to have a matching EquivalenceClass (unless the query also contains
- * "ORDER BY partkeycol").  To allow such cases to work the same as they would
- * for non-boolean values, this function is provided to detect whether the
- * specified partition key column matches a boolean restriction clause.
- */
-static bool
-partkey_is_bool_constant_for_query(RelOptInfo *partrel, int partkeycol)
-{
-	PartitionScheme partscheme = partrel->part_scheme;
-	ListCell   *lc;
-
-	/* If the partkey isn't boolean, we can't possibly get a match */
-	if (!IsBooleanOpfamily(partscheme->partopfamily[partkeycol]))
-		return false;
-
-	/* Check each restriction clause for the partitioned rel */
-	foreach(lc, partrel->baserestrictinfo)
-	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-
-		/* Ignore pseudoconstant quals, they won't match */
-		if (rinfo->pseudoconstant)
-			continue;
-
-		/* See if we can match the clause's expression to the partkey column */
-		if (matches_boolean_partition_clause(rinfo, partrel, partkeycol))
-			return true;
-	}
-
-	return false;
-}
-
-/*
- * matches_boolean_partition_clause
- *		Determine if the boolean clause described by rinfo matches
- *		partrel's partkeycol-th partition key column.
- *
- * "Matches" can be either an exact match (equivalent to partkey = true),
- * or a NOT above an exact match (equivalent to partkey = false).
- */
-static bool
-matches_boolean_partition_clause(RestrictInfo *rinfo,
-								 RelOptInfo *partrel, int partkeycol)
-{
-	Node	   *clause = (Node *) rinfo->clause;
-	Node	   *partexpr = (Node *) linitial(partrel->partexprs[partkeycol]);
-
-	/* Direct match? */
-	if (equal(partexpr, clause))
-		return true;
-	/* NOT clause? */
-	else if (is_notclause(clause))
-	{
-		Node	   *arg = (Node *) get_notclausearg((Expr *) clause);
-
-		if (equal(partexpr, arg))
-			return true;
-	}
-
-	return false;
-}
-
-/*
- * build_partition_pathkeys
- *	  Build a pathkeys list that describes the ordering induced by the
- *	  partitions of partrel, under either forward or backward scan
- *	  as per scandir.
- *
- * Caller must have checked that the partitions are properly ordered,
- * as detected by partitions_are_ordered().
- *
- * Sets *partialkeys to true if pathkeys were only built for a prefix of the
- * partition key, or false if the pathkeys include all columns of the
- * partition key.
- */
-List *
-build_partition_pathkeys(PlannerInfo *root, RelOptInfo *partrel,
-						 ScanDirection scandir, bool *partialkeys)
-{
-	List	   *retval = NIL;
-	PartitionScheme partscheme = partrel->part_scheme;
-	int			i;
-
-	Assert(partscheme != NULL);
-	Assert(partitions_are_ordered(partrel->boundinfo, partrel->nparts));
-	/* For now, we can only cope with baserels */
-	Assert(IS_SIMPLE_REL(partrel));
-
-	for (i = 0; i < partscheme->partnatts; i++)
-	{
-		PathKey    *cpathkey;
-		Expr	   *keyCol = (Expr *) linitial(partrel->partexprs[i]);
-
-		/*
-		 * Try to make a canonical pathkey for this partkey.
-		 *
-		 * We're considering a baserel scan, so nullable_relids should be
-		 * NULL.  Also, we assume the PartitionDesc lists any NULL partition
-		 * last, so we treat the scan like a NULLS LAST index: we have
-		 * nulls_first for backwards scan only.
-		 */
-		cpathkey = make_pathkey_from_sortinfo(root,
-											  keyCol,
-											  NULL,
-											  partscheme->partopfamily[i],
-											  partscheme->partopcintype[i],
-											  partscheme->partcollation[i],
-											  ScanDirectionIsBackward(scandir),
-											  ScanDirectionIsBackward(scandir),
-											  0,
-											  partrel->relids,
-											  false);
-
-
-		if (cpathkey)
-		{
-			/*
-			 * We found the sort key in an EquivalenceClass, so it's relevant
-			 * for this query.  Add it to list, unless it's redundant.
-			 */
-			if (!pathkey_is_redundant(cpathkey, retval))
-				retval = lappend(retval, cpathkey);
-		}
-		else
-		{
-			/*
-			 * Boolean partition keys might be redundant even if they do not
-			 * appear in an EquivalenceClass, because of our special treatment
-			 * of boolean equality conditions --- see the comment for
-			 * partkey_is_bool_constant_for_query().  If that applies, we can
-			 * continue to examine lower-order partition keys.  Otherwise, the
-			 * sort key is not an interesting sort order for this query, so we
-			 * should stop considering partition columns; any lower-order sort
-			 * keys won't be useful either.
-			 */
-			if (!partkey_is_bool_constant_for_query(partrel, i))
-			{
-				*partialkeys = true;
-				return retval;
-			}
-		}
-	}
-
-	*partialkeys = false;
 	return retval;
 }
 
@@ -804,8 +538,8 @@ build_expression_pathkey(PlannerInfo *root,
 										  opfamily,
 										  opcintype,
 										  exprCollation((Node *) expr),
-										  (strategy == BTGreaterStrategyNumber),
-										  (strategy == BTGreaterStrategyNumber),
+									   (strategy == BTGreaterStrategyNumber),
+									   (strategy == BTGreaterStrategyNumber),
 										  0,
 										  rel,
 										  create_it);
@@ -826,22 +560,19 @@ build_expression_pathkey(PlannerInfo *root,
  *
  * 'rel': outer query's RelOptInfo for the subquery relation.
  * 'subquery_pathkeys': the subquery's output pathkeys, in its terms.
- * 'subquery_tlist': the subquery's output targetlist, in its terms.
  *
- * We intentionally don't do truncate_useless_pathkeys() here, because there
- * are situations where seeing the raw ordering of the subquery is helpful.
- * For example, if it returns ORDER BY x DESC, that may prompt us to
- * construct a mergejoin using DESC order rather than ASC order; but the
- * right_merge_direction heuristic would have us throw the knowledge away.
+ * It is not necessary for caller to do truncate_useless_pathkeys(),
+ * because we select keys in a way that takes usefulness of the keys into
+ * account.
  */
 List *
 convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
-						  List *subquery_pathkeys,
-						  List *subquery_tlist)
+						  List *subquery_pathkeys)
 {
 	List	   *retval = NIL;
 	int			retvallen = 0;
 	int			outer_query_keys = list_length(root->query_pathkeys);
+	List	   *sub_tlist = rel->subplan->targetlist;
 	ListCell   *i;
 
 	foreach(i, subquery_pathkeys)
@@ -858,22 +589,22 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 			 * that same targetlist entry.
 			 */
 			TargetEntry *tle;
-			Var		   *outer_var;
 
 			if (sub_eclass->ec_sortref == 0)	/* can't happen */
 				elog(ERROR, "volatile EquivalenceClass has no sortref");
-			tle = get_sortgroupref_tle(sub_eclass->ec_sortref, subquery_tlist);
+			tle = get_sortgroupref_tle(sub_eclass->ec_sortref, sub_tlist);
 			Assert(tle);
-			/* Is TLE actually available to the outer query? */
-			outer_var = find_var_for_subquery_tle(rel, tle);
-			if (outer_var)
+			/* resjunk items aren't visible to outer query */
+			if (!tle->resjunk)
 			{
 				/* We can represent this sub_pathkey */
 				EquivalenceMember *sub_member;
+				Expr	   *outer_expr;
 				EquivalenceClass *outer_ec;
 
 				Assert(list_length(sub_eclass->ec_members) == 1);
 				sub_member = (EquivalenceMember *) linitial(sub_eclass->ec_members);
+				outer_expr = (Expr *) makeVarFromTargetEntry(rel->relid, tle);
 
 				/*
 				 * Note: it might look funny to be setting sortref = 0 for a
@@ -887,7 +618,7 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 				 */
 				outer_ec =
 					get_eclass_for_sort_expr(root,
-											 (Expr *) outer_var,
+											 outer_expr,
 											 NULL,
 											 sub_eclass->ec_opfamilies,
 											 sub_member->em_datatype,
@@ -941,18 +672,17 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 				if (sub_member->em_is_child)
 					continue;	/* ignore children here */
 
-				foreach(k, subquery_tlist)
+				foreach(k, sub_tlist)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(k);
-					Var		   *outer_var;
 					Expr	   *tle_expr;
+					Expr	   *outer_expr;
 					EquivalenceClass *outer_ec;
 					PathKey    *outer_pk;
 					int			score;
 
-					/* Is TLE actually available to the outer query? */
-					outer_var = find_var_for_subquery_tle(rel, tle);
-					if (!outer_var)
+					/* resjunk items aren't visible to outer query */
+					if (tle->resjunk)
 						continue;
 
 					/*
@@ -967,11 +697,18 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 					if (!equal(tle_expr, sub_expr))
 						continue;
 
-					/* See if we have a matching EC for the TLE */
+					/*
+					 * Build a representation of this targetlist entry as an
+					 * outer Var.
+					 */
+					outer_expr = (Expr *) makeVarFromTargetEntry(rel->relid,
+																 tle);
+
+					/* See if we have a matching EC for that */
 					outer_ec = get_eclass_for_sort_expr(root,
-														(Expr *) outer_var,
+														outer_expr,
 														NULL,
-														sub_eclass->ec_opfamilies,
+												   sub_eclass->ec_opfamilies,
 														sub_expr_type,
 														sub_expr_coll,
 														0,
@@ -987,9 +724,9 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 
 					outer_pk = make_canonical_pathkey(root,
 													  outer_ec,
-													  sub_pathkey->pk_opfamily,
-													  sub_pathkey->pk_strategy,
-													  sub_pathkey->pk_nulls_first);
+													sub_pathkey->pk_opfamily,
+													sub_pathkey->pk_strategy,
+												sub_pathkey->pk_nulls_first);
 					/* score = # of equivalence peers */
 					score = list_length(outer_ec->ec_members) - 1;
 					/* +1 if it matches the proper query_pathkeys item */
@@ -1024,41 +761,6 @@ convert_subquery_pathkeys(PlannerInfo *root, RelOptInfo *rel,
 	}
 
 	return retval;
-}
-
-/*
- * find_var_for_subquery_tle
- *
- * If the given subquery tlist entry is due to be emitted by the subquery's
- * scan node, return a Var for it, else return NULL.
- *
- * We need this to ensure that we don't return pathkeys describing values
- * that are unavailable above the level of the subquery scan.
- */
-static Var *
-find_var_for_subquery_tle(RelOptInfo *rel, TargetEntry *tle)
-{
-	ListCell   *lc;
-
-	/* If the TLE is resjunk, it's certainly not visible to the outer query */
-	if (tle->resjunk)
-		return NULL;
-
-	/* Search the rel's targetlist to see what it will return */
-	foreach(lc, rel->reltarget->exprs)
-	{
-		Var		   *var = (Var *) lfirst(lc);
-
-		/* Ignore placeholders */
-		if (!IsA(var, Var))
-			continue;
-		Assert(var->varno == rel->relid);
-
-		/* If we find a Var referencing this TLE, we're good */
-		if (var->varattno == tle->resno)
-			return copyObject(var); /* Make a copy for safety */
-	}
-	return NULL;
 }
 
 /*
@@ -1241,14 +943,16 @@ update_mergeclause_eclasses(PlannerInfo *root, RestrictInfo *restrictinfo)
 }
 
 /*
- * find_mergeclauses_for_outer_pathkeys
- *	  This routine attempts to find a list of mergeclauses that can be
- *	  used with a specified ordering for the join's outer relation.
+ * find_mergeclauses_for_pathkeys
+ *	  This routine attempts to find a set of mergeclauses that can be
+ *	  used with a specified ordering for one of the input relations.
  *	  If successful, it returns a list of mergeclauses.
  *
- * 'pathkeys' is a pathkeys list showing the ordering of an outer-rel path.
+ * 'pathkeys' is a pathkeys list showing the ordering of an input path.
+ * 'outer_keys' is TRUE if these keys are for the outer input path,
+ *			FALSE if for inner.
  * 'restrictinfos' is a list of mergejoinable restriction clauses for the
- *			join relation being formed, in no particular order.
+ *			join relation being formed.
  *
  * The restrictinfos must be marked (via outer_is_left) to show which side
  * of each clause is associated with the current outer path.  (See
@@ -1256,12 +960,12 @@ update_mergeclause_eclasses(PlannerInfo *root, RestrictInfo *restrictinfo)
  *
  * The result is NIL if no merge can be done, else a maximal list of
  * usable mergeclauses (represented as a list of their restrictinfo nodes).
- * The list is ordered to match the pathkeys, as required for execution.
  */
 List *
-find_mergeclauses_for_outer_pathkeys(PlannerInfo *root,
-									 List *pathkeys,
-									 List *restrictinfos)
+find_mergeclauses_for_pathkeys(PlannerInfo *root,
+							   List *pathkeys,
+							   bool outer_keys,
+							   List *restrictinfos)
 {
 	List	   *mergeclauses = NIL;
 	ListCell   *i;
@@ -1302,20 +1006,19 @@ find_mergeclauses_for_outer_pathkeys(PlannerInfo *root,
 		 *
 		 * It's possible that multiple matching clauses might have different
 		 * ECs on the other side, in which case the order we put them into our
-		 * result makes a difference in the pathkeys required for the inner
-		 * input rel.  However this routine hasn't got any info about which
+		 * result makes a difference in the pathkeys required for the other
+		 * input path.  However this routine hasn't got any info about which
 		 * order would be best, so we don't worry about that.
 		 *
 		 * It's also possible that the selected mergejoin clauses produce
-		 * a noncanonical ordering of pathkeys for the inner side, ie, we
+		 * a noncanonical ordering of pathkeys for the other side, ie, we
 		 * might select clauses that reference b.v1, b.v2, b.v1 in that
 		 * order.  This is not harmful in itself, though it suggests that
-		 * the clauses are partially redundant.  Since the alternative is
-		 * to omit mergejoin clauses and thereby possibly fail to generate a
-		 * plan altogether, we live with it.  make_inner_pathkeys_for_merge()
-		 * has to delete duplicates when it constructs the inner pathkeys
-		 * list, and we also have to deal with such cases specially in
-		 * create_mergejoin_plan().
+		 * the clauses are partially redundant.  Since it happens only with
+		 * redundant query conditions, we don't bother to eliminate it.
+		 * make_inner_pathkeys_for_merge() has to delete duplicates when
+		 * it constructs the canonical pathkeys list, and we also have to
+		 * deal with the case in create_mergejoin_plan().
 		 *----------
 		 */
 		foreach(j, restrictinfos)
@@ -1323,8 +1026,12 @@ find_mergeclauses_for_outer_pathkeys(PlannerInfo *root,
 			RestrictInfo *rinfo = (RestrictInfo *) lfirst(j);
 			EquivalenceClass *clause_ec;
 
-			clause_ec = rinfo->outer_is_left ?
-				rinfo->left_ec : rinfo->right_ec;
+			if (outer_keys)
+				clause_ec = rinfo->outer_is_left ?
+					rinfo->left_ec : rinfo->right_ec;
+			else
+				clause_ec = rinfo->outer_is_left ?
+					rinfo->right_ec : rinfo->left_ec;
 			if (clause_ec == pathkey_ec)
 				matched_restrictinfos = lappend(matched_restrictinfos, rinfo);
 		}
@@ -1528,8 +1235,8 @@ select_outer_pathkeys_for_merge(PlannerInfo *root,
  *	  must be applied to an inner path to make it usable with the
  *	  given mergeclauses.
  *
- * 'mergeclauses' is a list of RestrictInfos for the mergejoin clauses
- *			that will be used in a merge join, in order.
+ * 'mergeclauses' is a list of RestrictInfos for mergejoin clauses
+ *			that will be used in a merge join.
  * 'outer_pathkeys' are the already-known canonical pathkeys for the outer
  *			side of the join.
  *
@@ -1585,7 +1292,7 @@ make_inner_pathkeys_for_merge(PlannerInfo *root,
 			if (!lop)
 				elog(ERROR, "too few pathkeys for mergeclauses");
 			opathkey = (PathKey *) lfirst(lop);
-			lop = lnext(outer_pathkeys, lop);
+			lop = lnext(lop);
 			lastoeclass = opathkey->pk_eclass;
 			if (oeclass != lastoeclass)
 				elog(ERROR, "outer pathkeys do not match mergeclause");
@@ -1606,13 +1313,8 @@ make_inner_pathkeys_for_merge(PlannerInfo *root,
 											 opathkey->pk_nulls_first);
 
 		/*
-		 * Don't generate redundant pathkeys (which can happen if multiple
-		 * mergeclauses refer to the same EC).  Because we do this, the output
-		 * pathkey list isn't necessarily ordered like the mergeclauses, which
-		 * complicates life for create_mergejoin_plan().  But if we didn't,
-		 * we'd have a noncanonical sort key list, which would be bad; for one
-		 * reason, it certainly wouldn't match any available sort order for
-		 * the input relation.
+		 * Don't generate redundant pathkeys (can happen if multiple
+		 * mergeclauses refer to same EC).
 		 */
 		if (!pathkey_is_redundant(pathkey, pathkeys))
 			pathkeys = lappend(pathkeys, pathkey);
@@ -1620,98 +1322,6 @@ make_inner_pathkeys_for_merge(PlannerInfo *root,
 
 	return pathkeys;
 }
-
-/*
- * trim_mergeclauses_for_inner_pathkeys
- *	  This routine trims a list of mergeclauses to include just those that
- *	  work with a specified ordering for the join's inner relation.
- *
- * 'mergeclauses' is a list of RestrictInfos for mergejoin clauses for the
- *			join relation being formed, in an order known to work for the
- *			currently-considered sort ordering of the join's outer rel.
- * 'pathkeys' is a pathkeys list showing the ordering of an inner-rel path;
- *			it should be equal to, or a truncation of, the result of
- *			make_inner_pathkeys_for_merge for these mergeclauses.
- *
- * What we return will be a prefix of the given mergeclauses list.
- *
- * We need this logic because make_inner_pathkeys_for_merge's result isn't
- * necessarily in the same order as the mergeclauses.  That means that if we
- * consider an inner-rel pathkey list that is a truncation of that result,
- * we might need to drop mergeclauses even though they match a surviving inner
- * pathkey.  This happens when they are to the right of a mergeclause that
- * matches a removed inner pathkey.
- *
- * The mergeclauses must be marked (via outer_is_left) to show which side
- * of each clause is associated with the current outer path.  (See
- * select_mergejoin_clauses())
- */
-List *
-trim_mergeclauses_for_inner_pathkeys(PlannerInfo *root,
-									 List *mergeclauses,
-									 List *pathkeys)
-{
-	List	   *new_mergeclauses = NIL;
-	PathKey    *pathkey;
-	EquivalenceClass *pathkey_ec;
-	bool		matched_pathkey;
-	ListCell   *lip;
-	ListCell   *i;
-
-	/* No pathkeys => no mergeclauses (though we don't expect this case) */
-	if (pathkeys == NIL)
-		return NIL;
-	/* Initialize to consider first pathkey */
-	lip = list_head(pathkeys);
-	pathkey = (PathKey *) lfirst(lip);
-	pathkey_ec = pathkey->pk_eclass;
-	lip = lnext(pathkeys, lip);
-	matched_pathkey = false;
-
-	/* Scan mergeclauses to see how many we can use */
-	foreach(i, mergeclauses)
-	{
-		RestrictInfo *rinfo = (RestrictInfo *) lfirst(i);
-		EquivalenceClass *clause_ec;
-
-		/* Assume we needn't do update_mergeclause_eclasses again here */
-
-		/* Check clause's inner-rel EC against current pathkey */
-		clause_ec = rinfo->outer_is_left ?
-			rinfo->right_ec : rinfo->left_ec;
-
-		/* If we don't have a match, attempt to advance to next pathkey */
-		if (clause_ec != pathkey_ec)
-		{
-			/* If we had no clauses matching this inner pathkey, must stop */
-			if (!matched_pathkey)
-				break;
-
-			/* Advance to next inner pathkey, if any */
-			if (lip == NULL)
-				break;
-			pathkey = (PathKey *) lfirst(lip);
-			pathkey_ec = pathkey->pk_eclass;
-			lip = lnext(pathkeys, lip);
-			matched_pathkey = false;
-		}
-
-		/* If mergeclause matches current inner pathkey, we can use it */
-		if (clause_ec == pathkey_ec)
-		{
-			new_mergeclauses = lappend(new_mergeclauses, rinfo);
-			matched_pathkey = true;
-		}
-		else
-		{
-			/* Else, no hope of adding any more mergeclauses */
-			break;
-		}
-	}
-
-	return new_mergeclauses;
-}
-
 
 /****************************************************************************
  *		PATHKEY USEFULNESS CHECKS
@@ -1840,26 +1450,26 @@ right_merge_direction(PlannerInfo *root, PathKey *pathkey)
  *		Count the number of pathkeys that are useful for meeting the
  *		query's requested output ordering.
  *
- * Because we the have the possibility of incremental sort, a prefix list of
- * keys is potentially useful for improving the performance of the requested
- * ordering. Thus we return 0, if no valuable keys are found, or the number
- * of leading keys shared by the list and the requested ordering..
+ * Unlike merge pathkeys, this is an all-or-nothing affair: it does us
+ * no good to order by just the first key(s) of the requested ordering.
+ * So the result is always either 0 or list_length(root->query_pathkeys).
  */
 static int
 pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys)
 {
-	int			n_common_pathkeys;
-
 	if (root->query_pathkeys == NIL)
 		return 0;				/* no special ordering requested */
 
 	if (pathkeys == NIL)
 		return 0;				/* unordered path */
 
-	(void) pathkeys_count_contained_in(root->query_pathkeys, pathkeys,
-									   &n_common_pathkeys);
+	if (pathkeys_contained_in(root->query_pathkeys, pathkeys))
+	{
+		/* It's useful ... or at least the first N keys are */
+		return list_length(root->query_pathkeys);
+	}
 
-	return n_common_pathkeys;
+	return 0;					/* path ordering not useful */
 }
 
 /*

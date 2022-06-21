@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2014, PostgreSQL Global Development Group
  *
  * src/bin/psql/input.c
  */
@@ -13,11 +13,10 @@
 #include <fcntl.h>
 #include <limits.h>
 
-#include "common.h"
-#include "common/logging.h"
 #include "input.h"
 #include "settings.h"
 #include "tab-complete.h"
+#include "common.h"
 
 #ifndef WIN32
 #define PSQLHISTORY ".psql_history"
@@ -54,17 +53,12 @@ static void finishInput(void);
  * gets_interactive()
  *
  * Gets a line of interactive input, using readline if desired.
- *
- * prompt: the prompt string to be used
- * query_buf: buffer containing lines already read in the current command
- * (query_buf is not modified here, but may be consulted for tab completion)
- *
  * The result is a malloc'd string.
  *
  * Caller *must* have set up sigint_interrupt_jmp before calling.
  */
 char *
-gets_interactive(const char *prompt, PQExpBuffer query_buf)
+gets_interactive(const char *prompt)
 {
 #ifdef USE_READLINE
 	if (useReadline)
@@ -82,9 +76,6 @@ gets_interactive(const char *prompt, PQExpBuffer query_buf)
 		rl_reset_screen_size();
 #endif
 
-		/* Make current query_buf available to tab completion callback */
-		tab_completion_query_buf = query_buf;
-
 		/* Enable SIGINT to longjmp to sigint_interrupt_jmp */
 		sigint_interrupt_enabled = true;
 
@@ -93,9 +84,6 @@ gets_interactive(const char *prompt, PQExpBuffer query_buf)
 
 		/* Disable SIGINT again */
 		sigint_interrupt_enabled = false;
-
-		/* Pure neatnik-ism */
-		tab_completion_query_buf = NULL;
 
 		return result;
 	}
@@ -214,7 +202,8 @@ gets_fromFile(FILE *source)
 		{
 			if (ferror(source))
 			{
-				pg_log_error("could not read from input file: %m");
+				psql_error("could not read from input file: %s\n",
+						   strerror(errno));
 				return NULL;
 			}
 			break;
@@ -224,7 +213,7 @@ gets_fromFile(FILE *source)
 
 		if (PQExpBufferBroken(buffer))
 		{
-			pg_log_error("out of memory");
+			psql_error("out of memory\n");
 			return NULL;
 		}
 
@@ -333,7 +322,7 @@ decode_history(void)
 	}
 	END_ITERATE_HISTORY();
 }
-#endif							/* USE_READLINE */
+#endif   /* USE_READLINE */
 
 
 /*
@@ -411,7 +400,7 @@ saveHistory(char *fname, int max_lines)
 
 	/*
 	 * Suppressing the write attempt when HISTFILE is set to /dev/null may
-	 * look like a negligible optimization, but it's necessary on e.g. macOS,
+	 * look like a negligible optimization, but it's necessary on e.g. Darwin,
 	 * where write_history will fail because it tries to chmod the target
 	 * file.
 	 */
@@ -468,7 +457,8 @@ saveHistory(char *fname, int max_lines)
 		}
 #endif
 
-		pg_log_error("could not save history to file \"%s\": %m", fname);
+		psql_error("could not save history to file \"%s\": %s\n",
+				   fname, strerror(errnum));
 	}
 	return false;
 }
@@ -498,7 +488,7 @@ printHistory(const char *fname, unsigned short int pager)
 	if (fname == NULL)
 	{
 		/* use pager, if enabled, when printing to console */
-		output = PageOutput(INT_MAX, pager ? &(pset.popt.topt) : NULL);
+		output = PageOutput(INT_MAX, pager);
 		is_pager = true;
 	}
 	else
@@ -506,7 +496,8 @@ printHistory(const char *fname, unsigned short int pager)
 		output = fopen(fname, "w");
 		if (output == NULL)
 		{
-			pg_log_error("could not save history to file \"%s\": %m", fname);
+			psql_error("could not save history to file \"%s\": %s\n",
+					   fname, strerror(errno));
 			return false;
 		}
 		is_pager = false;
@@ -525,7 +516,7 @@ printHistory(const char *fname, unsigned short int pager)
 
 	return true;
 #else
-	pg_log_error("history is not supported by this installation");
+	psql_error("history is not supported by this installation\n");
 	return false;
 #endif
 }
@@ -537,7 +528,10 @@ finishInput(void)
 #ifdef USE_READLINE
 	if (useHistory && psql_history)
 	{
-		(void) saveHistory(psql_history, pset.histsize);
+		int			hist_size;
+
+		hist_size = GetVariableNum(pset.vars, "HISTSIZE", 500, -1, true);
+		(void) saveHistory(psql_history, hist_size);
 		free(psql_history);
 		psql_history = NULL;
 	}

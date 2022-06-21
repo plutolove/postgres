@@ -1,4 +1,3 @@
-#include <stdint.h>
 #include <stdlib.h>
 #include "ecpg_config.h"
 
@@ -14,7 +13,6 @@ main(void)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <process.h>
-#include <locale.h>
 #else
 #include <pthread.h>
 #endif
@@ -43,7 +41,7 @@ static void* fn(void* arg)
 	char query[256] = "INSERT INTO T VALUES ( ? )";
 	EXEC SQL END DECLARE SECTION;
 
-	value = (intptr_t) arg;
+	value = (long)arg;
 	sprintf(name, "Connection: %d", value);
 
 	EXEC SQL CONNECT TO REGRESSDB1 AS :name;
@@ -61,7 +59,7 @@ static void* fn(void* arg)
 
 int main ()
 {
-	intptr_t i;
+	int i;
 #ifdef WIN32
 	HANDLE threads[THREADS];
 #else
@@ -86,7 +84,7 @@ int main ()
 		CloseHandle(threads[i]);
 #else
 	for (i = 0; i < THREADS; ++i)
-		pthread_create(&threads[i], NULL, fn, (void *) i);
+		pthread_create(&threads[i], NULL, fn, (void *) (long) i);
 	for (i = 0; i < THREADS; ++i)
 		pthread_join(threads[i], NULL);
 #endif

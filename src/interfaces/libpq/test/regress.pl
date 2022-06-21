@@ -1,7 +1,6 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -w
 
 use strict;
-use warnings;
 
 # use of SRCDIR/SUBDIR is required for supporting VPath builds
 my $srcdir = $ENV{'SRCDIR'} or die 'SRCDIR environment variable is not set';
@@ -15,19 +14,19 @@ my $expected_out = "$srcdir/$subdir/expected.out";
 my $regress_out = "regress.out";
 
 # open input file first, so possible error isn't sent to redirected STDERR
-open(my $regress_in_fh, "<", $regress_in)
+open(REGRESS_IN, "<", $regress_in)
   or die "can't open $regress_in for reading: $!";
 
 # save STDOUT/ERR and redirect both to regress.out
-open(my $oldout_fh, ">&", \*STDOUT) or die "can't dup STDOUT: $!";
-open(my $olderr_fh, ">&", \*STDERR) or die "can't dup STDERR: $!";
+open(OLDOUT, ">&", \*STDOUT) or die "can't dup STDOUT: $!";
+open(OLDERR, ">&", \*STDERR) or die "can't dup STDERR: $!";
 
 open(STDOUT, ">", $regress_out)
   or die "can't open $regress_out for writing: $!";
 open(STDERR, ">&", \*STDOUT) or die "can't dup STDOUT: $!";
 
 # read lines from regress.in and run uri-regress on them
-while (<$regress_in_fh>)
+while (<REGRESS_IN>)
 {
 	chomp;
 	print "trying $_\n";
@@ -36,12 +35,11 @@ while (<$regress_in_fh>)
 }
 
 # restore STDOUT/ERR so we can print the outcome to the user
-open(STDERR, ">&", $olderr_fh)
-  or die;    # can't complain as STDERR is still duped
-open(STDOUT, ">&", $oldout_fh) or die "can't restore STDOUT: $!";
+open(STDERR, ">&", \*OLDERR) or die; # can't complain as STDERR is still duped
+open(STDOUT, ">&", \*OLDOUT) or die "can't restore STDOUT: $!";
 
 # just in case
-close $regress_in_fh;
+close REGRESS_IN;
 
 my $diff_status = system(
 	"diff -c \"$srcdir/$subdir/expected.out\" regress.out >regress.diff");

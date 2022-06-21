@@ -6,7 +6,8 @@ include $(top_srcdir)/$(subdir)/../Makefile.regress
 # Use special informix compatibility switch for all tests in this directory
 ECPG += -C INFORMIX
 
-LDFLAGS_INTERNAL += -L../../compatlib -lecpg_compat
+override LDFLAGS := -L../../compatlib $(LDFLAGS)
+override LIBS := -lecpg_compat $(LIBS)
 
 TESTS = test_informix test_informix.c \
         test_informix2 test_informix2.c \

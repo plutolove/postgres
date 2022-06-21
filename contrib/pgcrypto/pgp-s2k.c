@@ -31,8 +31,8 @@
 
 #include "postgres.h"
 
-#include "pgp.h"
 #include "px.h"
+#include "pgp.h"
 
 static int
 calc_s2k_simple(PGP_S2K *s2k, PX_MD *md, const uint8 *key,
@@ -132,10 +132,12 @@ calc_s2k_iter_salted(PGP_S2K *s2k, PX_MD *md, const uint8 *key,
 	unsigned	preload = 0;
 	unsigned	remain,
 				c,
+				cval,
 				curcnt,
 				count;
 
-	count = s2k_decode_count(s2k->iter);
+	cval = s2k->iter;
+	count = ((unsigned) 16 + (cval & 15)) << ((cval >> 4) + 6);
 
 	md_rlen = px_md_result_size(md);
 
@@ -193,34 +195,21 @@ calc_s2k_iter_salted(PGP_S2K *s2k, PX_MD *md, const uint8 *key,
 }
 
 /*
- * Decide PGP_S2K_ISALTED iteration count (in OpenPGP one-byte representation)
+ * Decide S2K_ISALTED iteration count
  *
  * Too small: weak
  * Too big: slow
  * gpg defaults to 96 => 65536 iters
- *
- * For our default (count=-1) we let it float a bit: 96 + 32 => between 65536
- * and 262144 iterations.
- *
- * Otherwise, find the smallest number which provides at least the specified
- * iteration count.
+ * let it float a bit: 96 + 32 => 262144 iters
  */
-static uint8
-decide_s2k_iter(unsigned rand_byte, int count)
+static int
+decide_count(unsigned rand_byte)
 {
-	int			iter;
-
-	if (count == -1)
-		return 96 + (rand_byte & 0x1F);
-	/* this is a bit brute-force, but should be quick enough */
-	for (iter = 0; iter <= 255; iter++)
-		if (s2k_decode_count(iter) >= count)
-			return iter;
-	return 255;
+	return 96 + (rand_byte & 0x1F);
 }
 
 int
-pgp_s2k_fill(PGP_S2K *s2k, int mode, int digest_algo, int count)
+pgp_s2k_fill(PGP_S2K *s2k, int mode, int digest_algo)
 {
 	int			res = 0;
 	uint8		tmp;
@@ -230,18 +219,19 @@ pgp_s2k_fill(PGP_S2K *s2k, int mode, int digest_algo, int count)
 
 	switch (s2k->mode)
 	{
-		case PGP_S2K_SIMPLE:
+		case 0:
 			break;
-		case PGP_S2K_SALTED:
-			if (!pg_strong_random(s2k->salt, PGP_S2K_SALT))
-				return PXE_NO_RANDOM;
+		case 1:
+			res = px_get_pseudo_random_bytes(s2k->salt, PGP_S2K_SALT);
 			break;
-		case PGP_S2K_ISALTED:
-			if (!pg_strong_random(s2k->salt, PGP_S2K_SALT))
-				return PXE_NO_RANDOM;
-			if (!pg_strong_random(&tmp, 1))
-				return PXE_NO_RANDOM;
-			s2k->iter = decide_s2k_iter(tmp, count);
+		case 3:
+			res = px_get_pseudo_random_bytes(s2k->salt, PGP_S2K_SALT);
+			if (res < 0)
+				break;
+			res = px_get_pseudo_random_bytes(&tmp, 1);
+			if (res < 0)
+				break;
+			s2k->iter = decide_count(tmp);
 			break;
 		default:
 			res = PXE_PGP_BAD_S2K_MODE;
