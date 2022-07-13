@@ -99,19 +99,15 @@
   </para>
 
   <para>
-   A record can have several formats:
+   A record can have one of the seven formats
 <synopsis>
-local         <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>auth-method</replaceable> <optional><replaceable>auth-options</replaceable></optional>
-host          <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>     <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostssl       <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>     <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostnossl     <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>     <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostgssenc    <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>     <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>     <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-host          <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>      <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostssl       <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>      <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostnossl     <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>      <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostgssenc    <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>      <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
-hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>      <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+local      <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+host       <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+hostssl    <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+hostnossl  <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>address</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+host       <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+hostssl    <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
+hostnossl  <replaceable>database</replaceable>  <replaceable>user</replaceable>  <replaceable>IP-address</replaceable>  <replaceable>IP-mask</replaceable>  <replaceable>auth-method</replaceable>  <optional><replaceable>auth-options</replaceable></optional>
 </synopsis>
    The meaning of the fields is as follows:
 
@@ -132,10 +128,9 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
      <listitem>
       <para>
        This record matches connection attempts made using TCP/IP.
-       <literal>host</literal> records match
+       <literal>host</literal> records match either
        <acronym>SSL</acronym> or non-<acronym>SSL</acronym> connection
-       attempts as well as <acronym>GSSAPI</acronym> encrypted or
-       non-<acronym>GSSAPI</acronym> encrypted connection attempts.
+       attempts.
       </para>
      <note>
       <para>
@@ -177,35 +172,6 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
        This record type has the opposite behavior of <literal>hostssl</literal>;
        it only matches connection attempts made over
        TCP/IP that do not use <acronym>SSL</acronym>.
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal>hostgssenc</literal></term>
-     <listitem>
-      <para>
-       This record matches connection attempts made using TCP/IP,
-       but only when the connection is made with <acronym>GSSAPI</acronym>
-       encryption.
-      </para>
-
-      <para>
-       To make use of this option the server must be built with
-       <acronym>GSSAPI</acronym> support.  Otherwise,
-       the <literal>hostgssenc</literal> record is ignored except for logging
-       a warning that it cannot match any connections.
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal>hostnogssenc</literal></term>
-     <listitem>
-      <para>
-       This record type has the opposite behavior of <literal>hostgssenc</literal>;
-       it only matches connection attempts made over
-       TCP/IP that do not use <acronym>GSSAPI</acronym> encryption.
       </para>
      </listitem>
     </varlistentry>
@@ -350,7 +316,8 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
       </para>
 
       <para>
-       These fields do not apply to <literal>local</literal> records.
+       This field only applies to <literal>host</literal>,
+       <literal>hostssl</literal>, and <literal>hostnossl</literal> records.
       </para>
 
       <note>
@@ -402,7 +369,8 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
       </para>
 
       <para>
-       These fields do not apply to <literal>local</literal> records.
+       These fields only apply to <literal>host</literal>,
+       <literal>hostssl</literal>, and <literal>hostnossl</literal> records.
       </para>
      </listitem>
     </varlistentry>
@@ -483,8 +451,7 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
          <para>
           Use GSSAPI to authenticate the user. This is only
           available for TCP/IP connections. See <xref
-          linkend="gssapi-auth"/> for details.  It can be used in conjunction
-          with GSSAPI encryption.
+          linkend="gssapi-auth"/> for details.
          </para>
         </listitem>
        </varlistentry>
@@ -596,17 +563,10 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
       <para>
        In addition to the method-specific options listed below, there is one
        method-independent authentication option <literal>clientcert</literal>, which
-       can be specified in any <literal>hostssl</literal> record.
-       This option can be set to <literal>verify-ca</literal> or
-       <literal>verify-full</literal>. Both options require the client
-       to present a valid (trusted) SSL certificate, while
-       <literal>verify-full</literal> additionally enforces that the
-       <literal>cn</literal> (Common Name) in the certificate matches
-       the username or an applicable mapping.
-       This behavior is similar to the <literal>cert</literal> authentication
-       method (see <xref linkend="auth-cert"/>) but enables pairing
-       the verification of client certificates with any authentication
-       method that supports <literal>hostssl</literal> entries.
+       can be specified in any <literal>hostssl</literal> record.  When set
+       to <literal>1</literal>, this option requires the client to present a valid
+       (trusted) SSL certificate, in addition to the other requirements of the
+       authentication method.
       </para>
      </listitem>
     </varlistentry>
@@ -643,9 +603,8 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
    <systemitem>SIGHUP</systemitem><indexterm><primary>SIGHUP</primary></indexterm>
    signal. If you edit the file on an
    active system, you will need to signal the postmaster
-   (using <literal>pg_ctl reload</literal>, calling the SQL function
-   <function>pg_reload_conf()</function>, or using <literal>kill
-   -HUP</literal>) to make it re-read the file.
+   (using <literal>pg_ctl reload</literal> or <literal>kill -HUP</literal>) to make it
+   re-read the file.
   </para>
 
   <note>
@@ -665,7 +624,7 @@ hostnogssenc  <replaceable>database</replaceable>  <replaceable>user</replaceabl
    non-null <structfield>error</structfield> fields indicate problems in the
    corresponding lines of the file.
   </para>
-
+ 
   <tip>
    <para>
     To connect to a particular database, a user must not only pass the
@@ -737,18 +696,15 @@ host    postgres        all             192.168.12.10/32        scram-sha-256
 host    all             mike            .example.com            md5
 host    all             all             .example.com            scram-sha-256
 
-# In the absence of preceding "host" lines, these three lines will
+# In the absence of preceding "host" lines, these two lines will
 # reject all connections from 192.168.54.1 (since that entry will be
-# matched first), but allow GSSAPI-encrypted connections from anywhere else
-# on the Internet.  The zero mask causes no bits of the host IP address to
-# be considered, so it matches any host.  Unencrypted GSSAPI connections
-# (which "fall through" to the third line since "hostgssenc" only matches
-# encrypted GSSAPI connections) are allowed, but only from 192.168.12.10.
+# matched first), but allow GSSAPI connections from anywhere else
+# on the Internet.  The zero mask causes no bits of the host IP
+# address to be considered, so it matches any host.
 #
 # TYPE  DATABASE        USER            ADDRESS                 METHOD
 host    all             all             192.168.54.1/32         reject
-hostgssenc all          all             0.0.0.0/0               gss
-host    all             all             192.168.12.10/32        gss
+host    all             all             0.0.0.0/0               gss
 
 # Allow users from 192.168.x.x hosts to connect to any database, if
 # they pass the ident check.  If, for example, ident says the user is
@@ -865,9 +821,8 @@ mymap   /^(.*)@otherdomain\.com$   guest
    <systemitem>SIGHUP</systemitem><indexterm><primary>SIGHUP</primary></indexterm>
    signal. If you edit the file on an
    active system, you will need to signal the postmaster
-   (using <literal>pg_ctl reload</literal>, calling the SQL function
-   <function>pg_reload_conf()</function>, or using <literal>kill
-   -HUP</literal>) to make it re-read the file.
+   (using <literal>pg_ctl reload</literal> or <literal>kill -HUP</literal>) to make it
+   re-read the file.
   </para>
 
   <para>
@@ -903,101 +858,8 @@ omicron         bryanh                  guest1
 
  <sect1 id="auth-methods">
   <title>Authentication Methods</title>
-
   <para>
-   <productname>PostgreSQL</productname> provides various methods for
-   authenticating users:
-
-   <itemizedlist>
-    <listitem>
-     <para>
-      <link linkend="auth-trust">Trust authentication</link>, which
-      simply trusts that users are who they say they are.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-password">Password authentication</link>, which
-      requires that users send a password.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="gssapi-auth">GSSAPI authentication</link>, which
-      relies on a GSSAPI-compatible security library.  Typically this is
-      used to access an authentication server such as a Kerberos or
-      Microsoft Active Directory server.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="sspi-auth">SSPI authentication</link>, which
-      uses a Windows-specific protocol similar to GSSAPI.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-ident">Ident authentication</link>, which
-      relies on an <quote>Identification Protocol</quote> (RFC 1413)
-      service on the client's machine.  (On local Unix-socket connections,
-      this is treated as peer authentication.)
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-peer">Peer authentication</link>, which
-      relies on operating system facilities to identify the process at the
-      other end of a local connection.  This is not supported for remote
-      connections.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-ldap">LDAP authentication</link>, which
-      relies on an LDAP authentication server.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-radius">RADIUS authentication</link>, which
-      relies on a RADIUS authentication server.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-cert">Certificate authentication</link>, which
-      requires an SSL connection and authenticates users by checking the
-      SSL certificate they send.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-pam">PAM authentication</link>, which
-      relies on a PAM (Pluggable Authentication Modules) library.
-     </para>
-    </listitem>
-    <listitem>
-     <para>
-      <link linkend="auth-bsd">BSD authentication</link>, which
-      relies on the BSD Authentication framework (currently available
-      only on OpenBSD).
-     </para>
-    </listitem>
-   </itemizedlist>
-  </para>
-
-  <para>
-   Peer authentication is usually recommendable for local connections,
-   though trust authentication might be sufficient in some circumstances.
-   Password authentication is the easiest choice for remote connections.
-   All the other options require some kind of external security
-   infrastructure (usually an authentication server or a certificate
-   authority for issuing SSL certificates), or are platform-specific.
-  </para>
-
-  <para>
-   The following sections describe each of these authentication methods
-   in more detail.
+   The following sections describe the authentication methods in more detail.
   </para>
  </sect1>
 
@@ -1188,17 +1050,14 @@ omicron         bryanh                  guest1
 
    <para>
     <productname>GSSAPI</productname> is an industry-standard protocol
-    for secure authentication defined in
-    <ulink url="https://tools.ietf.org/html/rfc2743">RFC 2743</ulink>.
-    <productname>PostgreSQL</productname>
-    supports <productname>GSSAPI</productname> for authentication,
-    communications encryption, or both.
-    <productname>GSSAPI</productname> provides automatic authentication
-    (single sign-on) for systems that support it. The authentication itself is
-    secure.  If <productname>GSSAPI</productname> encryption
-    or <acronym>SSL</acronym> encryption is
-    used, the data sent along the database connection will be encrypted;
-    otherwise, it will not.
+    for secure authentication defined in RFC 2743.
+    <productname>PostgreSQL</productname> supports
+    <productname>GSSAPI</productname> with <productname>Kerberos</productname>
+    authentication according to RFC 1964. <productname>GSSAPI</productname>
+    provides automatic authentication (single sign-on) for systems
+    that support it. The authentication itself is secure, but the
+    data sent over the database connection will be sent unencrypted unless
+    <acronym>SSL</acronym> is used.
    </para>
 
    <para>
@@ -1208,46 +1067,37 @@ omicron         bryanh                  guest1
 
    <para>
     When <productname>GSSAPI</productname> uses
-    <productname>Kerberos</productname>, it uses a standard service
-    principal (authentication identity) name in the format
+    <productname>Kerberos</productname>, it uses a standard principal
+    in the format
     <literal><replaceable>servicename</replaceable>/<replaceable>hostname</replaceable>@<replaceable>realm</replaceable></literal>.
-    The principal name used by a particular installation is not encoded in
-    the <productname>PostgreSQL</productname> server in any way; rather it
-    is specified in the <firstterm>keytab</firstterm> file that the server
-    reads to determine its identity.  If multiple principals are listed in
-    the keytab file, the server will accept any one of them.
-    The server's realm name is the preferred realm specified in the Kerberos
-    configuration file(s) accessible to the server.
+    The PostgreSQL server will accept any principal that is included in the keytab used by
+    the server, but care needs to be taken to specify the correct principal details when
+    making the connection from the client using the <literal>krbsrvname</literal> connection parameter. (See
+    also <xref linkend="libpq-paramkeywords"/>.) The installation default can be
+    changed from the default <literal>postgres</literal> at build time using
+    <literal>./configure --with-krb-srvnam=</literal><replaceable>whatever</replaceable>.
+    In most environments,
+    this parameter never needs to be changed.
+    Some Kerberos implementations might require a different service name,
+    such as Microsoft Active Directory which requires the service name
+    to be in upper case (<literal>POSTGRES</literal>).
+   </para>
+   <para>
+    <replaceable>hostname</replaceable> is the fully qualified host name of the
+    server machine. The service principal's realm is the preferred realm
+    of the server machine.
    </para>
 
    <para>
-    When connecting, the client must know the principal name of the server
-    it intends to connect to.  The <replaceable>servicename</replaceable>
-    part of the principal is ordinarily <literal>postgres</literal>,
-    but another value can be selected via <application>libpq</application>'s
-    <xref linkend="libpq-connect-krbsrvname"/> connection parameter.
-    The <replaceable>hostname</replaceable> part is the fully qualified
-    host name that <application>libpq</application> is told to connect to.
-    The realm name is the preferred realm specified in the Kerberos
-    configuration file(s) accessible to the client.
-   </para>
-
-   <para>
-    The client will also have a principal name for its own identity
-    (and it must have a valid ticket for this principal).  To
-    use <productname>GSSAPI</productname> for authentication, the client
-    principal must be associated with
-    a <productname>PostgreSQL</productname> database user name.
-    The <filename>pg_ident.conf</filename> configuration file can be used
-    to map principals to user names; for example,
+    Client principals can be mapped to different <productname>PostgreSQL</productname>
+    database user names with <filename>pg_ident.conf</filename>.  For example,
     <literal>pgusername@realm</literal> could be mapped to just <literal>pgusername</literal>.
     Alternatively, you can use the full <literal>username@realm</literal> principal as
     the role name in <productname>PostgreSQL</productname> without any mapping.
    </para>
 
    <para>
-    <productname>PostgreSQL</productname> also supports mapping
-    client principals to user names by just stripping the realm from
+    <productname>PostgreSQL</productname> also supports a parameter to strip the realm from
     the principal.  This method is supported for backwards compatibility and is
     strongly discouraged as it is then impossible to distinguish different users
     with the same user name but coming from different realms.  To enable this,
@@ -1261,30 +1111,39 @@ omicron         bryanh                  guest1
    </para>
 
    <para>
-    The location of the server's keytab file is specified by the <xref
-    linkend="guc-krb-server-keyfile"/> configuration parameter.
-    For security reasons, it is recommended to use a separate keytab
-    just for the <productname>PostgreSQL</productname> server rather
-    than allowing the server to read the system keytab file.
     Make sure that your server keytab file is readable (and preferably
     only readable, not writable) by the <productname>PostgreSQL</productname>
-    server account.  (See also <xref linkend="postgres-user"/>.)
+    server account.  (See also <xref linkend="postgres-user"/>.) The location
+    of the key file is specified by the <xref
+    linkend="guc-krb-server-keyfile"/> configuration
+    parameter. The default is
+    <filename>/usr/local/pgsql/etc/krb5.keytab</filename> (or whatever
+    directory was specified as <varname>sysconfdir</varname> at build time).
+    For security reasons, it is recommended to use a separate keytab
+    just for the <productname>PostgreSQL</productname> server rather
+    than opening up permissions on the system keytab file.
    </para>
-
    <para>
-    The keytab file is generated using the Kerberos software; see the
-    Kerberos documentation for details. The following example shows
-    doing this using the <application>kadmin</application> tool of
-    MIT-compatible Kerberos 5 implementations:
+    The keytab file is generated by the Kerberos software; see the
+    Kerberos documentation for details. The following example is
+   for MIT-compatible Kerberos 5 implementations:
 <screen>
-<prompt>kadmin% </prompt><userinput>addprinc -randkey postgres/server.my.domain.org</userinput>
+<prompt>kadmin% </prompt><userinput>ank -randkey postgres/server.my.domain.org</userinput>
 <prompt>kadmin% </prompt><userinput>ktadd -k krb5.keytab postgres/server.my.domain.org</userinput>
 </screen>
    </para>
 
    <para>
-    The following authentication options are supported for
-    the <productname>GSSAPI</productname> authentication method:
+    When connecting to the database make sure you have a ticket for a
+    principal matching the requested database user name. For example, for
+    database user name <literal>fred</literal>, principal
+    <literal>fred@EXAMPLE.COM</literal> would be able to connect. To also allow
+    principal <literal>fred/users.example.com@EXAMPLE.COM</literal>, use a user name
+    map, as described in <xref linkend="auth-username-maps"/>.
+   </para>
+
+   <para>
+    The following configuration options are supported for <productname>GSSAPI</productname>:
     <variablelist>
      <varlistentry>
       <term><literal>include_realm</literal></term>
@@ -1307,7 +1166,7 @@ omicron         bryanh                  guest1
       <term><literal>map</literal></term>
       <listitem>
        <para>
-        Allows mapping from client principals to database user names. See
+        Allows for mapping between system and database user names. See
         <xref linkend="auth-username-maps"/> for details.  For a GSSAPI/Kerberos
         principal, such as <literal>username@EXAMPLE.COM</literal> (or, less
         commonly, <literal>username/hostbased@EXAMPLE.COM</literal>), the
@@ -1333,15 +1192,6 @@ omicron         bryanh                  guest1
       </listitem>
      </varlistentry>
     </variablelist>
-   </para>
-
-   <para>
-    In addition to these settings, which can be different for
-    different <filename>pg_hba.conf</filename> entries, there is the
-    server-wide <xref linkend="guc-krb-caseins-users"/> configuration
-    parameter.  If that is set to true, client principals are matched to
-    user map entries case-insensitively.  <literal>krb_realm</literal>, if
-    set, is also matched case-insensitively.
    </para>
   </sect1>
 
@@ -1798,8 +1648,7 @@ ldap[s]://<replaceable>host</replaceable>[:<replaceable>port</replaceable>]/<rep
         </para>
 
         <para>
-         LDAP URLs are currently only supported with
-         <productname>OpenLDAP</productname>, not on Windows.
+         LDAP URLs are currently only supported with OpenLDAP, not on Windows.
         </para>
        </listitem>
       </varlistentry>
@@ -1820,15 +1669,6 @@ ldap[s]://<replaceable>host</replaceable>[:<replaceable>port</replaceable>]/<rep
     specifying <literal>ldapsearchfilter="(foo=$username)"</literal>.  If neither
     option is specified the default is
     <literal>ldapsearchattribute=uid</literal>.
-   </para>
-
-   <para>
-     If <productname>PostgreSQL</productname> was compiled with
-     <productname>OpenLDAP</productname> as the LDAP client library, the
-     <literal>ldapserver</literal> setting may be omitted.  In that case, a
-     list of host names and ports is looked up via RFC 2782 DNS SRV records.
-     The name <literal>_ldap._tcp.DOMAIN</literal> is looked up, where
-     <literal>DOMAIN</literal> is extracted from <literal>ldapbasedn</literal>.
    </para>
 
    <para>
@@ -1876,15 +1716,6 @@ host ... ldap ldapserver=ldap.example.net ldapbasedn="dc=example, dc=net" ldapse
 </programlisting>
    </para>
 
-   <para>
-    Here is an example for a search+bind configuration that uses DNS SRV
-    discovery to find the host name(s) and port(s) for the LDAP service for the
-    domain name <literal>example.net</literal>:
-<programlisting>
-host ... ldap ldapbasedn="dc=example,dc=net"
-</programlisting>
-   </para>
-
    <tip>
     <para>
      Since LDAP often uses commas and spaces to separate the different
@@ -1918,7 +1749,7 @@ host ... ldap ldapbasedn="dc=example,dc=net"
     <literal>user name</literal>, <literal>password</literal> (encrypted) and
     <literal>NAS Identifier</literal>. The request will be encrypted using
     a secret shared with the server. The RADIUS server will respond to
-    this request with either <literal>Access Accept</literal> or
+    this server with either <literal>Access Accept</literal> or
     <literal>Access Reject</literal>. There is no support for RADIUS accounting.
    </para>
 
@@ -1927,11 +1758,11 @@ host ... ldap ldapbasedn="dc=example,dc=net"
     be tried sequentially. If a negative response is received from
     a server, the authentication will fail. If no response is received,
     the next server in the list will be tried. To specify multiple
-    servers, separate the server names with commas and surround the list
-    with double quotes. If multiple servers are specified, the other
-    RADIUS options can also be given as comma-separated lists, to provide
-    individual values for each server. They can also be specified as
-    a single value, in which case that value will apply to all servers.
+    servers, put the names within quotes and separate the server names
+    with a comma. If multiple servers are specified, all other RADIUS
+    options can also be given as a comma separate list, to apply
+    individual values to each server. They can also be specified as
+    a single value, in which case this value will apply to all servers.
    </para>
 
    <para>
@@ -1941,7 +1772,7 @@ host ... ldap ldapbasedn="dc=example,dc=net"
        <term><literal>radiusservers</literal></term>
        <listitem>
         <para>
-         The DNS names or IP addresses of the RADIUS servers to connect to.
+         The name or IP addresses of the RADIUS servers to connect to.
          This parameter is required.
         </para>
        </listitem>
@@ -1952,7 +1783,7 @@ host ... ldap ldapbasedn="dc=example,dc=net"
        <listitem>
         <para>
          The shared secrets used when talking securely to the RADIUS
-         servers. This must have exactly the same value on the PostgreSQL
+         server. This must have exactly the same value on the PostgreSQL
          and RADIUS servers. It is recommended that this be a string of
          at least 16 characters. This parameter is required.
          <note>
@@ -1972,9 +1803,8 @@ host ... ldap ldapbasedn="dc=example,dc=net"
        <term><literal>radiusports</literal></term>
        <listitem>
         <para>
-         The port numbers to connect to on the RADIUS servers. If no port
-         is specified, the default RADIUS port (<literal>1812</literal>)
-         will be used.
+         The port number on the RADIUS servers to connect to. If no port
+         is specified, the default port <literal>1812</literal> will be used.
         </para>
        </listitem>
       </varlistentry>
@@ -1983,10 +1813,10 @@ host ... ldap ldapbasedn="dc=example,dc=net"
        <term><literal>radiusidentifiers</literal></term>
        <listitem>
         <para>
-         The strings to be used as <literal>NAS Identifier</literal> in the
-         RADIUS requests. This parameter can be used, for example, to
-         identify which database cluster the user is attempting to connect
-         to, which can be useful for policy matching on
+         The string used as <literal>NAS Identifier</literal> in the RADIUS
+         requests. This parameter can be used as a second parameter
+         identifying for example which database user the user is attempting
+         to authenticate as, which can be used for policy matching on
          the RADIUS server. If no identifier is specified, the default
          <literal>postgresql</literal> will be used.
         </para>
@@ -1994,16 +1824,6 @@ host ... ldap ldapbasedn="dc=example,dc=net"
       </varlistentry>
 
      </variablelist>
-   </para>
-
-   <para>
-    If it is necessary to have a comma or whitespace in a RADIUS parameter
-    value, that can be done by putting double quotes around the value, but
-    it is tedious because two layers of double-quoting are now required.
-    An example of putting whitespace into RADIUS secret strings is:
-<programlisting>
-host ... radius radiusservers="server1,server2" radiussecrets="""secret one"",""secret two"""
-</programlisting>
    </para>
   </sect1>
 
@@ -2043,10 +1863,13 @@ host ... radius radiusservers="server1,server2" radiussecrets="""secret one"",""
    </para>
 
    <para>
-    It is redundant to use the <literal>clientcert</literal> option with
-    <literal>cert</literal> authentication because <literal>cert</literal>
-    authentication is effectively <literal>trust</literal> authentication
-    with <literal>clientcert=verify-full</literal>.
+    In a <filename>pg_hba.conf</filename> record specifying certificate
+    authentication, the authentication option <literal>clientcert</literal> is
+    assumed to be <literal>1</literal>, and it cannot be turned off since a client
+    certificate is necessary for this method.  What the <literal>cert</literal>
+    method adds to the basic <literal>clientcert</literal> certificate validity test
+    is a check that the <literal>cn</literal> attribute matches the database
+    user name.
    </para>
   </sect1>
 

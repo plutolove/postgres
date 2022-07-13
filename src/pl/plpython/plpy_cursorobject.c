@@ -11,15 +11,19 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "mb/pg_wchar.h"
+#include "utils/memutils.h"
+
+#include "plpython.h"
+
 #include "plpy_cursorobject.h"
+
 #include "plpy_elog.h"
 #include "plpy_main.h"
 #include "plpy_planobject.h"
 #include "plpy_procedure.h"
 #include "plpy_resultobject.h"
 #include "plpy_spi.h"
-#include "plpython.h"
-#include "utils/memutils.h"
+
 
 static PyObject *PLy_cursor_query(const char *query);
 static void PLy_cursor_dealloc(PyObject *arg);
@@ -27,7 +31,9 @@ static PyObject *PLy_cursor_iternext(PyObject *self);
 static PyObject *PLy_cursor_fetch(PyObject *self, PyObject *args);
 static PyObject *PLy_cursor_close(PyObject *self, PyObject *unused);
 
-static char PLy_cursor_doc[] = "Wrapper around a PostgreSQL cursor";
+static char PLy_cursor_doc[] = {
+	"Wrapper around a PostgreSQL cursor"
+};
 
 static PyMethodDef PLy_cursor_methods[] = {
 	{"fetch", PLy_cursor_fetch, METH_VARARGS, NULL},
@@ -37,14 +43,37 @@ static PyMethodDef PLy_cursor_methods[] = {
 
 static PyTypeObject PLy_CursorType = {
 	PyVarObject_HEAD_INIT(NULL, 0)
-	.tp_name = "PLyCursor",
-	.tp_basicsize = sizeof(PLyCursorObject),
-	.tp_dealloc = PLy_cursor_dealloc,
-	.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_ITER,
-	.tp_doc = PLy_cursor_doc,
-	.tp_iter = PyObject_SelfIter,
-	.tp_iternext = PLy_cursor_iternext,
-	.tp_methods = PLy_cursor_methods,
+	"PLyCursor",				/* tp_name */
+	sizeof(PLyCursorObject),	/* tp_size */
+	0,							/* tp_itemsize */
+
+	/*
+	 * methods
+	 */
+	PLy_cursor_dealloc,			/* tp_dealloc */
+	0,							/* tp_print */
+	0,							/* tp_getattr */
+	0,							/* tp_setattr */
+	0,							/* tp_compare */
+	0,							/* tp_repr */
+	0,							/* tp_as_number */
+	0,							/* tp_as_sequence */
+	0,							/* tp_as_mapping */
+	0,							/* tp_hash */
+	0,							/* tp_call */
+	0,							/* tp_str */
+	0,							/* tp_getattro */
+	0,							/* tp_setattro */
+	0,							/* tp_as_buffer */
+	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_ITER,	/* tp_flags */
+	PLy_cursor_doc,				/* tp_doc */
+	0,							/* tp_traverse */
+	0,							/* tp_clear */
+	0,							/* tp_richcompare */
+	0,							/* tp_weaklistoffset */
+	PyObject_SelfIter,			/* tp_iter */
+	PLy_cursor_iternext,		/* tp_iternext */
+	PLy_cursor_methods,			/* tp_tpmethods */
 };
 
 void
@@ -222,11 +251,13 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 				plan->values[j] = PLy_output_convert(arg, elem, &isnull);
 				nulls[j] = isnull ? 'n' : ' ';
 			}
-			PG_FINALLY();
+			PG_CATCH();
 			{
 				Py_DECREF(elem);
+				PG_RE_THROW();
 			}
 			PG_END_TRY();
+			Py_DECREF(elem);
 		}
 
 		portal = SPI_cursor_open(NULL, plan->plan, plan->values, nulls,
@@ -349,7 +380,7 @@ PLy_cursor_iternext(PyObject *self)
 								  exec_ctx->curr_proc);
 
 			ret = PLy_input_from_tuple(&cursor->result, SPI_tuptable->vals[0],
-									   SPI_tuptable->tupdesc, true);
+									   SPI_tuptable->tupdesc);
 		}
 
 		SPI_freetuptable(SPI_tuptable);
@@ -445,8 +476,7 @@ PLy_cursor_fetch(PyObject *self, PyObject *args)
 				{
 					PyObject   *row = PLy_input_from_tuple(&cursor->result,
 														   SPI_tuptable->vals[i],
-														   SPI_tuptable->tupdesc,
-														   true);
+														   SPI_tuptable->tupdesc);
 
 					PyList_SetItem(ret->rows, i, row);
 				}

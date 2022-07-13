@@ -64,7 +64,7 @@ SELECT count(*) FROM hs1;
 (1 row)
 
 COMMIT PREPARED 'foobar';
-ERROR:  cannot execute COMMIT PREPARED during recovery
+ERROR:  COMMIT PREPARED cannot run inside a transaction block
 ROLLBACK;
 BEGIN;
 SELECT count(*) FROM hs1;
@@ -86,7 +86,7 @@ SELECT count(*) FROM hs1;
 (1 row)
 
 ROLLBACK PREPARED 'foobar';
-ERROR:  cannot execute ROLLBACK PREPARED during recovery
+ERROR:  ROLLBACK PREPARED cannot run inside a transaction block
 ROLLBACK;
 -- Locks
 BEGIN;
@@ -118,6 +118,10 @@ listen a;
 ERROR:  cannot execute LISTEN during recovery
 notify a;
 ERROR:  cannot execute NOTIFY during recovery
+unlisten a;
+ERROR:  cannot execute UNLISTEN during recovery
+unlisten *;
+ERROR:  cannot execute UNLISTEN during recovery
 -- disallowed commands
 ANALYZE hs1;
 ERROR:  cannot execute ANALYZE during recovery

@@ -5,7 +5,7 @@
  *	  wherein you authenticate a user by seeing what IP address the system
  *	  says he comes from and choosing authentication method based on it).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,10 +39,10 @@
 #include "storage/fd.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/varlena.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/varlena.h"
 
 #ifdef USE_LDAP
 #ifdef WIN32
@@ -139,16 +139,16 @@ static const char *const UserAuthName[] =
 
 
 static MemoryContext tokenize_file(const char *filename, FILE *file,
-								   List **tok_lines, int elevel);
+			  List **tok_lines, int elevel);
 static List *tokenize_inc_file(List *tokens, const char *outer_filename,
-							   const char *inc_filename, int elevel, char **err_msg);
+				  const char *inc_filename, int elevel, char **err_msg);
 static bool parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
-							   int elevel, char **err_msg);
+				   int elevel, char **err_msg);
 static bool verify_option_list_length(List *options, const char *optionname,
-									  List *masters, const char *mastername, int line_num);
+						  List *masters, const char *mastername, int line_num);
 static ArrayType *gethba_options(HbaLine *hba);
 static void fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
-						  int lineno, HbaLine *hba, const char *err_msg);
+			  int lineno, HbaLine *hba, const char *err_msg);
 static void fill_hba_view(Tuplestorestate *tuple_store, TupleDesc tupdesc);
 
 
@@ -994,9 +994,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}
 	else if (strcmp(token->string, "host") == 0 ||
 			 strcmp(token->string, "hostssl") == 0 ||
-			 strcmp(token->string, "hostnossl") == 0 ||
-			 strcmp(token->string, "hostgssenc") == 0 ||
-			 strcmp(token->string, "hostnogssenc") == 0)
+			 strcmp(token->string, "hostnossl") == 0)
 	{
 
 		if (token->string[4] == 's')	/* "hostssl" */
@@ -1024,23 +1022,10 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 			*err_msg = "hostssl record cannot match because SSL is not supported by this build";
 #endif
 		}
-		else if (token->string[4] == 'g')	/* "hostgssenc" */
+		else if (token->string[4] == 'n')	/* "hostnossl" */
 		{
-			parsedline->conntype = ctHostGSS;
-#ifndef ENABLE_GSS
-			ereport(elevel,
-					(errcode(ERRCODE_CONFIG_FILE_ERROR),
-					 errmsg("hostgssenc record cannot match because GSSAPI is not supported by this build"),
-					 errhint("Compile with --with-gssapi to use GSSAPI connections."),
-					 errcontext("line %d of configuration file \"%s\"",
-								line_num, HbaFileName)));
-			*err_msg = "hostgssenc record cannot match because GSSAPI is not supported by this build";
-#endif
-		}
-		else if (token->string[4] == 'n' && token->string[6] == 's')
 			parsedline->conntype = ctHostNoSSL;
-		else if (token->string[4] == 'n' && token->string[6] == 'g')
-			parsedline->conntype = ctHostNoGSS;
+		}
 		else
 		{
 			/* "host" */
@@ -1060,7 +1045,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}
 
 	/* Get the databases. */
-	field = lnext(tok_line->fields, field);
+	field = lnext(field);
 	if (!field)
 	{
 		ereport(elevel,
@@ -1080,7 +1065,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}
 
 	/* Get the roles. */
-	field = lnext(tok_line->fields, field);
+	field = lnext(field);
 	if (!field)
 	{
 		ereport(elevel,
@@ -1102,7 +1087,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	if (parsedline->conntype != ctLocal)
 	{
 		/* Read the IP address field. (with or without CIDR netmask) */
-		field = lnext(tok_line->fields, field);
+		field = lnext(field);
 		if (!field)
 		{
 			ereport(elevel,
@@ -1166,11 +1151,8 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 
 			ret = pg_getaddrinfo_all(str, NULL, &hints, &gai_result);
 			if (ret == 0 && gai_result)
-			{
 				memcpy(&parsedline->addr, gai_result->ai_addr,
 					   gai_result->ai_addrlen);
-				parsedline->addrlen = gai_result->ai_addrlen;
-			}
 			else if (ret == EAI_NONAME)
 				parsedline->hostname = str;
 			else
@@ -1219,14 +1201,13 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 										token->string);
 					return NULL;
 				}
-				parsedline->masklen = parsedline->addrlen;
 				pfree(str);
 			}
 			else if (!parsedline->hostname)
 			{
 				/* Read the mask field. */
 				pfree(str);
-				field = lnext(tok_line->fields, field);
+				field = lnext(field);
 				if (!field)
 				{
 					ereport(elevel,
@@ -1270,7 +1251,6 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 
 				memcpy(&parsedline->mask, gai_result->ai_addr,
 					   gai_result->ai_addrlen);
-				parsedline->masklen = gai_result->ai_addrlen;
 				pg_freeaddrinfo_all(hints.ai_family, gai_result);
 
 				if (parsedline->addr.ss_family != parsedline->mask.ss_family)
@@ -1288,7 +1268,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}							/* != ctLocal */
 
 	/* Get the authentication method */
-	field = lnext(tok_line->fields, field);
+	field = lnext(field);
 	if (!field)
 	{
 		ereport(elevel,
@@ -1480,7 +1460,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	}
 
 	/* Parse remaining arguments */
-	while ((field = lnext(tok_line->fields, field)) != NULL)
+	while ((field = lnext(field)) != NULL)
 	{
 		tokens = lfirst(field);
 		foreach(tokencell, tokens)
@@ -1520,10 +1500,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	 */
 	if (parsedline->auth_method == uaLDAP)
 	{
-#ifndef HAVE_LDAP_INITIALIZE
-		/* Not mandatory for OpenLDAP, because it can use DNS SRV records */
 		MANDATORY_AUTH_ARG(parsedline->ldapserver, "ldapserver", "ldap");
-#endif
 
 		/*
 		 * LDAP can operate in two modes: either with a direct bind, using
@@ -1632,7 +1609,7 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	 */
 	if (parsedline->auth_method == uaCert)
 	{
-		parsedline->clientcert = clientCertCA;
+		parsedline->clientcert = true;
 	}
 
 	return parsedline;
@@ -1698,38 +1675,23 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 			*err_msg = "clientcert can only be configured for \"hostssl\" rows";
 			return false;
 		}
-		if (strcmp(val, "1") == 0
-			|| strcmp(val, "verify-ca") == 0)
+		if (strcmp(val, "1") == 0)
 		{
-			hbaline->clientcert = clientCertCA;
+			hbaline->clientcert = true;
 		}
-		else if (strcmp(val, "verify-full") == 0)
-		{
-			hbaline->clientcert = clientCertFull;
-		}
-		else if (strcmp(val, "0") == 0
-				 || strcmp(val, "no-verify") == 0)
+		else
 		{
 			if (hbaline->auth_method == uaCert)
 			{
 				ereport(elevel,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
-						 errmsg("clientcert cannot be set to \"no-verify\" when using \"cert\" authentication"),
+						 errmsg("clientcert can not be set to 0 when using \"cert\" authentication"),
 						 errcontext("line %d of configuration file \"%s\"",
 									line_num, HbaFileName)));
-				*err_msg = "clientcert cannot be set to \"no-verify\" when using \"cert\" authentication";
+				*err_msg = "clientcert can not be set to 0 when using \"cert\" authentication";
 				return false;
 			}
-			hbaline->clientcert = clientCertOff;
-		}
-		else
-		{
-			ereport(elevel,
-					(errcode(ERRCODE_CONFIG_FILE_ERROR),
-					 errmsg("invalid value for clientcert: \"%s\"", val),
-					 errcontext("line %d of configuration file \"%s\"",
-								line_num, HbaFileName)));
-			return false;
+			hbaline->clientcert = false;
 		}
 	}
 	else if (strcmp(name, "pamservice") == 0)
@@ -1919,7 +1881,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusservers", "radius");
 
-		if (!SplitGUCList(dupval, ',', &parsed_servers))
+		if (!SplitIdentifierString(dupval, ',', &parsed_servers))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -1968,7 +1930,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusports", "radius");
 
-		if (!SplitGUCList(dupval, ',', &parsed_ports))
+		if (!SplitIdentifierString(dupval, ',', &parsed_ports))
 		{
 			ereport(elevel,
 					(errcode(ERRCODE_CONFIG_FILE_ERROR),
@@ -2003,7 +1965,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiussecrets", "radius");
 
-		if (!SplitGUCList(dupval, ',', &parsed_secrets))
+		if (!SplitIdentifierString(dupval, ',', &parsed_secrets))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -2025,7 +1987,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 
 		REQUIRE_AUTH_OPTION(uaRADIUS, "radiusidentifiers", "radius");
 
-		if (!SplitGUCList(dupval, ',', &parsed_identifiers))
+		if (!SplitIdentifierString(dupval, ',', &parsed_identifiers))
 		{
 			/* syntax error in list */
 			ereport(elevel,
@@ -2097,19 +2059,6 @@ check_hba(hbaPort *port)
 				if (hba->conntype == ctHostSSL)
 					continue;
 			}
-
-			/* Check GSSAPI state */
-#ifdef ENABLE_GSS
-			if (port->gss && port->gss->enc &&
-				hba->conntype == ctHostNoGSS)
-				continue;
-			else if (!(port->gss && port->gss->enc) &&
-					 hba->conntype == ctHostGSS)
-				continue;
-#else
-			if (hba->conntype == ctHostGSS)
-				continue;
-#endif
 
 			/* Check IP address */
 			switch (hba->ip_cmp_method)
@@ -2269,12 +2218,10 @@ load_hba(void)
 /*
  * This macro specifies the maximum number of authentication options
  * that are possible with any given authentication method that is supported.
- * Currently LDAP supports 11, and there are 3 that are not dependent on
- * the auth method here.  It may not actually be possible to set all of them
- * at the same time, but we'll set the macro value high enough to be
- * conservative and avoid warnings from static analysis tools.
+ * Currently LDAP supports 10, so the macro value is well above the most any
+ * method needs.
  */
-#define MAX_HBA_OPTIONS 14
+#define MAX_HBA_OPTIONS 12
 
 /*
  * Create a text array listing the options specified in the HBA line.
@@ -2303,9 +2250,9 @@ gethba_options(HbaLine *hba)
 		options[noptions++] =
 			CStringGetTextDatum(psprintf("map=%s", hba->usermap));
 
-	if (hba->clientcert != clientCertOff)
+	if (hba->clientcert)
 		options[noptions++] =
-			CStringGetTextDatum(psprintf("clientcert=%s", (hba->clientcert == clientCertCA) ? "verify-ca" : "verify-full"));
+			CStringGetTextDatum("clientcert=true");
 
 	if (hba->pamservice)
 		options[noptions++] =
@@ -2380,11 +2327,10 @@ gethba_options(HbaLine *hba)
 				CStringGetTextDatum(psprintf("radiusports=%s", hba->radiusports_s));
 	}
 
-	/* If you add more options, consider increasing MAX_HBA_OPTIONS. */
 	Assert(noptions <= MAX_HBA_OPTIONS);
 
 	if (noptions > 0)
-		return construct_array(options, noptions, TEXTOID, -1, false, TYPALIGN_INT);
+		return construct_array(options, noptions, TEXTOID, -1, false, 'i');
 	else
 		return NULL;
 }
@@ -2447,12 +2393,6 @@ fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 			case ctHostNoSSL:
 				typestr = "hostnossl";
 				break;
-			case ctHostGSS:
-				typestr = "hostgssenc";
-				break;
-			case ctHostNoGSS:
-				typestr = "hostnogssenc";
-				break;
 		}
 		if (typestr)
 			values[index++] = CStringGetTextDatum(typestr);
@@ -2512,26 +2452,20 @@ fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 				}
 				else
 				{
-					/*
-					 * Note: if pg_getnameinfo_all fails, it'll set buffer to
-					 * "???", which we want to return.
-					 */
-					if (hba->addrlen > 0)
+					if (pg_getnameinfo_all(&hba->addr, sizeof(hba->addr),
+										   buffer, sizeof(buffer),
+										   NULL, 0,
+										   NI_NUMERICHOST) == 0)
 					{
-						if (pg_getnameinfo_all(&hba->addr, hba->addrlen,
-											   buffer, sizeof(buffer),
-											   NULL, 0,
-											   NI_NUMERICHOST) == 0)
-							clean_ipv6_addr(hba->addr.ss_family, buffer);
+						clean_ipv6_addr(hba->addr.ss_family, buffer);
 						addrstr = pstrdup(buffer);
 					}
-					if (hba->masklen > 0)
+					if (pg_getnameinfo_all(&hba->mask, sizeof(hba->mask),
+										   buffer, sizeof(buffer),
+										   NULL, 0,
+										   NI_NUMERICHOST) == 0)
 					{
-						if (pg_getnameinfo_all(&hba->mask, hba->masklen,
-											   buffer, sizeof(buffer),
-											   NULL, 0,
-											   NI_NUMERICHOST) == 0)
-							clean_ipv6_addr(hba->mask.ss_family, buffer);
+						clean_ipv6_addr(hba->mask.ss_family, buffer);
 						maskstr = pstrdup(buffer);
 					}
 				}
@@ -2667,7 +2601,8 @@ pg_hba_file_rules(PG_FUNCTION_ARGS)
 	if (!(rsi->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	rsi->returnMode = SFRM_Materialize;
 
@@ -2728,7 +2663,7 @@ parse_ident_line(TokenizedLine *tok_line)
 	parsedline->usermap = pstrdup(token->string);
 
 	/* Get the ident user token */
-	field = lnext(tok_line->fields, field);
+	field = lnext(field);
 	IDENT_FIELD_ABSENT(field);
 	tokens = lfirst(field);
 	IDENT_MULTI_VALUE(tokens);
@@ -2736,7 +2671,7 @@ parse_ident_line(TokenizedLine *tok_line)
 	parsedline->ident_user = pstrdup(token->string);
 
 	/* Get the PG rolename token */
-	field = lnext(tok_line->fields, field);
+	field = lnext(field);
 	IDENT_FIELD_ABSENT(field);
 	tokens = lfirst(field);
 	IDENT_MULTI_VALUE(tokens);
@@ -2902,6 +2837,7 @@ check_ident_usermap(IdentLine *identLine, const char *usermap_name,
 				*found_p = true;
 		}
 	}
+	return;
 }
 
 

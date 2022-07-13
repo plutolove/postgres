@@ -3,7 +3,7 @@
  * misc.c
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,13 +15,13 @@
 #include "postgres.h"
 
 #include <sys/file.h>
+#include <signal.h>
 #include <dirent.h>
-#include <fcntl.h>
 #include <math.h>
 #include <unistd.h>
 
 #include "access/sysattr.h"
-#include "access/table.h"
+#include "catalog/pg_authid.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
@@ -30,16 +30,21 @@
 #include "common/keywords.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "parser/scansup.h"
 #include "pgstat.h"
+#include "parser/scansup.h"
 #include "postmaster/syslogger.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
-#include "tcop/tcopprot.h"
-#include "utils/builtins.h"
+#include "storage/pmsignal.h"
+#include "storage/proc.h"
+#include "storage/procarray.h"
 #include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
+#include "tcop/tcopprot.h"
+#include "utils/acl.h"
+#include "utils/builtins.h"
 #include "utils/timestamp.h"
+
 
 /*
  * Common subroutine for num_nulls() and num_nonnulls().
@@ -193,84 +198,262 @@ current_query(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 }
 
+/*
+ * Send a signal to another backend.
+ *
+ * The signal is delivered if the user is either a superuser or the same
+ * role as the backend being signaled. For "dangerous" signals, an explicit
+ * check for superuser needs to be done prior to calling this function.
+ *
+ * Returns 0 on success, 1 on general failure, 2 on normal permission error
+ * and 3 if the caller needs to be a superuser.
+ *
+ * In the event of a general failure (return code 1), a warning message will
+ * be emitted. For permission errors, doing that is the responsibility of
+ * the caller.
+ */
+#define SIGNAL_BACKEND_SUCCESS 0
+#define SIGNAL_BACKEND_ERROR 1
+#define SIGNAL_BACKEND_NOPERMISSION 2
+#define SIGNAL_BACKEND_NOSUPERUSER 3
+static int
+pg_signal_backend(int pid, int sig)
+{
+	PGPROC	   *proc = BackendPidGetProc(pid);
+
+	/*
+	 * BackendPidGetProc returns NULL if the pid isn't valid; but by the time
+	 * we reach kill(), a process for which we get a valid proc here might
+	 * have terminated on its own.  There's no way to acquire a lock on an
+	 * arbitrary process to prevent that. But since so far all the callers of
+	 * this mechanism involve some request for ending the process anyway, that
+	 * it might end on its own first is not a problem.
+	 */
+	if (proc == NULL)
+	{
+		/*
+		 * This is just a warning so a loop-through-resultset will not abort
+		 * if one backend terminated on its own during the run.
+		 */
+		ereport(WARNING,
+				(errmsg("PID %d is not a PostgreSQL server process", pid)));
+		return SIGNAL_BACKEND_ERROR;
+	}
+
+	/* Only allow superusers to signal superuser-owned backends. */
+	if (superuser_arg(proc->roleId) && !superuser())
+		return SIGNAL_BACKEND_NOSUPERUSER;
+
+	/* Users can signal backends they have role membership in. */
+	if (!has_privs_of_role(GetUserId(), proc->roleId) &&
+		!has_privs_of_role(GetUserId(), DEFAULT_ROLE_SIGNAL_BACKENDID))
+		return SIGNAL_BACKEND_NOPERMISSION;
+
+	/*
+	 * Can the process we just validated above end, followed by the pid being
+	 * recycled for a new process, before reaching here?  Then we'd be trying
+	 * to kill the wrong thing.  Seems near impossible when sequential pid
+	 * assignment and wraparound is used.  Perhaps it could happen on a system
+	 * where pid re-use is randomized.  That race condition possibility seems
+	 * too unlikely to worry about.
+	 */
+
+	/* If we have setsid(), signal the backend's whole process group */
+#ifdef HAVE_SETSID
+	if (kill(-pid, sig))
+#else
+	if (kill(pid, sig))
+#endif
+	{
+		/* Again, just a warning to allow loops */
+		ereport(WARNING,
+				(errmsg("could not send signal to process %d: %m", pid)));
+		return SIGNAL_BACKEND_ERROR;
+	}
+	return SIGNAL_BACKEND_SUCCESS;
+}
+
+/*
+ * Signal to cancel a backend process.  This is allowed if you are a member of
+ * the role whose process is being canceled.
+ *
+ * Note that only superusers can signal superuser-owned processes.
+ */
+Datum
+pg_cancel_backend(PG_FUNCTION_ARGS)
+{
+	int			r = pg_signal_backend(PG_GETARG_INT32(0), SIGINT);
+
+	if (r == SIGNAL_BACKEND_NOSUPERUSER)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be a superuser to cancel superuser query"))));
+
+	if (r == SIGNAL_BACKEND_NOPERMISSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be a member of the role whose query is being canceled or member of pg_signal_backend"))));
+
+	PG_RETURN_BOOL(r == SIGNAL_BACKEND_SUCCESS);
+}
+
+/*
+ * Signal to terminate a backend process.  This is allowed if you are a member
+ * of the role whose process is being terminated.
+ *
+ * Note that only superusers can signal superuser-owned processes.
+ */
+Datum
+pg_terminate_backend(PG_FUNCTION_ARGS)
+{
+	int			r = pg_signal_backend(PG_GETARG_INT32(0), SIGTERM);
+
+	if (r == SIGNAL_BACKEND_NOSUPERUSER)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be a superuser to terminate superuser process"))));
+
+	if (r == SIGNAL_BACKEND_NOPERMISSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be a member of the role whose process is being terminated or member of pg_signal_backend"))));
+
+	PG_RETURN_BOOL(r == SIGNAL_BACKEND_SUCCESS);
+}
+
+/*
+ * Signal to reload the database configuration
+ *
+ * Permission checking for this function is managed through the normal
+ * GRANT system.
+ */
+Datum
+pg_reload_conf(PG_FUNCTION_ARGS)
+{
+	if (kill(PostmasterPid, SIGHUP))
+	{
+		ereport(WARNING,
+				(errmsg("failed to send signal to postmaster: %m")));
+		PG_RETURN_BOOL(false);
+	}
+
+	PG_RETURN_BOOL(true);
+}
+
+
+/*
+ * Rotate log file
+ *
+ * This function is kept to support adminpack 1.0.
+ */
+Datum
+pg_rotate_logfile(PG_FUNCTION_ARGS)
+{
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to rotate log files with adminpack 1.0"),
+				  errhint("Consider using pg_logfile_rotate(), which is part of core, instead."))));
+
+	if (!Logging_collector)
+	{
+		ereport(WARNING,
+				(errmsg("rotation not possible because log collection not active")));
+		PG_RETURN_BOOL(false);
+	}
+
+	SendPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE);
+	PG_RETURN_BOOL(true);
+}
+
+/*
+ * Rotate log file
+ *
+ * Permission checking for this function is managed through the normal
+ * GRANT system.
+ */
+Datum
+pg_rotate_logfile_v2(PG_FUNCTION_ARGS)
+{
+	if (!Logging_collector)
+	{
+		ereport(WARNING,
+				(errmsg("rotation not possible because log collection not active")));
+		PG_RETURN_BOOL(false);
+	}
+
+	SendPostmasterSignal(PMSIGNAL_ROTATE_LOGFILE);
+	PG_RETURN_BOOL(true);
+}
+
 /* Function to find out which databases make use of a tablespace */
+
+typedef struct
+{
+	char	   *location;
+	DIR		   *dirdesc;
+} ts_db_fctx;
 
 Datum
 pg_tablespace_databases(PG_FUNCTION_ARGS)
 {
-	Oid			tablespaceOid = PG_GETARG_OID(0);
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	bool		randomAccess;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	char	   *location;
-	DIR		   *dirdesc;
+	FuncCallContext *funcctx;
 	struct dirent *de;
-	MemoryContext oldcontext;
+	ts_db_fctx *fctx;
 
-	/* check to see if caller supports us returning a tuplestore */
-	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize))
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
-
-	/* The tupdesc and tuplestore must be created in ecxt_per_query_memory */
-	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
-
-	tupdesc = CreateTemplateTupleDesc(1);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "pg_tablespace_databases",
-					   OIDOID, -1, 0);
-
-	randomAccess = (rsinfo->allowedModes & SFRM_Materialize_Random) != 0;
-	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
-
-	rsinfo->returnMode = SFRM_Materialize;
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
-
-	if (tablespaceOid == GLOBALTABLESPACE_OID)
+	if (SRF_IS_FIRSTCALL())
 	{
-		ereport(WARNING,
-				(errmsg("global tablespace never has databases")));
-		/* return empty tuplestore */
-		return (Datum) 0;
+		MemoryContext oldcontext;
+		Oid			tablespaceOid = PG_GETARG_OID(0);
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		fctx = palloc(sizeof(ts_db_fctx));
+
+		if (tablespaceOid == GLOBALTABLESPACE_OID)
+		{
+			fctx->dirdesc = NULL;
+			ereport(WARNING,
+					(errmsg("global tablespace never has databases")));
+		}
+		else
+		{
+			if (tablespaceOid == DEFAULTTABLESPACE_OID)
+				fctx->location = psprintf("base");
+			else
+				fctx->location = psprintf("pg_tblspc/%u/%s", tablespaceOid,
+										  TABLESPACE_VERSION_DIRECTORY);
+
+			fctx->dirdesc = AllocateDir(fctx->location);
+
+			if (!fctx->dirdesc)
+			{
+				/* the only expected error is ENOENT */
+				if (errno != ENOENT)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+							 errmsg("could not open directory \"%s\": %m",
+									fctx->location)));
+				ereport(WARNING,
+						(errmsg("%u is not a tablespace OID", tablespaceOid)));
+			}
+		}
+		funcctx->user_fctx = fctx;
+		MemoryContextSwitchTo(oldcontext);
 	}
 
-	if (tablespaceOid == DEFAULTTABLESPACE_OID)
-		location = psprintf("base");
-	else
-		location = psprintf("pg_tblspc/%u/%s", tablespaceOid,
-							TABLESPACE_VERSION_DIRECTORY);
+	funcctx = SRF_PERCALL_SETUP();
+	fctx = (ts_db_fctx *) funcctx->user_fctx;
 
-	dirdesc = AllocateDir(location);
+	if (!fctx->dirdesc)			/* not a tablespace */
+		SRF_RETURN_DONE(funcctx);
 
-	if (!dirdesc)
-	{
-		/* the only expected error is ENOENT */
-		if (errno != ENOENT)
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not open directory \"%s\": %m",
-							location)));
-		ereport(WARNING,
-				(errmsg("%u is not a tablespace OID", tablespaceOid)));
-		/* return empty tuplestore */
-		return (Datum) 0;
-	}
-
-	while ((de = ReadDir(dirdesc, location)) != NULL)
+	while ((de = ReadDir(fctx->dirdesc, fctx->location)) != NULL)
 	{
 		Oid			datOid = atooid(de->d_name);
 		char	   *subdir;
 		bool		isempty;
-		Datum		values[1];
-		bool		nulls[1];
 
 		/* this test skips . and .., but is awfully weak */
 		if (!datOid)
@@ -278,21 +461,18 @@ pg_tablespace_databases(PG_FUNCTION_ARGS)
 
 		/* if database subdir is empty, don't report tablespace as used */
 
-		subdir = psprintf("%s/%s", location, de->d_name);
+		subdir = psprintf("%s/%s", fctx->location, de->d_name);
 		isempty = directory_is_empty(subdir);
 		pfree(subdir);
 
 		if (isempty)
 			continue;			/* indeed, nothing in it */
 
-		values[0] = ObjectIdGetDatum(datOid);
-		nulls[0] = false;
-
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		SRF_RETURN_NEXT(funcctx, ObjectIdGetDatum(datOid));
 	}
 
-	FreeDir(dirdesc);
-	return (Datum) 0;
+	FreeDir(fctx->dirdesc);
+	SRF_RETURN_DONE(funcctx);
 }
 
 
@@ -393,7 +573,7 @@ pg_sleep(PG_FUNCTION_ARGS)
 			break;
 
 		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 WL_LATCH_SET | WL_TIMEOUT,
 						 delay_ms,
 						 WAIT_EVENT_PG_SLEEP);
 		ResetLatch(MyLatch);
@@ -416,7 +596,7 @@ pg_get_keywords(PG_FUNCTION_ARGS)
 		funcctx = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
-		tupdesc = CreateTemplateTupleDesc(3);
+		tupdesc = CreateTemplateTupleDesc(3, false);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "word",
 						   TEXTOID, -1, 0);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "catcode",
@@ -431,17 +611,15 @@ pg_get_keywords(PG_FUNCTION_ARGS)
 
 	funcctx = SRF_PERCALL_SETUP();
 
-	if (funcctx->call_cntr < ScanKeywords.num_keywords)
+	if (funcctx->call_cntr < NumScanKeywords)
 	{
 		char	   *values[3];
 		HeapTuple	tuple;
 
 		/* cast-away-const is ugly but alternatives aren't much better */
-		values[0] = unconstify(char *,
-							   GetScanKeyword(funcctx->call_cntr,
-											  &ScanKeywords));
+		values[0] = (char *) ScanKeywords[funcctx->call_cntr].name;
 
-		switch (ScanKeywordCategories[funcctx->call_cntr])
+		switch (ScanKeywords[funcctx->call_cntr].category)
 		{
 			case UNRESERVED_KEYWORD:
 				values[1] = "U";
@@ -523,7 +701,7 @@ pg_relation_is_updatable(PG_FUNCTION_ARGS)
 	Oid			reloid = PG_GETARG_OID(0);
 	bool		include_triggers = PG_GETARG_BOOL(1);
 
-	PG_RETURN_INT32(relation_is_updatable(reloid, NIL, include_triggers, NULL));
+	PG_RETURN_INT32(relation_is_updatable(reloid, include_triggers, NULL));
 }
 
 /*
@@ -547,7 +725,7 @@ pg_column_is_updatable(PG_FUNCTION_ARGS)
 	if (attnum <= 0)
 		PG_RETURN_BOOL(false);
 
-	events = relation_is_updatable(reloid, NIL, include_triggers,
+	events = relation_is_updatable(reloid, include_triggers,
 								   bms_make_singleton(col));
 
 	/* We require both updatability and deletability of the relation */
@@ -739,6 +917,9 @@ pg_current_logfile(PG_FUNCTION_ARGS)
 	FILE	   *fd;
 	char		lbuffer[MAXPGPATH];
 	char	   *logfmt;
+	char	   *log_filepath;
+	char	   *log_format = lbuffer;
+	char	   *nlpos;
 
 	/* The log format parameter is optional */
 	if (PG_NARGS() == 0 || PG_ARGISNULL(0))
@@ -765,23 +946,16 @@ pg_current_logfile(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 	}
 
-#ifdef WIN32
-	/* syslogger.c writes CRLF line endings on Windows */
-	_setmode(_fileno(fd), _O_TEXT);
-#endif
-
 	/*
 	 * Read the file to gather current log filename(s) registered by the
 	 * syslogger.
 	 */
 	while (fgets(lbuffer, sizeof(lbuffer), fd) != NULL)
 	{
-		char	   *log_format;
-		char	   *log_filepath;
-		char	   *nlpos;
-
-		/* Extract log format and log file path from the line. */
-		log_format = lbuffer;
+		/*
+		 * Extract log format and log file path from the line; lbuffer ==
+		 * log_format, they share storage.
+		 */
 		log_filepath = strchr(lbuffer, ' ');
 		if (log_filepath == NULL)
 		{
@@ -839,9 +1013,9 @@ pg_get_replica_identity_index(PG_FUNCTION_ARGS)
 	Oid			idxoid;
 	Relation	rel;
 
-	rel = table_open(reloid, AccessShareLock);
+	rel = heap_open(reloid, AccessShareLock);
 	idxoid = RelationGetReplicaIndex(rel);
-	table_close(rel, AccessShareLock);
+	heap_close(rel, AccessShareLock);
 
 	if (OidIsValid(idxoid))
 		PG_RETURN_OID(idxoid);

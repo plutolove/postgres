@@ -3,7 +3,7 @@
  * tupdesc.c
  *	  POSTGRES tuple descriptor support code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,16 +19,17 @@
 
 #include "postgres.h"
 
+#include "access/hash.h"
 #include "access/htup_details.h"
 #include "access/tupdesc_details.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
-#include "common/hashfn.h"
 #include "miscadmin.h"
 #include "parser/parse_type.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/hashutils.h"
 #include "utils/resowner_private.h"
 #include "utils/syscache.h"
 
@@ -41,7 +42,7 @@
  * caller can overwrite this if needed.
  */
 TupleDesc
-CreateTemplateTupleDesc(int natts)
+CreateTemplateTupleDesc(int natts, bool hasoid)
 {
 	TupleDesc	desc;
 
@@ -62,7 +63,7 @@ CreateTemplateTupleDesc(int natts)
 	 * could be less due to trailing padding, although with the current
 	 * definition of pg_attribute there probably isn't any padding.
 	 */
-	desc = (TupleDesc) palloc(offsetof(struct TupleDescData, attrs) +
+	desc = (TupleDesc) palloc(offsetof(struct tupleDesc, attrs) +
 							  natts * sizeof(FormData_pg_attribute));
 
 	/*
@@ -72,6 +73,7 @@ CreateTemplateTupleDesc(int natts)
 	desc->constr = NULL;
 	desc->tdtypeid = RECORDOID;
 	desc->tdtypmod = -1;
+	desc->tdhasoid = hasoid;
 	desc->tdrefcount = -1;		/* assume not reference-counted */
 
 	return desc;
@@ -86,12 +88,12 @@ CreateTemplateTupleDesc(int natts)
  * caller can overwrite this if needed.
  */
 TupleDesc
-CreateTupleDesc(int natts, Form_pg_attribute *attrs)
+CreateTupleDesc(int natts, bool hasoid, Form_pg_attribute *attrs)
 {
 	TupleDesc	desc;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(natts);
+	desc = CreateTemplateTupleDesc(natts, hasoid);
 
 	for (i = 0; i < natts; ++i)
 		memcpy(TupleDescAttr(desc, i), attrs[i], ATTRIBUTE_FIXED_PART_SIZE);
@@ -112,7 +114,7 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 	TupleDesc	desc;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(tupdesc->natts);
+	desc = CreateTemplateTupleDesc(tupdesc->natts, tupdesc->tdhasoid);
 
 	/* Flat-copy the attribute array */
 	memcpy(TupleDescAttr(desc, 0),
@@ -131,7 +133,6 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 		att->atthasdef = false;
 		att->atthasmissing = false;
 		att->attidentity = '\0';
-		att->attgenerated = '\0';
 	}
 
 	/* We can copy the tuple type identification, too */
@@ -153,7 +154,7 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 	TupleConstr *constr = tupdesc->constr;
 	int			i;
 
-	desc = CreateTemplateTupleDesc(tupdesc->natts);
+	desc = CreateTemplateTupleDesc(tupdesc->natts, tupdesc->tdhasoid);
 
 	/* Flat-copy the attribute array */
 	memcpy(TupleDescAttr(desc, 0),
@@ -166,7 +167,6 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 		TupleConstr *cpy = (TupleConstr *) palloc0(sizeof(TupleConstr));
 
 		cpy->has_not_null = constr->has_not_null;
-		cpy->has_generated_stored = constr->has_generated_stored;
 
 		if ((cpy->num_defval = constr->num_defval) > 0)
 		{
@@ -249,7 +249,6 @@ TupleDescCopy(TupleDesc dst, TupleDesc src)
 		att->atthasdef = false;
 		att->atthasmissing = false;
 		att->attidentity = '\0';
-		att->attgenerated = '\0';
 	}
 	dst->constr = NULL;
 
@@ -303,7 +302,6 @@ TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
 	dstAtt->atthasdef = false;
 	dstAtt->atthasmissing = false;
 	dstAtt->attidentity = '\0';
-	dstAtt->attgenerated = '\0';
 }
 
 /*
@@ -418,6 +416,8 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 		return false;
 	if (tupdesc1->tdtypeid != tupdesc2->tdtypeid)
 		return false;
+	if (tupdesc1->tdhasoid != tupdesc2->tdhasoid)
+		return false;
 
 	for (i = 0; i < tupdesc1->natts; i++)
 	{
@@ -460,8 +460,6 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 			return false;
 		if (attr1->attidentity != attr2->attidentity)
 			return false;
-		if (attr1->attgenerated != attr2->attgenerated)
-			return false;
 		if (attr1->attisdropped != attr2->attisdropped)
 			return false;
 		if (attr1->attislocal != attr2->attislocal)
@@ -481,8 +479,6 @@ equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2)
 		if (constr2 == NULL)
 			return false;
 		if (constr1->has_not_null != constr2->has_not_null)
-			return false;
-		if (constr1->has_generated_stored != constr2->has_generated_stored)
 			return false;
 		n = constr1->num_defval;
 		if (n != (int) constr2->num_defval)
@@ -578,6 +574,7 @@ hashTupleDesc(TupleDesc desc)
 
 	s = hash_combine(0, hash_uint32(desc->natts));
 	s = hash_combine(s, hash_uint32(desc->tdtypeid));
+	s = hash_combine(s, hash_uint32(desc->tdhasoid));
 	for (i = 0; i < desc->natts; ++i)
 		s = hash_combine(s, hash_uint32(TupleDescAttr(desc, i)->atttypid));
 
@@ -646,7 +643,6 @@ TupleDescInitEntry(TupleDesc desc,
 	att->atthasdef = false;
 	att->atthasmissing = false;
 	att->attidentity = '\0';
-	att->attgenerated = '\0';
 	att->attisdropped = false;
 	att->attislocal = true;
 	att->attinhcount = 0;
@@ -706,7 +702,6 @@ TupleDescInitBuiltinEntry(TupleDesc desc,
 	att->atthasdef = false;
 	att->atthasmissing = false;
 	att->attidentity = '\0';
-	att->attgenerated = '\0';
 	att->attisdropped = false;
 	att->attislocal = true;
 	att->attinhcount = 0;
@@ -725,37 +720,34 @@ TupleDescInitBuiltinEntry(TupleDesc desc,
 		case TEXTARRAYOID:
 			att->attlen = -1;
 			att->attbyval = false;
-			att->attalign = TYPALIGN_INT;
-			att->attstorage = TYPSTORAGE_EXTENDED;
+			att->attalign = 'i';
+			att->attstorage = 'x';
 			att->attcollation = DEFAULT_COLLATION_OID;
 			break;
 
 		case BOOLOID:
 			att->attlen = 1;
 			att->attbyval = true;
-			att->attalign = TYPALIGN_CHAR;
-			att->attstorage = TYPSTORAGE_PLAIN;
+			att->attalign = 'c';
+			att->attstorage = 'p';
 			att->attcollation = InvalidOid;
 			break;
 
 		case INT4OID:
 			att->attlen = 4;
 			att->attbyval = true;
-			att->attalign = TYPALIGN_INT;
-			att->attstorage = TYPSTORAGE_PLAIN;
+			att->attalign = 'i';
+			att->attstorage = 'p';
 			att->attcollation = InvalidOid;
 			break;
 
 		case INT8OID:
 			att->attlen = 8;
 			att->attbyval = FLOAT8PASSBYVAL;
-			att->attalign = TYPALIGN_DOUBLE;
-			att->attstorage = TYPSTORAGE_PLAIN;
+			att->attalign = 'd';
+			att->attstorage = 'p';
 			att->attcollation = InvalidOid;
 			break;
-
-		default:
-			elog(ERROR, "unsupported type %u", oidtypeid);
 	}
 }
 
@@ -808,7 +800,7 @@ BuildDescForRelation(List *schema)
 	 * allocate a new tuple descriptor
 	 */
 	natts = list_length(schema);
-	desc = CreateTemplateTupleDesc(natts);
+	desc = CreateTemplateTupleDesc(natts, false);
 	has_not_null = false;
 
 	attnum = 0;
@@ -863,7 +855,6 @@ BuildDescForRelation(List *schema)
 		TupleConstr *constr = (TupleConstr *) palloc0(sizeof(TupleConstr));
 
 		constr->has_not_null = true;
-		constr->has_generated_stored = false;
 		constr->defval = NULL;
 		constr->missing = NULL;
 		constr->num_defval = 0;
@@ -909,15 +900,26 @@ BuildDescFromLists(List *names, List *types, List *typmods, List *collations)
 	/*
 	 * allocate a new tuple descriptor
 	 */
-	desc = CreateTemplateTupleDesc(natts);
+	desc = CreateTemplateTupleDesc(natts, false);
 
 	attnum = 0;
-	forfour(l1, names, l2, types, l3, typmods, l4, collations)
+
+	l2 = list_head(types);
+	l3 = list_head(typmods);
+	l4 = list_head(collations);
+	foreach(l1, names)
 	{
 		char	   *attname = strVal(lfirst(l1));
-		Oid			atttypid = lfirst_oid(l2);
-		int32		atttypmod = lfirst_int(l3);
-		Oid			attcollation = lfirst_oid(l4);
+		Oid			atttypid;
+		int32		atttypmod;
+		Oid			attcollation;
+
+		atttypid = lfirst_oid(l2);
+		l2 = lnext(l2);
+		atttypmod = lfirst_int(l3);
+		l3 = lnext(l3);
+		attcollation = lfirst_oid(l4);
+		l4 = lnext(l4);
 
 		attnum++;
 

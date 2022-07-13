@@ -9,13 +9,9 @@ subdir = src/test/isolation
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-override CPPFLAGS := -I. -I$(srcdir) -I$(libpq_srcdir) \
-	-I$(srcdir)/../regress $(CPPFLAGS)
+override CPPFLAGS := -I$(srcdir) -I$(libpq_srcdir) -I$(srcdir)/../regress $(CPPFLAGS)
 
-OBJS = \
-	$(WIN32RES) \
-	isolationtester.o \
-	specparse.o
+OBJS =  specparse.o isolationtester.o $(WIN32RES)
 
 all: isolationtester$(X) pg_isolation_regress$(X)
 
@@ -59,11 +55,12 @@ installcheck: all
 check: all
 	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule
 
-# Non-default tests.  It only makes sense to run these if set up to use
-# prepared transactions, via TEMP_CONFIG for the check case, or via the
-# postgresql.conf for the installcheck case.
+# Versions of the check tests that include the prepared_transactions test
+# It only makes sense to run these if set up to use prepared transactions,
+# via TEMP_CONFIG for the check case, or via the postgresql.conf for the
+# installcheck case.
 installcheck-prepared-txns: all temp-install
-	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
+	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions
 
 check-prepared-txns: all temp-install
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
+	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions

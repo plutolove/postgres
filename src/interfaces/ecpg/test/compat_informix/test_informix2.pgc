@@ -41,6 +41,8 @@ static void sql_check(const char *fn, const char *caller, int ignore)
   }
 }
 
+
+
 int main(void)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
@@ -53,7 +55,7 @@ int main(void)
 
 	interval *intvl;
 
-	EXEC SQL whenever sqlerror stop;
+	EXEC SQL whenever sqlerror sqlprint;
 
 	ECPGdebug(1, stderr);
 

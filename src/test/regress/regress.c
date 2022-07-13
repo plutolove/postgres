@@ -6,7 +6,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/regress.c
@@ -16,58 +16,27 @@
 
 #include "postgres.h"
 
+#include <float.h>
 #include <math.h>
 #include <signal.h>
 
-#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/transam.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
-#include "nodes/supportnodes.h"
-#include "optimizer/optimizer.h"
-#include "optimizer/plancat.h"
 #include "port/atomics.h"
-#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/geo_decls.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/typcache.h"
+#include "utils/memutils.h"
 
-#define EXPECT_TRUE(expr)	\
-	do { \
-		if (!(expr)) \
-			elog(ERROR, \
-				 "%s was unexpectedly false in file \"%s\" line %u", \
-				 #expr, __FILE__, __LINE__); \
-	} while (0)
-
-#define EXPECT_EQ_U32(result_expr, expected_expr)	\
-	do { \
-		uint32		result = (result_expr); \
-		uint32		expected = (expected_expr); \
-		if (result != expected) \
-			elog(ERROR, \
-				 "%s yielded %u, expected %s in file \"%s\" line %u", \
-				 #result_expr, result, #expected_expr, __FILE__, __LINE__); \
-	} while (0)
-
-#define EXPECT_EQ_U64(result_expr, expected_expr)	\
-	do { \
-		uint64		result = (result_expr); \
-		uint64		expected = (expected_expr); \
-		if (result != expected) \
-			elog(ERROR, \
-				 "%s yielded " UINT64_FORMAT ", expected %s in file \"%s\" line %u", \
-				 #result_expr, result, #expected_expr, __FILE__, __LINE__); \
-	} while (0)
 
 #define LDELIM			'('
 #define RDELIM			')'
@@ -180,8 +149,8 @@ widget_in(PG_FUNCTION_ARGS)
 	if (i < NARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-				 errmsg("invalid input syntax for type %s: \"%s\"",
-						"widget", str)));
+				 errmsg("invalid input syntax for type widget: \"%s\"",
+						str)));
 
 	result = (WIDGET *) palloc(sizeof(WIDGET));
 	result->center.x = atof(coord[0]);
@@ -208,13 +177,8 @@ pt_in_widget(PG_FUNCTION_ARGS)
 {
 	Point	   *point = PG_GETARG_POINT_P(0);
 	WIDGET	   *widget = (WIDGET *) PG_GETARG_POINTER(1);
-	float8		distance;
 
-	distance = DatumGetFloat8(DirectFunctionCall2(point_distance,
-												  PointPGetDatum(point),
-												  PointPGetDatum(&widget->center)));
-
-	PG_RETURN_BOOL(distance < widget->radius);
+	PG_RETURN_BOOL(point_dt(point, &widget->center) < widget->radius);
 }
 
 PG_FUNCTION_INFO_V1(reverse_name);
@@ -586,7 +550,7 @@ make_tuple_indirect(PG_FUNCTION_ARGS)
 
 		/* copy datum, so it still lives later */
 		if (VARATT_IS_EXTERNAL_ONDISK(attr))
-			attr = detoast_external_attr(attr);
+			attr = heap_tuple_fetch_attr(attr);
 		else
 		{
 			struct varlena *oldattr = attr;
@@ -674,13 +638,27 @@ test_atomic_flag(void)
 	pg_atomic_flag flag;
 
 	pg_atomic_init_flag(&flag);
-	EXPECT_TRUE(pg_atomic_unlocked_test_flag(&flag));
-	EXPECT_TRUE(pg_atomic_test_set_flag(&flag));
-	EXPECT_TRUE(!pg_atomic_unlocked_test_flag(&flag));
-	EXPECT_TRUE(!pg_atomic_test_set_flag(&flag));
+
+	if (!pg_atomic_unlocked_test_flag(&flag))
+		elog(ERROR, "flag: unexpectedly set");
+
+	if (!pg_atomic_test_set_flag(&flag))
+		elog(ERROR, "flag: couldn't set");
+
+	if (pg_atomic_unlocked_test_flag(&flag))
+		elog(ERROR, "flag: unexpectedly unset");
+
+	if (pg_atomic_test_set_flag(&flag))
+		elog(ERROR, "flag: set spuriously #2");
+
 	pg_atomic_clear_flag(&flag);
-	EXPECT_TRUE(pg_atomic_unlocked_test_flag(&flag));
-	EXPECT_TRUE(pg_atomic_test_set_flag(&flag));
+
+	if (!pg_atomic_unlocked_test_flag(&flag))
+		elog(ERROR, "flag: unexpectedly set #2");
+
+	if (!pg_atomic_test_set_flag(&flag))
+		elog(ERROR, "flag: couldn't set");
+
 	pg_atomic_clear_flag(&flag);
 }
 
@@ -692,46 +670,61 @@ test_atomic_uint32(void)
 	int			i;
 
 	pg_atomic_init_u32(&var, 0);
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), 0);
+
+	if (pg_atomic_read_u32(&var) != 0)
+		elog(ERROR, "atomic_read_u32() #1 wrong");
+
 	pg_atomic_write_u32(&var, 3);
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), 3);
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, pg_atomic_read_u32(&var) - 2),
-				  3);
-	EXPECT_EQ_U32(pg_atomic_fetch_sub_u32(&var, 1), 4);
-	EXPECT_EQ_U32(pg_atomic_sub_fetch_u32(&var, 3), 0);
-	EXPECT_EQ_U32(pg_atomic_add_fetch_u32(&var, 10), 10);
-	EXPECT_EQ_U32(pg_atomic_exchange_u32(&var, 5), 10);
-	EXPECT_EQ_U32(pg_atomic_exchange_u32(&var, 0), 5);
+
+	if (pg_atomic_read_u32(&var) != 3)
+		elog(ERROR, "atomic_read_u32() #2 wrong");
+
+	if (pg_atomic_fetch_add_u32(&var, 1) != 3)
+		elog(ERROR, "atomic_fetch_add_u32() #1 wrong");
+
+	if (pg_atomic_fetch_sub_u32(&var, 1) != 4)
+		elog(ERROR, "atomic_fetch_sub_u32() #1 wrong");
+
+	if (pg_atomic_sub_fetch_u32(&var, 3) != 0)
+		elog(ERROR, "atomic_sub_fetch_u32() #1 wrong");
+
+	if (pg_atomic_add_fetch_u32(&var, 10) != 10)
+		elog(ERROR, "atomic_add_fetch_u32() #1 wrong");
+
+	if (pg_atomic_exchange_u32(&var, 5) != 10)
+		elog(ERROR, "pg_atomic_exchange_u32() #1 wrong");
+
+	if (pg_atomic_exchange_u32(&var, 0) != 5)
+		elog(ERROR, "pg_atomic_exchange_u32() #0 wrong");
 
 	/* test around numerical limits */
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, INT_MAX), 0);
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, INT_MAX), INT_MAX);
-	pg_atomic_fetch_add_u32(&var, 2);	/* wrap to 0 */
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, PG_INT16_MAX), 0);
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, PG_INT16_MAX + 1),
-				  PG_INT16_MAX);
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, PG_INT16_MIN),
-				  2 * PG_INT16_MAX + 1);
-	EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&var, PG_INT16_MIN - 1),
-				  PG_INT16_MAX);
+	if (pg_atomic_fetch_add_u32(&var, INT_MAX) != 0)
+		elog(ERROR, "pg_atomic_fetch_add_u32() #2 wrong");
+
+	if (pg_atomic_fetch_add_u32(&var, INT_MAX) != INT_MAX)
+		elog(ERROR, "pg_atomic_add_fetch_u32() #3 wrong");
+
 	pg_atomic_fetch_add_u32(&var, 1);	/* top up to UINT_MAX */
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), UINT_MAX);
-	EXPECT_EQ_U32(pg_atomic_fetch_sub_u32(&var, INT_MAX), UINT_MAX);
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), (uint32) INT_MAX + 1);
-	EXPECT_EQ_U32(pg_atomic_sub_fetch_u32(&var, INT_MAX), 1);
+
+	if (pg_atomic_read_u32(&var) != UINT_MAX)
+		elog(ERROR, "atomic_read_u32() #2 wrong");
+
+	if (pg_atomic_fetch_sub_u32(&var, INT_MAX) != UINT_MAX)
+		elog(ERROR, "pg_atomic_fetch_sub_u32() #2 wrong");
+
+	if (pg_atomic_read_u32(&var) != (uint32) INT_MAX + 1)
+		elog(ERROR, "atomic_read_u32() #3 wrong: %u", pg_atomic_read_u32(&var));
+
+	expected = pg_atomic_sub_fetch_u32(&var, INT_MAX);
+	if (expected != 1)
+		elog(ERROR, "pg_atomic_sub_fetch_u32() #3 wrong: %u", expected);
+
 	pg_atomic_sub_fetch_u32(&var, 1);
-	expected = PG_INT16_MAX;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u32(&var, &expected, 1));
-	expected = PG_INT16_MAX + 1;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u32(&var, &expected, 1));
-	expected = PG_INT16_MIN;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u32(&var, &expected, 1));
-	expected = PG_INT16_MIN - 1;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u32(&var, &expected, 1));
 
 	/* fail exchange because of old expected */
 	expected = 10;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u32(&var, &expected, 1));
+	if (pg_atomic_compare_exchange_u32(&var, &expected, 1))
+		elog(ERROR, "atomic_compare_exchange_u32() changed value spuriously");
 
 	/* CAS is allowed to fail due to interrupts, try a couple of times */
 	for (i = 0; i < 1000; i++)
@@ -742,18 +735,31 @@ test_atomic_uint32(void)
 	}
 	if (i == 1000)
 		elog(ERROR, "atomic_compare_exchange_u32() never succeeded");
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), 1);
+	if (pg_atomic_read_u32(&var) != 1)
+		elog(ERROR, "atomic_compare_exchange_u32() didn't set value properly");
+
 	pg_atomic_write_u32(&var, 0);
 
 	/* try setting flagbits */
-	EXPECT_TRUE(!(pg_atomic_fetch_or_u32(&var, 1) & 1));
-	EXPECT_TRUE(pg_atomic_fetch_or_u32(&var, 2) & 1);
-	EXPECT_EQ_U32(pg_atomic_read_u32(&var), 3);
+	if (pg_atomic_fetch_or_u32(&var, 1) & 1)
+		elog(ERROR, "pg_atomic_fetch_or_u32() #1 wrong");
+
+	if (!(pg_atomic_fetch_or_u32(&var, 2) & 1))
+		elog(ERROR, "pg_atomic_fetch_or_u32() #2 wrong");
+
+	if (pg_atomic_read_u32(&var) != 3)
+		elog(ERROR, "invalid result after pg_atomic_fetch_or_u32()");
+
 	/* try clearing flagbits */
-	EXPECT_EQ_U32(pg_atomic_fetch_and_u32(&var, ~2) & 3, 3);
-	EXPECT_EQ_U32(pg_atomic_fetch_and_u32(&var, ~1), 1);
+	if ((pg_atomic_fetch_and_u32(&var, ~2) & 3) != 3)
+		elog(ERROR, "pg_atomic_fetch_and_u32() #1 wrong");
+
+	if (pg_atomic_fetch_and_u32(&var, ~1) != 1)
+		elog(ERROR, "pg_atomic_fetch_and_u32() #2 wrong: is %u",
+			 pg_atomic_read_u32(&var));
 	/* no bits set anymore */
-	EXPECT_EQ_U32(pg_atomic_fetch_and_u32(&var, ~0), 0);
+	if (pg_atomic_fetch_and_u32(&var, ~0) != 0)
+		elog(ERROR, "pg_atomic_fetch_and_u32() #3 wrong");
 }
 
 static void
@@ -764,20 +770,37 @@ test_atomic_uint64(void)
 	int			i;
 
 	pg_atomic_init_u64(&var, 0);
-	EXPECT_EQ_U64(pg_atomic_read_u64(&var), 0);
+
+	if (pg_atomic_read_u64(&var) != 0)
+		elog(ERROR, "atomic_read_u64() #1 wrong");
+
 	pg_atomic_write_u64(&var, 3);
-	EXPECT_EQ_U64(pg_atomic_read_u64(&var), 3);
-	EXPECT_EQ_U64(pg_atomic_fetch_add_u64(&var, pg_atomic_read_u64(&var) - 2),
-				  3);
-	EXPECT_EQ_U64(pg_atomic_fetch_sub_u64(&var, 1), 4);
-	EXPECT_EQ_U64(pg_atomic_sub_fetch_u64(&var, 3), 0);
-	EXPECT_EQ_U64(pg_atomic_add_fetch_u64(&var, 10), 10);
-	EXPECT_EQ_U64(pg_atomic_exchange_u64(&var, 5), 10);
-	EXPECT_EQ_U64(pg_atomic_exchange_u64(&var, 0), 5);
+
+	if (pg_atomic_read_u64(&var) != 3)
+		elog(ERROR, "atomic_read_u64() #2 wrong");
+
+	if (pg_atomic_fetch_add_u64(&var, 1) != 3)
+		elog(ERROR, "atomic_fetch_add_u64() #1 wrong");
+
+	if (pg_atomic_fetch_sub_u64(&var, 1) != 4)
+		elog(ERROR, "atomic_fetch_sub_u64() #1 wrong");
+
+	if (pg_atomic_sub_fetch_u64(&var, 3) != 0)
+		elog(ERROR, "atomic_sub_fetch_u64() #1 wrong");
+
+	if (pg_atomic_add_fetch_u64(&var, 10) != 10)
+		elog(ERROR, "atomic_add_fetch_u64() #1 wrong");
+
+	if (pg_atomic_exchange_u64(&var, 5) != 10)
+		elog(ERROR, "pg_atomic_exchange_u64() #1 wrong");
+
+	if (pg_atomic_exchange_u64(&var, 0) != 5)
+		elog(ERROR, "pg_atomic_exchange_u64() #0 wrong");
 
 	/* fail exchange because of old expected */
 	expected = 10;
-	EXPECT_TRUE(!pg_atomic_compare_exchange_u64(&var, &expected, 1));
+	if (pg_atomic_compare_exchange_u64(&var, &expected, 1))
+		elog(ERROR, "atomic_compare_exchange_u64() changed value spuriously");
 
 	/* CAS is allowed to fail due to interrupts, try a couple of times */
 	for (i = 0; i < 100; i++)
@@ -788,173 +811,33 @@ test_atomic_uint64(void)
 	}
 	if (i == 100)
 		elog(ERROR, "atomic_compare_exchange_u64() never succeeded");
-	EXPECT_EQ_U64(pg_atomic_read_u64(&var), 1);
+	if (pg_atomic_read_u64(&var) != 1)
+		elog(ERROR, "atomic_compare_exchange_u64() didn't set value properly");
 
 	pg_atomic_write_u64(&var, 0);
 
 	/* try setting flagbits */
-	EXPECT_TRUE(!(pg_atomic_fetch_or_u64(&var, 1) & 1));
-	EXPECT_TRUE(pg_atomic_fetch_or_u64(&var, 2) & 1);
-	EXPECT_EQ_U64(pg_atomic_read_u64(&var), 3);
+	if (pg_atomic_fetch_or_u64(&var, 1) & 1)
+		elog(ERROR, "pg_atomic_fetch_or_u64() #1 wrong");
+
+	if (!(pg_atomic_fetch_or_u64(&var, 2) & 1))
+		elog(ERROR, "pg_atomic_fetch_or_u64() #2 wrong");
+
+	if (pg_atomic_read_u64(&var) != 3)
+		elog(ERROR, "invalid result after pg_atomic_fetch_or_u64()");
+
 	/* try clearing flagbits */
-	EXPECT_EQ_U64((pg_atomic_fetch_and_u64(&var, ~2) & 3), 3);
-	EXPECT_EQ_U64(pg_atomic_fetch_and_u64(&var, ~1), 1);
+	if ((pg_atomic_fetch_and_u64(&var, ~2) & 3) != 3)
+		elog(ERROR, "pg_atomic_fetch_and_u64() #1 wrong");
+
+	if (pg_atomic_fetch_and_u64(&var, ~1) != 1)
+		elog(ERROR, "pg_atomic_fetch_and_u64() #2 wrong: is " UINT64_FORMAT,
+			 pg_atomic_read_u64(&var));
 	/* no bits set anymore */
-	EXPECT_EQ_U64(pg_atomic_fetch_and_u64(&var, ~0), 0);
+	if (pg_atomic_fetch_and_u64(&var, ~0) != 0)
+		elog(ERROR, "pg_atomic_fetch_and_u64() #3 wrong");
 }
 
-/*
- * Perform, fairly minimal, testing of the spinlock implementation.
- *
- * It's likely worth expanding these to actually test concurrency etc, but
- * having some regularly run tests is better than none.
- */
-static void
-test_spinlock(void)
-{
-	/*
-	 * Basic tests for spinlocks, as well as the underlying operations.
-	 *
-	 * We embed the spinlock in a struct with other members to test that the
-	 * spinlock operations don't perform too wide writes.
-	 */
-	{
-		struct test_lock_struct
-		{
-			char		data_before[4];
-			slock_t		lock;
-			char		data_after[4];
-		} struct_w_lock;
-
-		memcpy(struct_w_lock.data_before, "abcd", 4);
-		memcpy(struct_w_lock.data_after, "ef12", 4);
-
-		/* test basic operations via the SpinLock* API */
-		SpinLockInit(&struct_w_lock.lock);
-		SpinLockAcquire(&struct_w_lock.lock);
-		SpinLockRelease(&struct_w_lock.lock);
-
-		/* test basic operations via underlying S_* API */
-		S_INIT_LOCK(&struct_w_lock.lock);
-		S_LOCK(&struct_w_lock.lock);
-		S_UNLOCK(&struct_w_lock.lock);
-
-		/* and that "contended" acquisition works */
-		s_lock(&struct_w_lock.lock, "testfile", 17, "testfunc");
-		S_UNLOCK(&struct_w_lock.lock);
-
-		/*
-		 * Check, using TAS directly, that a single spin cycle doesn't block
-		 * when acquiring an already acquired lock.
-		 */
-#ifdef TAS
-		S_LOCK(&struct_w_lock.lock);
-
-		if (!TAS(&struct_w_lock.lock))
-			elog(ERROR, "acquired already held spinlock");
-
-#ifdef TAS_SPIN
-		if (!TAS_SPIN(&struct_w_lock.lock))
-			elog(ERROR, "acquired already held spinlock");
-#endif							/* defined(TAS_SPIN) */
-
-		S_UNLOCK(&struct_w_lock.lock);
-#endif							/* defined(TAS) */
-
-		/*
-		 * Verify that after all of this the non-lock contents are still
-		 * correct.
-		 */
-		if (memcmp(struct_w_lock.data_before, "abcd", 4) != 0)
-			elog(ERROR, "padding before spinlock modified");
-		if (memcmp(struct_w_lock.data_after, "ef12", 4) != 0)
-			elog(ERROR, "padding after spinlock modified");
-	}
-
-	/*
-	 * Ensure that allocating more than INT32_MAX emulated spinlocks
-	 * works. That's interesting because the spinlock emulation uses a 32bit
-	 * integer to map spinlocks onto semaphores. There've been bugs...
-	 */
-#ifndef HAVE_SPINLOCKS
-	{
-		/*
-		 * Initialize enough spinlocks to advance counter close to
-		 * wraparound. It's too expensive to perform acquire/release for each,
-		 * as those may be syscalls when the spinlock emulation is used (and
-		 * even just atomic TAS would be expensive).
-		 */
-		for (uint32 i = 0; i < INT32_MAX - 100000; i++)
-		{
-			slock_t lock;
-
-			SpinLockInit(&lock);
-		}
-
-		for (uint32 i = 0; i < 200000; i++)
-		{
-			slock_t lock;
-
-			SpinLockInit(&lock);
-
-			SpinLockAcquire(&lock);
-			SpinLockRelease(&lock);
-			SpinLockAcquire(&lock);
-			SpinLockRelease(&lock);
-		}
-	}
-#endif
-}
-
-/*
- * Verify that performing atomic ops inside a spinlock isn't a
- * problem. Realistically that's only going to be a problem when both
- * --disable-spinlocks and --disable-atomics are used, but it's cheap enough
- * to just always test.
- *
- * The test works by initializing enough atomics that we'd conflict if there
- * were an overlap between a spinlock and an atomic by holding a spinlock
- * while manipulating more than NUM_SPINLOCK_SEMAPHORES atomics.
- *
- * NUM_TEST_ATOMICS doesn't really need to be more than
- * NUM_SPINLOCK_SEMAPHORES, but it seems better to test a bit more
- * extensively.
- */
-static void
-test_atomic_spin_nest(void)
-{
-	slock_t lock;
-#define NUM_TEST_ATOMICS (NUM_SPINLOCK_SEMAPHORES + NUM_ATOMICS_SEMAPHORES + 27)
-	pg_atomic_uint32 atomics32[NUM_TEST_ATOMICS];
-	pg_atomic_uint64 atomics64[NUM_TEST_ATOMICS];
-
-	SpinLockInit(&lock);
-
-	for (int i = 0; i < NUM_TEST_ATOMICS; i++)
-	{
-		pg_atomic_init_u32(&atomics32[i], 0);
-		pg_atomic_init_u64(&atomics64[i], 0);
-	}
-
-	/* just so it's not all zeroes */
-	for (int i = 0; i < NUM_TEST_ATOMICS; i++)
-	{
-		EXPECT_EQ_U32(pg_atomic_fetch_add_u32(&atomics32[i], i), 0);
-		EXPECT_EQ_U64(pg_atomic_fetch_add_u64(&atomics64[i], i), 0);
-	}
-
-	/* test whether we can do atomic op with lock held */
-	SpinLockAcquire(&lock);
-	for (int i = 0; i < NUM_TEST_ATOMICS; i++)
-	{
-		EXPECT_EQ_U32(pg_atomic_fetch_sub_u32(&atomics32[i], i), i);
-		EXPECT_EQ_U32(pg_atomic_read_u32(&atomics32[i]), 0);
-		EXPECT_EQ_U64(pg_atomic_fetch_sub_u64(&atomics64[i], i), i);
-		EXPECT_EQ_U64(pg_atomic_read_u64(&atomics64[i]), 0);
-	}
-	SpinLockRelease(&lock);
-}
-#undef NUM_TEST_ATOMICS
 
 PG_FUNCTION_INFO_V1(test_atomic_ops);
 Datum
@@ -966,14 +849,6 @@ test_atomic_ops(PG_FUNCTION_ARGS)
 
 	test_atomic_uint64();
 
-	/*
-	 * Arguably this shouldn't be tested as part of this function, but it's
-	 * closely enough related that that seems ok for now.
-	 */
-	test_spinlock();
-
-	test_atomic_spin_nest();
-
 	PG_RETURN_BOOL(true);
 }
 
@@ -982,85 +857,5 @@ Datum
 test_fdw_handler(PG_FUNCTION_ARGS)
 {
 	elog(ERROR, "test_fdw_handler is not implemented");
-	PG_RETURN_NULL();
-}
-
-PG_FUNCTION_INFO_V1(test_support_func);
-Datum
-test_support_func(PG_FUNCTION_ARGS)
-{
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
-	Node	   *ret = NULL;
-
-	if (IsA(rawreq, SupportRequestSelectivity))
-	{
-		/*
-		 * Assume that the target is int4eq; that's safe as long as we don't
-		 * attach this to any other boolean-returning function.
-		 */
-		SupportRequestSelectivity *req = (SupportRequestSelectivity *) rawreq;
-		Selectivity s1;
-
-		if (req->is_join)
-			s1 = join_selectivity(req->root, Int4EqualOperator,
-								  req->args,
-								  req->inputcollid,
-								  req->jointype,
-								  req->sjinfo);
-		else
-			s1 = restriction_selectivity(req->root, Int4EqualOperator,
-										 req->args,
-										 req->inputcollid,
-										 req->varRelid);
-
-		req->selectivity = s1;
-		ret = (Node *) req;
-	}
-
-	if (IsA(rawreq, SupportRequestCost))
-	{
-		/* Provide some generic estimate */
-		SupportRequestCost *req = (SupportRequestCost *) rawreq;
-
-		req->startup = 0;
-		req->per_tuple = 2 * cpu_operator_cost;
-		ret = (Node *) req;
-	}
-
-	if (IsA(rawreq, SupportRequestRows))
-	{
-		/*
-		 * Assume that the target is generate_series_int4; that's safe as long
-		 * as we don't attach this to any other set-returning function.
-		 */
-		SupportRequestRows *req = (SupportRequestRows *) rawreq;
-
-		if (req->node && IsA(req->node, FuncExpr))	/* be paranoid */
-		{
-			List	   *args = ((FuncExpr *) req->node)->args;
-			Node	   *arg1 = linitial(args);
-			Node	   *arg2 = lsecond(args);
-
-			if (IsA(arg1, Const) &&
-				!((Const *) arg1)->constisnull &&
-				IsA(arg2, Const) &&
-				!((Const *) arg2)->constisnull)
-			{
-				int32		val1 = DatumGetInt32(((Const *) arg1)->constvalue);
-				int32		val2 = DatumGetInt32(((Const *) arg2)->constvalue);
-
-				req->rows = val2 - val1 + 1;
-				ret = (Node *) req;
-			}
-		}
-	}
-
-	PG_RETURN_POINTER(ret);
-}
-
-PG_FUNCTION_INFO_V1(test_opclass_options_func);
-Datum
-test_opclass_options_func(PG_FUNCTION_ARGS)
-{
 	PG_RETURN_NULL();
 }

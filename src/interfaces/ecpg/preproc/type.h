@@ -53,10 +53,10 @@ void		ECPGfree_type(struct ECPGtype *);
    size is the maxsize in case it is a varchar. Otherwise it is the size of
 	   the variable (required to do array fetches of structs).
  */
-void		ECPGdump_a_type(FILE *, const char *, struct ECPGtype *, const int,
-							const char *, struct ECPGtype *, const int,
-							const char *, const char *, char *,
-							const char *, const char *);
+void ECPGdump_a_type(FILE *, const char *, struct ECPGtype *, const int,
+				const char *, struct ECPGtype *, const int,
+				const char *, const char *, char *,
+				const char *, const char *);
 
 /* A simple struct to keep a variable and its type. */
 struct ECPGtemp_type
@@ -106,12 +106,6 @@ struct prep
 	char	   *type;
 };
 
-struct exec
-{
-	char	   *name;
-	char	   *type;
-};
-
 struct this_type
 {
 	enum ECPGttype type_enum;
@@ -152,8 +146,8 @@ struct typedefs
 
 struct _defines
 {
-	char	   *olddef;
-	char	   *newdef;
+	char	   *old;
+	char	   *new;
 	int			pertinent;
 	void	   *used;
 	struct _defines *next;

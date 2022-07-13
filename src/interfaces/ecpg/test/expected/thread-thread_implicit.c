@@ -11,7 +11,7 @@
  *	Thread test program
  *	by Lee Kindness.
  */
-#include <stdint.h>
+
 #include <stdlib.h>
 #include "ecpg_config.h"
 
@@ -53,7 +53,7 @@ int main()
 #else
   HANDLE *threads;
 #endif
-  intptr_t n;
+  int n;
   /* exec sql begin declare section */
    
   
@@ -97,7 +97,7 @@ int main()
   for( n = 0; n < nthreads; n++ )
     {
 #ifndef WIN32
-      pthread_create(&threads[n], NULL, test_thread, (void *) (n + 1));
+      pthread_create(&threads[n], NULL, test_thread, (void *) (long) (n + 1));
 #else
       threads[n] = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) test_thread, (void *) (n+1), 0, NULL);
 #endif
@@ -139,7 +139,7 @@ int main()
 
 void *test_thread(void *arg)
 {
-  long threadnum = (intptr_t) arg;
+  long threadnum = (long)arg;
 
   /* exec sql begin declare section */
     
@@ -154,6 +154,12 @@ void *test_thread(void *arg)
 #line 106 "thread_implicit.pgc"
 
 
+#ifdef WIN32
+#ifdef _MSC_VER                /* requires MSVC */
+	_configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+#endif
+#endif
+
   /* build up connection name, and connect to database */
 #ifndef _MSC_VER
   snprintf(l_connection, sizeof(l_connection), "thread_%03ld", threadnum);
@@ -161,13 +167,13 @@ void *test_thread(void *arg)
   _snprintf(l_connection, sizeof(l_connection), "thread_%03ld", threadnum);
 #endif
   /* exec sql whenever sqlerror  sqlprint ; */
-#line 114 "thread_implicit.pgc"
+#line 120 "thread_implicit.pgc"
 
   { ECPGconnect(__LINE__, 0, "ecpg1_regression" , NULL, NULL , l_connection, 0); 
-#line 115 "thread_implicit.pgc"
+#line 121 "thread_implicit.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 115 "thread_implicit.pgc"
+#line 121 "thread_implicit.pgc"
 
   if( sqlca.sqlcode != 0 )
     {
@@ -175,10 +181,10 @@ if (sqlca.sqlcode < 0) sqlprint();}
       return NULL;
     }
   { ECPGtrans(__LINE__, NULL, "begin");
-#line 121 "thread_implicit.pgc"
+#line 127 "thread_implicit.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 121 "thread_implicit.pgc"
+#line 127 "thread_implicit.pgc"
 
 
   /* insert into test_thread table */
@@ -189,10 +195,10 @@ if (sqlca.sqlcode < 0) sqlprint();}
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, 
 	ECPGt_int,&(l_i),(long)1,(long)1,sizeof(int), 
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EOIT, ECPGt_EORT);
-#line 126 "thread_implicit.pgc"
+#line 132 "thread_implicit.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 126 "thread_implicit.pgc"
+#line 132 "thread_implicit.pgc"
 
       if( sqlca.sqlcode != 0 )
 	printf("%s: ERROR: insert failed!\n", l_connection);
@@ -200,16 +206,16 @@ if (sqlca.sqlcode < 0) sqlprint();}
 
   /* all done */
   { ECPGtrans(__LINE__, NULL, "commit");
-#line 132 "thread_implicit.pgc"
+#line 138 "thread_implicit.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 132 "thread_implicit.pgc"
+#line 138 "thread_implicit.pgc"
 
   { ECPGdisconnect(__LINE__, l_connection);
-#line 133 "thread_implicit.pgc"
+#line 139 "thread_implicit.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint();}
-#line 133 "thread_implicit.pgc"
+#line 139 "thread_implicit.pgc"
 
   return NULL;
 }

@@ -3,7 +3,7 @@
  * base64.c
  *	  Encoding and decoding routines for base64 without whitespace.
  *
- * Copyright (c) 2001-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2018, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -42,11 +42,10 @@ static const int8 b64lookup[128] = {
  * pg_b64_encode
  *
  * Encode into base64 the given string.  Returns the length of the encoded
- * string, and -1 in the event of an error with the result buffer zeroed
- * for safety.
+ * string.
  */
 int
-pg_b64_encode(const char *src, int len, char *dst, int dstlen)
+pg_b64_encode(const char *src, int len, char *dst)
 {
 	char	   *p;
 	const char *s,
@@ -66,13 +65,6 @@ pg_b64_encode(const char *src, int len, char *dst, int dstlen)
 		/* write it out */
 		if (pos < 0)
 		{
-			/*
-			 * Leave if there is an overflow in the area allocated for the
-			 * encoded string.
-			 */
-			if ((p - dst + 4) > dstlen)
-				goto error;
-
 			*p++ = _base64[(buf >> 18) & 0x3f];
 			*p++ = _base64[(buf >> 12) & 0x3f];
 			*p++ = _base64[(buf >> 6) & 0x3f];
@@ -84,36 +76,23 @@ pg_b64_encode(const char *src, int len, char *dst, int dstlen)
 	}
 	if (pos != 2)
 	{
-		/*
-		 * Leave if there is an overflow in the area allocated for the encoded
-		 * string.
-		 */
-		if ((p - dst + 4) > dstlen)
-			goto error;
-
 		*p++ = _base64[(buf >> 18) & 0x3f];
 		*p++ = _base64[(buf >> 12) & 0x3f];
 		*p++ = (pos == 0) ? _base64[(buf >> 6) & 0x3f] : '=';
 		*p++ = '=';
 	}
 
-	Assert((p - dst) <= dstlen);
 	return p - dst;
-
-error:
-	memset(dst, 0, dstlen);
-	return -1;
 }
 
 /*
  * pg_b64_decode
  *
  * Decode the given base64 string.  Returns the length of the decoded
- * string on success, and -1 in the event of an error with the result
- * buffer zeroed for safety.
+ * string on success, and -1 in the event of an error.
  */
 int
-pg_b64_decode(const char *src, int len, char *dst, int dstlen)
+pg_b64_decode(const char *src, int len, char *dst)
 {
 	const char *srcend = src + len,
 			   *s = src;
@@ -130,7 +109,7 @@ pg_b64_decode(const char *src, int len, char *dst, int dstlen)
 
 		/* Leave if a whitespace is found */
 		if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-			goto error;
+			return -1;
 
 		if (c == '=')
 		{
@@ -147,7 +126,7 @@ pg_b64_decode(const char *src, int len, char *dst, int dstlen)
 					 * Unexpected "=" character found while decoding base64
 					 * sequence.
 					 */
-					goto error;
+					return -1;
 				}
 			}
 			b = 0;
@@ -160,7 +139,7 @@ pg_b64_decode(const char *src, int len, char *dst, int dstlen)
 			if (b < 0)
 			{
 				/* invalid symbol found */
-				goto error;
+				return -1;
 			}
 		}
 		/* add it to buffer */
@@ -168,28 +147,11 @@ pg_b64_decode(const char *src, int len, char *dst, int dstlen)
 		pos++;
 		if (pos == 4)
 		{
-			/*
-			 * Leave if there is an overflow in the area allocated for the
-			 * decoded string.
-			 */
-			if ((p - dst + 1) > dstlen)
-				goto error;
 			*p++ = (buf >> 16) & 255;
-
 			if (end == 0 || end > 1)
-			{
-				/* overflow check */
-				if ((p - dst + 1) > dstlen)
-					goto error;
 				*p++ = (buf >> 8) & 255;
-			}
 			if (end == 0 || end > 2)
-			{
-				/* overflow check */
-				if ((p - dst + 1) > dstlen)
-					goto error;
 				*p++ = buf & 255;
-			}
 			buf = 0;
 			pos = 0;
 		}
@@ -201,15 +163,10 @@ pg_b64_decode(const char *src, int len, char *dst, int dstlen)
 		 * base64 end sequence is invalid.  Input data is missing padding, is
 		 * truncated or is otherwise corrupted.
 		 */
-		goto error;
+		return -1;
 	}
 
-	Assert((p - dst) <= dstlen);
 	return p - dst;
-
-error:
-	memset(dst, 0, dstlen);
-	return -1;
 }
 
 /*

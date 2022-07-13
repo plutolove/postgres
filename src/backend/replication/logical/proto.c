@@ -3,7 +3,7 @@
  * proto.c
  *		logical replication protocol functions
  *
- * Copyright (c) 2015-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/replication/logical/proto.c
@@ -31,7 +31,7 @@
 
 static void logicalrep_write_attrs(StringInfo out, Relation rel);
 static void logicalrep_write_tuple(StringInfo out, Relation rel,
-								   HeapTuple tuple);
+					   HeapTuple tuple);
 
 static void logicalrep_read_attrs(StringInfo in, LogicalRepRelation *rel);
 static void logicalrep_read_tuple(StringInfo in, LogicalRepTupleData *tuple);
@@ -142,6 +142,10 @@ void
 logicalrep_write_insert(StringInfo out, Relation rel, HeapTuple newtuple)
 {
 	pq_sendbyte(out, 'I');		/* action INSERT */
+
+	Assert(rel->rd_rel->relreplident == REPLICA_IDENTITY_DEFAULT ||
+		   rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL ||
+		   rel->rd_rel->relreplident == REPLICA_IDENTITY_INDEX);
 
 	/* use Oid as relation identifier */
 	pq_sendint32(out, RelationGetRelid(rel));
@@ -449,7 +453,7 @@ logicalrep_write_tuple(StringInfo out, Relation rel, HeapTuple tuple)
 
 	for (i = 0; i < desc->natts; i++)
 	{
-		if (TupleDescAttr(desc, i)->attisdropped || TupleDescAttr(desc, i)->attgenerated)
+		if (TupleDescAttr(desc, i)->attisdropped)
 			continue;
 		nliveatts++;
 	}
@@ -469,7 +473,8 @@ logicalrep_write_tuple(StringInfo out, Relation rel, HeapTuple tuple)
 		Form_pg_attribute att = TupleDescAttr(desc, i);
 		char	   *outputstr;
 
-		if (att->attisdropped || att->attgenerated)
+		/* skip dropped columns */
+		if (att->attisdropped)
 			continue;
 
 		if (isnull[i])
@@ -568,7 +573,7 @@ logicalrep_write_attrs(StringInfo out, Relation rel)
 	/* send number of live attributes */
 	for (i = 0; i < desc->natts; i++)
 	{
-		if (TupleDescAttr(desc, i)->attisdropped || TupleDescAttr(desc, i)->attgenerated)
+		if (TupleDescAttr(desc, i)->attisdropped)
 			continue;
 		nliveatts++;
 	}
@@ -586,7 +591,7 @@ logicalrep_write_attrs(StringInfo out, Relation rel)
 		Form_pg_attribute att = TupleDescAttr(desc, i);
 		uint8		flags = 0;
 
-		if (att->attisdropped || att->attgenerated)
+		if (att->attisdropped)
 			continue;
 
 		/* REPLICA IDENTITY FULL means all columns are sent as part of key. */

@@ -3,7 +3,7 @@
  * filemap.c
  *	  A data structure for keeping track of files that have changed.
  *
- * Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -13,34 +13,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "catalog/pg_tablespace_d.h"
-#include "common/string.h"
 #include "datapagemap.h"
 #include "filemap.h"
+#include "logging.h"
 #include "pg_rewind.h"
+
+#include "common/string.h"
+#include "catalog/pg_tablespace_d.h"
 #include "storage/fd.h"
 
 filemap_t  *filemap = NULL;
 
 static bool isRelDataFile(const char *path);
 static char *datasegpath(RelFileNode rnode, ForkNumber forknum,
-						 BlockNumber segno);
+			BlockNumber segno);
 static int	path_cmp(const void *a, const void *b);
 static int	final_filemap_cmp(const void *a, const void *b);
 static void filemap_list_to_array(filemap_t *map);
 static bool check_file_excluded(const char *path, bool is_source);
-
-/*
- * Definition of one element part of an exclusion list, used to exclude
- * contents when rewinding.  "name" is the name of the file or path to
- * check for exclusion.  If "match_prefix" is true, any items matching
- * the name as prefix are excluded.
- */
-struct exclude_list_item
-{
-	const char *name;
-	bool		match_prefix;
-};
 
 /*
  * The contents of these directories are removed or recreated during server
@@ -75,7 +65,7 @@ static const char *excludeDirContents[] =
 
 	/*
 	 * Old contents are loaded for possible debugging but are not required for
-	 * normal operation, see SerialInit().
+	 * normal operation, see OldSerXidInit().
 	 */
 	"pg_serial",
 
@@ -90,42 +80,32 @@ static const char *excludeDirContents[] =
 };
 
 /*
- * List of files excluded from filemap processing.   Files are excluded
- * if their prefix match.
+ * List of files excluded from filemap processing.
  */
-static const struct exclude_list_item excludeFiles[] =
+static const char *excludeFiles[] =
 {
 	/* Skip auto conf temporary file. */
-	{"postgresql.auto.conf.tmp", false},	/* defined as PG_AUTOCONF_FILENAME */
+	"postgresql.auto.conf.tmp", /* defined as PG_AUTOCONF_FILENAME */
 
 	/* Skip current log file temporary file */
-	{"current_logfiles.tmp", false},	/* defined as
-										 * LOG_METAINFO_DATAFILE_TMP */
+	"current_logfiles.tmp",		/* defined as LOG_METAINFO_DATAFILE_TMP */
 
 	/* Skip relation cache because it is rebuilt on startup */
-	{"pg_internal.init", true}, /* defined as RELCACHE_INIT_FILENAME */
+	"pg_internal.init",			/* defined as RELCACHE_INIT_FILENAME */
 
 	/*
 	 * If there's a backup_label or tablespace_map file, it belongs to a
 	 * backup started by the user with pg_start_backup().  It is *not* correct
 	 * for this backup.  Our backup_label is written later on separately.
 	 */
-	{"backup_label", false},	/* defined as BACKUP_LABEL_FILE */
-	{"tablespace_map", false},	/* defined as TABLESPACE_MAP */
+	"backup_label",				/* defined as BACKUP_LABEL_FILE */
+	"tablespace_map",			/* defined as TABLESPACE_MAP */
 
-	/*
-	 * If there's a backup_manifest, it belongs to a backup that was used to
-	 * start this server. It is *not* correct for this backup. Our
-	 * backup_manifest is injected into the backup separately if users want
-	 * it.
-	 */
-	{"backup_manifest", false},
-
-	{"postmaster.pid", false},
-	{"postmaster.opts", false},
+	"postmaster.pid",
+	"postmaster.opts",
 
 	/* end of list */
-	{NULL, false}
+	NULL
 };
 
 /*
@@ -167,10 +147,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 
 	Assert(map->array == NULL);
 
-	/*
-	 * Skip any files matching the exclusion filters. This has the effect to
-	 * remove all those files on the target.
-	 */
+	/* ignore any path matching the exclusion filters */
 	if (check_file_excluded(path, true))
 		return;
 
@@ -197,7 +174,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 	 * regular file
 	 */
 	if (type != FILE_TYPE_REGULAR && isRelDataFile(path))
-		pg_fatal("data file \"%s\" in source is not a regular file", path);
+		pg_fatal("data file \"%s\" in source is not a regular file\n", path);
 
 	snprintf(localpath, sizeof(localpath), "%s/%s", datadir_target, path);
 
@@ -205,8 +182,8 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 	if (lstat(localpath, &statbuf) < 0)
 	{
 		if (errno != ENOENT)
-			pg_fatal("could not stat file \"%s\": %m",
-					 localpath);
+			pg_fatal("could not stat file \"%s\": %s\n",
+					 localpath, strerror(errno));
 
 		exists = false;
 	}
@@ -219,7 +196,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 			if (exists && !S_ISDIR(statbuf.st_mode) && strcmp(path, "pg_wal") != 0)
 			{
 				/* it's a directory in source, but not in target. Strange.. */
-				pg_fatal("\"%s\" is not a directory", localpath);
+				pg_fatal("\"%s\" is not a directory\n", localpath);
 			}
 
 			if (!exists)
@@ -242,7 +219,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 				 * It's a symbolic link in source, but not in target.
 				 * Strange..
 				 */
-				pg_fatal("\"%s\" is not a symbolic link", localpath);
+				pg_fatal("\"%s\" is not a symbolic link\n", localpath);
 			}
 
 			if (!exists)
@@ -254,7 +231,7 @@ process_source_file(const char *path, file_type_t type, size_t newsize,
 
 		case FILE_TYPE_REGULAR:
 			if (exists && !S_ISREG(statbuf.st_mode))
-				pg_fatal("\"%s\" is not a regular file", localpath);
+				pg_fatal("\"%s\" is not a regular file\n", localpath);
 
 			if (!exists || !isRelDataFile(path))
 			{
@@ -349,16 +326,30 @@ process_target_file(const char *path, file_type_t type, size_t oldsize,
 					const char *link_target)
 {
 	bool		exists;
+	char		localpath[MAXPGPATH];
+	struct stat statbuf;
 	file_entry_t key;
 	file_entry_t *key_ptr;
 	filemap_t  *map = filemap;
 	file_entry_t *entry;
 
 	/*
-	 * Do not apply any exclusion filters here.  This has advantage to remove
-	 * from the target data folder all paths which have been filtered out from
-	 * the source data folder when processing the source files.
+	 * Ignore any path matching the exclusion filters.  This is not actually
+	 * mandatory for target files, but this does not hurt and let's be
+	 * consistent with the source processing.
 	 */
+	if (check_file_excluded(path, false))
+		return;
+
+	snprintf(localpath, sizeof(localpath), "%s/%s", datadir_target, path);
+	if (lstat(localpath, &statbuf) < 0)
+	{
+		if (errno != ENOENT)
+			pg_fatal("could not stat file \"%s\": %s\n",
+					 localpath, strerror(errno));
+
+		exists = false;
+	}
 
 	if (map->array == NULL)
 	{
@@ -366,7 +357,7 @@ process_target_file(const char *path, file_type_t type, size_t oldsize,
 		if (map->nlist == 0)
 		{
 			/* should not happen */
-			pg_fatal("source file list is empty");
+			pg_fatal("source file list is empty\n");
 		}
 
 		filemap_list_to_array(map);
@@ -481,7 +472,7 @@ process_block_change(ForkNumber forknum, RelFileNode rnode, BlockNumber blkno)
 				break;
 
 			case FILE_ACTION_CREATE:
-				pg_fatal("unexpected page modification for directory or symbolic link \"%s\"", entry->path);
+				pg_fatal("unexpected page modification for directory or symbolic link \"%s\"\n", entry->path);
 		}
 	}
 	else
@@ -506,26 +497,21 @@ check_file_excluded(const char *path, bool is_source)
 	const char *filename;
 
 	/* check individual files... */
-	for (excludeIdx = 0; excludeFiles[excludeIdx].name != NULL; excludeIdx++)
+	for (excludeIdx = 0; excludeFiles[excludeIdx] != NULL; excludeIdx++)
 	{
-		int			cmplen = strlen(excludeFiles[excludeIdx].name);
-
 		filename = last_dir_separator(path);
 		if (filename == NULL)
 			filename = path;
 		else
 			filename++;
-
-		if (!excludeFiles[excludeIdx].match_prefix)
-			cmplen++;
-		if (strncmp(filename, excludeFiles[excludeIdx].name, cmplen) == 0)
+		if (strcmp(filename, excludeFiles[excludeIdx]) == 0)
 		{
 			if (is_source)
-				pg_log_debug("entry \"%s\" excluded from source file list",
-							 path);
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from source file list\n",
+					   path);
 			else
-				pg_log_debug("entry \"%s\" excluded from target file list",
-							 path);
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from target file list\n",
+					   path);
 			return true;
 		}
 	}
@@ -541,11 +527,11 @@ check_file_excluded(const char *path, bool is_source)
 		if (strstr(path, localpath) == path)
 		{
 			if (is_source)
-				pg_log_debug("entry \"%s\" excluded from source file list",
-							 path);
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from source file list\n",
+					   path);
 			else
-				pg_log_debug("entry \"%s\" excluded from target file list",
-							 path);
+				pg_log(PG_DEBUG, "entry \"%s\" excluded from target file list\n",
+					   path);
 			return true;
 		}
 	}
@@ -672,8 +658,11 @@ print_filemap(void)
 		if (entry->action != FILE_ACTION_NONE ||
 			entry->pagemap.bitmapsize > 0)
 		{
-			pg_log_debug("%s (%s)", entry->path,
-						 action_to_str(entry->action));
+			pg_log(PG_DEBUG,
+			/*------
+			   translator: first %s is a file path, second is a keyword such as COPY */
+				   "%s (%s)\n", entry->path,
+				   action_to_str(entry->action));
 
 			if (entry->pagemap.bitmapsize > 0)
 				datapagemap_print(&entry->pagemap);

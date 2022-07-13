@@ -1,48 +1,43 @@
 /*
- * Client-visible declarations for ecpglib
- *
+ * this is a small part of c.h since we don't want to leak all postgres
+ * definitions into ecpg programs
  * src/interfaces/ecpg/include/ecpglib.h
  */
 
 #ifndef _ECPGLIB_H
 #define _ECPGLIB_H
 
+#include "libpq-fe.h"
+#include "ecpgtype.h"
+#include "sqlca.h"
 #include <string.h>
 
-#include "ecpg_config.h"
-#include "ecpgtype.h"
-#include "libpq-fe.h"
-#include "sqlca.h"
-
-/*
- * This is a small extract from c.h since we don't want to leak all postgres
- * definitions into ecpg programs; but we need to know what bool is.
- */
-#ifndef __cplusplus
-
-#ifdef PG_USE_STDBOOL
-#include <stdbool.h>
+#ifdef ENABLE_NLS
+extern char *ecpg_gettext(const char *msgid) pg_attribute_format_arg(1);
 #else
-
-/*
- * We assume bool has been defined if true and false are.  This avoids
- * duplicate-typedef errors if this file is included after c.h.
- */
-#if !(defined(true) && defined(false))
-typedef unsigned char bool;
+#define ecpg_gettext(x) (x)
 #endif
+
+#ifndef __cplusplus
+#ifndef bool
+#define bool char
+#endif							/* ndef bool */
 
 #ifndef true
 #define true	((bool) 1)
-#endif
-
+#endif							/* ndef true */
 #ifndef false
 #define false	((bool) 0)
-#endif
-
-#endif							/* not PG_USE_STDBOOL */
+#endif							/* ndef false */
 #endif							/* not C++ */
 
+#ifndef TRUE
+#define TRUE	1
+#endif							/* TRUE */
+
+#ifndef FALSE
+#define FALSE	0
+#endif							/* FALSE */
 
 #ifdef __cplusplus
 extern "C"
@@ -63,6 +58,8 @@ bool		ECPGdeallocate_all(int, int, const char *);
 char	   *ECPGprepared_statement(const char *, const char *, int);
 PGconn	   *ECPGget_PGconn(const char *);
 PGTransactionStatusType ECPGtransactionStatus(const char *);
+
+char	   *ECPGerrmsg(void);
 
  /* print an error message */
 void		sqlprint(void);

@@ -3,7 +3,7 @@
  * rewriteSupport.c
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,8 +14,8 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/table.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_rewrite.h"
 #include "rewrite/rewriteSupport.h"
@@ -24,6 +24,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
 
 
 /*
@@ -60,7 +61,7 @@ SetRelationRuleStatus(Oid relationId, bool relHasRules)
 	/*
 	 * Find the tuple to update in pg_class, using syscache for the lookup.
 	 */
-	relationRelation = table_open(RelationRelationId, RowExclusiveLock);
+	relationRelation = heap_open(RelationRelationId, RowExclusiveLock);
 	tuple = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relationId));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for relation %u", relationId);
@@ -80,7 +81,7 @@ SetRelationRuleStatus(Oid relationId, bool relHasRules)
 	}
 
 	heap_freetuple(tuple);
-	table_close(relationRelation, RowExclusiveLock);
+	heap_close(relationRelation, RowExclusiveLock);
 }
 
 /*
@@ -93,7 +94,6 @@ Oid
 get_rewrite_oid(Oid relid, const char *rulename, bool missing_ok)
 {
 	HeapTuple	tuple;
-	Form_pg_rewrite ruleform;
 	Oid			ruleoid;
 
 	/* Find the rule's pg_rewrite tuple, get its OID */
@@ -109,9 +109,8 @@ get_rewrite_oid(Oid relid, const char *rulename, bool missing_ok)
 				 errmsg("rule \"%s\" for relation \"%s\" does not exist",
 						rulename, get_rel_name(relid))));
 	}
-	ruleform = (Form_pg_rewrite) GETSTRUCT(tuple);
-	Assert(relid == ruleform->ev_class);
-	ruleoid = ruleform->oid;
+	Assert(relid == ((Form_pg_rewrite) GETSTRUCT(tuple))->ev_class);
+	ruleoid = HeapTupleGetOid(tuple);
 	ReleaseSysCache(tuple);
 	return ruleoid;
 }

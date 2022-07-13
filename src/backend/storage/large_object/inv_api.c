@@ -19,7 +19,7 @@
  * memory context given to inv_open (for LargeObjectDesc structs).
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,11 +32,10 @@
 
 #include <limits.h>
 
-#include "access/detoast.h"
 #include "access/genam.h"
-#include "access/htup_details.h"
+#include "access/heapam.h"
 #include "access/sysattr.h"
-#include "access/table.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -46,10 +45,10 @@
 #include "libpq/libpq-fs.h"
 #include "miscadmin.h"
 #include "storage/large_object.h"
-#include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/tqual.h"
 
 
 /*
@@ -85,7 +84,7 @@ open_lo_relation(void)
 
 	/* Use RowExclusiveLock since we might either read or write */
 	if (lo_heap_r == NULL)
-		lo_heap_r = table_open(LargeObjectRelationId, RowExclusiveLock);
+		lo_heap_r = heap_open(LargeObjectRelationId, RowExclusiveLock);
 	if (lo_index_r == NULL)
 		lo_index_r = index_open(LargeObjectLOidPNIndexId, RowExclusiveLock);
 
@@ -114,7 +113,7 @@ close_lo_relation(bool isCommit)
 			if (lo_index_r)
 				index_close(lo_index_r, NoLock);
 			if (lo_heap_r)
-				table_close(lo_heap_r, NoLock);
+				heap_close(lo_heap_r, NoLock);
 
 			CurrentResourceOwner = currentOwner;
 		}
@@ -138,12 +137,12 @@ myLargeObjectExists(Oid loid, Snapshot snapshot)
 	bool		retval = false;
 
 	ScanKeyInit(&skey[0],
-				Anum_pg_largeobject_metadata_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(loid));
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
-							AccessShareLock);
+	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
+						   AccessShareLock);
 
 	sd = systable_beginscan(pg_lo_meta,
 							LargeObjectMetadataOidIndexId, true,
@@ -155,7 +154,7 @@ myLargeObjectExists(Oid loid, Snapshot snapshot)
 
 	systable_endscan(sd);
 
-	table_close(pg_lo_meta, AccessShareLock);
+	heap_close(pg_lo_meta, AccessShareLock);
 
 	return retval;
 }
@@ -181,7 +180,7 @@ getdatafield(Form_pg_largeobject tuple,
 	if (VARATT_IS_EXTENDED(datafield))
 	{
 		datafield = (bytea *)
-			detoast_attr((struct varlena *) datafield);
+			heap_tuple_untoast_attr((struct varlena *) datafield);
 		freeit = true;
 	}
 	len = VARSIZE(datafield) - VARHDRSZ;

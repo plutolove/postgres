@@ -1,17 +1,8 @@
 # contrib/sepgsql/Makefile
 
 MODULE_big = sepgsql
-OBJS = \
-	$(WIN32RES) \
-	database.o \
-	dml.o \
-	hooks.o \
-	label.o \
-	proc.o \
-	relation.o \
-	schema.o \
-	selinux.o \
-	uavc.o
+OBJS = hooks.o selinux.o uavc.o label.o dml.o \
+	database.o schema.o relation.o proc.o $(WIN32RES)
 DATA_built = sepgsql.sql
 PGFILEDESC = "sepgsql - SELinux integration"
 

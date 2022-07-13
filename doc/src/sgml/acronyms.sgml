@@ -111,7 +111,7 @@
     <term><acronym>CVE</acronym></term>
     <listitem>
      <para>
-      <ulink url="https://cve.mitre.org/">Common Vulnerabilities and Exposures</ulink>
+      <ulink url="http://cve.mitre.org/">Common Vulnerabilities and Exposures</ulink>
      </para>
     </listitem>
    </varlistentry>
@@ -321,7 +321,7 @@
     <term><acronym>IEEE</acronym></term>
     <listitem>
      <para>
-      <ulink url="https://standards.ieee.org/">Institute of Electrical and
+      <ulink url="http://standards.ieee.org/">Institute of Electrical and
       Electronics Engineers</ulink>
      </para>
     </listitem>
@@ -384,7 +384,7 @@
     <listitem>
      <para>
       <ulink
-      url="https://www.json.org">JavaScript Object Notation</ulink>
+      url="http://json.org">JavaScript Object Notation</ulink>
      </para>
     </listitem>
    </varlistentry>
@@ -685,16 +685,6 @@
    </varlistentry>
 
    <varlistentry>
-    <term><acronym>TLS</acronym></term>
-    <listitem>
-     <para>
-      <ulink url="https://en.wikipedia.org/wiki/Transport_Layer_Security">
-      Transport Layer Security</ulink>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
     <term><acronym>TOAST</acronym></term>
     <listitem>
      <para>
@@ -738,7 +728,7 @@
     <term><acronym>UTF</acronym></term>
     <listitem>
      <para>
-      <ulink url="https://www.unicode.org/">Unicode Transformation
+      <ulink url="http://www.unicode.org/">Unicode Transformation
       Format</ulink>
      </para>
     </listitem>

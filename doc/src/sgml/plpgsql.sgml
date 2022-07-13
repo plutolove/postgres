@@ -1,7 +1,7 @@
 <!-- doc/src/sgml/plpgsql.sgml -->
 
 <chapter id="plpgsql">
-  <title><application>PL/pgSQL</application> &mdash; <acronym>SQL</acronym> Procedural Language</title>
+  <title><application>PL/pgSQL</application> - <acronym>SQL</acronym> Procedural Language</title>
 
  <indexterm zone="plpgsql">
   <primary>PL/pgSQL</primary>
@@ -19,7 +19,7 @@
     <itemizedlist>
      <listitem>
       <para>
-       can be used to create functions, procedures, and triggers,
+       can be used to create functions and triggers,
       </para>
      </listitem>
      <listitem>
@@ -34,7 +34,7 @@
      </listitem>
      <listitem>
       <para>
-       inherits all user-defined types, functions, procedures, and operators,
+       inherits all user-defined types, functions, and operators,
       </para>
      </listitem>
      <listitem>
@@ -138,11 +138,13 @@
     </para>
 
     <para>
-     <application>PL/pgSQL</application> functions can also be declared to
-     accept and return the polymorphic types described in
-     <xref linkend="extend-types-polymorphic"/>, thus allowing the actual data
-     types handled by the function to vary from call to call.
-     Examples appear in <xref linkend="plpgsql-declaration-parameters"/>.
+     <application>PL/pgSQL</application> functions can also be declared to accept
+     and return the polymorphic types
+     <type>anyelement</type>, <type>anyarray</type>, <type>anynonarray</type>,
+     <type>anyenum</type>, and <type>anyrange</type>.  The actual
+     data types handled by a polymorphic function can vary from call to
+     call, as discussed in <xref linkend="extend-types-polymorphic"/>.
+     An example is shown in <xref linkend="plpgsql-declaration-parameters"/>.
     </para>
 
     <para>
@@ -517,11 +519,13 @@ $$ LANGUAGE plpgsql;
      </para>
 
      <para>
-      When the return type of a <application>PL/pgSQL</application> function
-      is declared as a polymorphic type (see
-      <xref linkend="extend-types-polymorphic"/>), a special
-      parameter <literal>$0</literal> is created.  Its data type is the actual
-      return type of the function, as deduced from the actual input types.
+      When the return type of a <application>PL/pgSQL</application>
+      function is declared as a polymorphic type (<type>anyelement</type>,
+      <type>anyarray</type>, <type>anynonarray</type>, <type>anyenum</type>,
+      or <type>anyrange</type>), a special parameter <literal>$0</literal>
+      is created.  Its data type is the actual return type of the function,
+      as deduced from the actual input types (see <xref
+      linkend="extend-types-polymorphic"/>).
       This allows the function to access its actual return type
       as shown in <xref linkend="plpgsql-declaration-type"/>.
       <literal>$0</literal> is initialized to null and can be modified by
@@ -558,32 +562,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 </programlisting>
-     </para>
-
-     <para>
-      In practice it might be more useful to declare a polymorphic function
-      using the <type>anycompatible</type> family of types, so that automatic
-      promotion of the input arguments to a common type will occur.
-      For example:
-
-<programlisting>
-CREATE FUNCTION add_three_values(v1 anycompatible, v2 anycompatible, v3 anycompatible)
-RETURNS anycompatible AS $$
-BEGIN
-    RETURN v1 + v2 + v3;
-END;
-$$ LANGUAGE plpgsql;
-</programlisting>
-
-      With this example, a call such as
-
-<programlisting>
-SELECT add_three_values(1, 2, 4.7);
-</programlisting>
-
-      will work, automatically promoting the integer inputs to numeric.
-      The function using <type>anyelement</type> would require you to
-      cast the three inputs to the same type manually.
      </para>
     </sect2>
 
@@ -935,7 +913,7 @@ my_record.user_id := 20;
    </sect2>
 
    <sect2 id="plpgsql-statements-sql-noresult">
-    <title>Executing a Command with No Result</title>
+    <title>Executing a Command With No Result</title>
 
     <para>
      For any SQL command that does not return rows, for example
@@ -1006,7 +984,7 @@ PERFORM create_mv('cs_session_page_requests_mv', my_query);
    </sect2>
 
    <sect2 id="plpgsql-statements-sql-onerow">
-    <title>Executing a Query with a Single-Row Result</title>
+    <title>Executing a Query with a Single-row Result</title>
 
     <indexterm zone="plpgsql-statements-sql-onerow">
      <primary>SELECT INTO</primary>
@@ -1143,7 +1121,7 @@ BEGIN
     SELECT users.userid INTO STRICT userid
         FROM users WHERE users.username = get_userid.username;
     RETURN userid;
-END;
+END
 $$ LANGUAGE plpgsql;
 </programlisting>
      On failure, this function might produce an error message such as
@@ -1308,7 +1286,7 @@ EXECUTE format('SELECT count(*) FROM %I '
    </note>
 
    <example id="plpgsql-quote-literal-example">
-   <title>Quoting Values in Dynamic Queries</title>
+   <title>Quoting Values In Dynamic Queries</title>
 
     <indexterm>
      <primary>quote_ident</primary>
@@ -1436,7 +1414,7 @@ EXECUTE 'UPDATE tbl SET '
     <para>
      Dynamic SQL statements can also be safely constructed using the
      <function>format</function> function (see <xref
-     linkend="functions-string-format"/>). For example:
+     linkend="functions-string"/>). For example:
 <programlisting>
 EXECUTE format('UPDATE tbl SET %I = %L '
    'WHERE key = %L', colname, newvalue, keyvalue);
@@ -1493,9 +1471,6 @@ GET DIAGNOSTICS integer_var = ROW_COUNT;
      <table id="plpgsql-current-diagnostics-values">
       <title>Available Diagnostics Items</title>
       <tgroup cols="3">
-       <colspec colname="col1" colwidth="1*"/>
-       <colspec colname="col2" colwidth="1*"/>
-       <colspec colname="col3" colwidth="2*"/>
        <thead>
         <row>
          <entry>Name</entry>
@@ -1509,6 +1484,14 @@ GET DIAGNOSTICS integer_var = ROW_COUNT;
          <entry><type>bigint</type></entry>
          <entry>the number of rows processed by the most
           recent <acronym>SQL</acronym> command</entry>
+        </row>
+        <row>
+         <entry><varname>RESULT_OID</varname></entry>
+         <entry><type>oid</type></entry>
+         <entry>the OID of the last row inserted by the most
+          recent <acronym>SQL</acronym> command (only useful after
+          an <command>INSERT</command> command into a table having
+          OIDs)</entry>
         </row>
         <row>
          <entry><literal>PG_CONTEXT</literal></entry>
@@ -1657,7 +1640,7 @@ END;
    </para>
 
    <sect2 id="plpgsql-statements-returning">
-    <title>Returning from a Function</title>
+    <title>Returning From a Function</title>
 
     <para>
      There are two commands available that allow you to return data
@@ -1816,7 +1799,7 @@ BEGIN
         RETURN NEXT r; -- return current row of SELECT
     END LOOP;
     RETURN;
-END;
+END
 $BODY$
 LANGUAGE plpgsql;
 
@@ -1844,7 +1827,7 @@ BEGIN
     END IF;
 
     RETURN;
- END;
+ END
 $BODY$
 LANGUAGE plpgsql;
 
@@ -1877,33 +1860,19 @@ SELECT * FROM get_available_flightid(CURRENT_DATE);
    </sect2>
 
    <sect2 id="plpgsql-statements-returning-procedure">
-    <title>Returning from a Procedure</title>
+    <title>Returning From a Procedure</title>
 
     <para>
      A procedure does not have a return value.  A procedure can therefore end
-     without a <command>RETURN</command> statement.  If you wish to use
-     a <command>RETURN</command> statement to exit the code early, write
-     just <command>RETURN</command> with no expression.
+     without a <command>RETURN</command> statement.  If
+     a <command>RETURN</command> statement is desired to exit the code early,
+     then <symbol>NULL</symbol> must be returned.  Returning any other value
+     will result in an error.
     </para>
 
     <para>
-     If the procedure has output parameters, the final values of the output
-     parameter variables will be returned to the caller.
-    </para>
-   </sect2>
-
-   <sect2 id="plpgsql-statements-calling-procedure">
-    <title>Calling a Procedure</title>
-
-    <para>
-     A <application>PL/pgSQL</application> function, procedure,
-     or <command>DO</command> block can call a procedure
-     using <command>CALL</command>.  Output parameters are handled
-     differently from the way that <command>CALL</command> works in plain
-     SQL.  Each <literal>INOUT</literal> parameter of the procedure must
-     correspond to a variable in the <command>CALL</command> statement, and
-     whatever the procedure returns is assigned back to that variable after
-     it returns.  For example:
+     If a procedure has output parameters, then the output values can be
+     assigned to the parameters as if they were variables.  For example:
 <programlisting>
 CREATE PROCEDURE triple(INOUT x int)
 LANGUAGE plpgsql
@@ -1913,13 +1882,7 @@ BEGIN
 END;
 $$;
 
-DO $$
-DECLARE myvar int := 5;
-BEGIN
-  CALL triple(myvar);
-  RAISE NOTICE 'myvar = %', myvar;  -- prints 15
-END;
-$$;
+CALL triple(5);
 </programlisting>
     </para>
    </sect2>
@@ -2444,7 +2407,7 @@ END LOOP;
    </sect2>
 
    <sect2 id="plpgsql-records-iterating">
-    <title>Looping through Query Results</title>
+    <title>Looping Through Query Results</title>
 
     <para>
      Using a different type of <literal>FOR</literal> loop, you can iterate through
@@ -2462,29 +2425,19 @@ END LOOP <optional> <replaceable>label</replaceable> </optional>;
      resulting from the <replaceable>query</replaceable> and the loop body is
      executed for each row. Here is an example:
 <programlisting>
-CREATE FUNCTION refresh_mviews() RETURNS integer AS $$
+CREATE FUNCTION cs_refresh_mviews() RETURNS integer AS $$
 DECLARE
     mviews RECORD;
 BEGIN
-    RAISE NOTICE 'Refreshing all materialized views...';
+    RAISE NOTICE 'Refreshing materialized views...';
 
-    FOR mviews IN
-       SELECT n.nspname AS mv_schema,
-              c.relname AS mv_name,
-              pg_catalog.pg_get_userbyid(c.relowner) AS owner
-         FROM pg_catalog.pg_class c
-    LEFT JOIN pg_catalog.pg_namespace n ON (n.oid = c.relnamespace)
-        WHERE c.relkind = 'm'
-     ORDER BY 1
-    LOOP
+    FOR mviews IN SELECT * FROM cs_materialized_views ORDER BY sort_key LOOP
 
-        -- Now "mviews" has one record with information about the materialized view
+        -- Now "mviews" has one record from cs_materialized_views
 
-        RAISE NOTICE 'Refreshing materialized view %.% (owner: %)...',
-                     quote_ident(mviews.mv_schema),
-                     quote_ident(mviews.mv_name),
-                     quote_ident(mviews.owner);
-        EXECUTE format('REFRESH MATERIALIZED VIEW %I.%I', mviews.mv_schema, mviews.mv_name);
+        RAISE NOTICE 'Refreshing materialized view %s ...', quote_ident(mviews.mv_name);
+        EXECUTE format('TRUNCATE TABLE %I', mviews.mv_name);
+        EXECUTE format('INSERT INTO %I %s', mviews.mv_name, mviews.mv_query);
     END LOOP;
 
     RAISE NOTICE 'Done refreshing materialized views.';
@@ -2539,7 +2492,7 @@ END LOOP <optional> <replaceable>label</replaceable> </optional>;
    </sect2>
 
    <sect2 id="plpgsql-foreach-array">
-    <title>Looping through Arrays</title>
+    <title>Looping Through Arrays</title>
 
     <para>
      The <literal>FOREACH</literal> loop is much like a <literal>FOR</literal> loop,
@@ -2632,8 +2585,8 @@ NOTICE:  row = {10,11,12}
 
     <para>
      By default, any error occurring in a <application>PL/pgSQL</application>
-     function aborts execution of the function and the
-     surrounding transaction.  You can trap errors and recover
+     function aborts execution of the function, and indeed of the
+     surrounding transaction as well.  You can trap errors and recover
      from them by using a <command>BEGIN</command> block with an
      <literal>EXCEPTION</literal> clause.  The syntax is an extension of the
      normal syntax for a <command>BEGIN</command> block:
@@ -2786,7 +2739,7 @@ SELECT merge_db(1, 'dennis');
     </example>
 
    <sect3 id="plpgsql-exception-diagnostics">
-    <title>Obtaining Information about an Error</title>
+    <title>Obtaining Information About an Error</title>
 
     <para>
      Exception handlers frequently need to identify the specific error that
@@ -2823,9 +2776,6 @@ GET STACKED DIAGNOSTICS <replaceable>variable</replaceable> { = | := } <replacea
      <table id="plpgsql-exception-diagnostics-values">
       <title>Error Diagnostics Items</title>
       <tgroup cols="3">
-       <colspec colname="col1" colwidth="2*"/>
-       <colspec colname="col2" colwidth="1*"/>
-       <colspec colname="col3" colwidth="2*"/>
        <thead>
         <row>
          <entry>Name</entry>
@@ -3458,7 +3408,7 @@ COMMIT;
    </sect2>
 
    <sect2 id="plpgsql-cursor-for-loop">
-    <title>Looping through a Cursor's Result</title>
+    <title>Looping Through a Cursor's Result</title>
 
     <para>
      There is a variant of the <command>FOR</command> statement that allows
@@ -3521,25 +3471,11 @@ BEGIN
             ROLLBACK;
         END IF;
     END LOOP;
-END;
+END
 $$;
 
 CALL transaction_test1();
 </programlisting>
-   </para>
-
-   <indexterm zone="plpgsql-transaction-chain">
-    <primary>chained transactions</primary>
-    <secondary>in PL/pgSQL</secondary>
-   </indexterm>
-
-   <para id="plpgsql-transaction-chain">
-    A new transaction starts out with default transaction characteristics such
-    as transaction isolation level.  In cases where transactions are committed
-    in a loop, it might be desirable to start new transactions automatically
-    with the same characteristics as the previous one.  The commands
-    <command>COMMIT AND CHAIN</command> and <command>ROLLBACK AND
-    CHAIN</command> accomplish this.
    </para>
 
    <para>
@@ -3778,9 +3714,9 @@ RAISE unique_violation USING MESSAGE = 'Duplicate user ID: ' || user_id;
    <para>
     If no condition name nor SQLSTATE is specified in a
     <command>RAISE EXCEPTION</command> command, the default is to use
-    <literal>ERRCODE_RAISE_EXCEPTION</literal> (<literal>P0001</literal>).
-    If no message text is specified, the default is to use the condition
-    name or SQLSTATE as message text.
+    <literal>RAISE_EXCEPTION</literal> (<literal>P0001</literal>).  If no message
+    text is specified, the default is to use the condition name or
+    SQLSTATE as message text.
    </para>
 
    <note>
@@ -3901,7 +3837,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
       <para>
        Data type <type>RECORD</type>; variable holding the new
        database row for <command>INSERT</command>/<command>UPDATE</command> operations in row-level
-       triggers. This variable is null in statement-level triggers
+       triggers. This variable is unassigned in statement-level triggers
        and for <command>DELETE</command> operations.
       </para>
      </listitem>
@@ -3913,7 +3849,7 @@ ASSERT <replaceable class="parameter">condition</replaceable> <optional> , <repl
       <para>
        Data type <type>RECORD</type>; variable holding the old
        database row for <command>UPDATE</command>/<command>DELETE</command> operations in row-level
-       triggers. This variable is null in statement-level triggers
+       triggers. This variable is unassigned in statement-level triggers
        and for <command>INSERT</command> operations.
       </para>
      </listitem>
@@ -4145,7 +4081,7 @@ CREATE TRIGGER emp_stamp BEFORE INSERT OR UPDATE ON emp
    </para>
 
    <example id="plpgsql-trigger-audit-example">
-    <title>A <application>PL/pgSQL</application> Trigger Function for Auditing</title>
+    <title>A <application>PL/pgSQL</application> Trigger Function For Auditing</title>
 
     <para>
      This example trigger ensures that any insert, update or delete of a row
@@ -4202,7 +4138,7 @@ AFTER INSERT OR UPDATE OR DELETE ON emp
    </para>
 
    <example id="plpgsql-view-trigger-audit-example">
-    <title>A <application>PL/pgSQL</application> View Trigger Function for Auditing</title>
+    <title>A <application>PL/pgSQL</application> View Trigger Function For Auditing</title>
 
     <para>
      This example uses a trigger on the view to make it updatable, and
@@ -4284,7 +4220,7 @@ INSTEAD OF INSERT OR UPDATE OR DELETE ON emp_view
 
 
    <example id="plpgsql-trigger-summary-example">
-    <title>A <application>PL/pgSQL</application> Trigger Function for Maintaining a Summary Table</title>
+    <title>A <application>PL/pgSQL</application> Trigger Function For Maintaining A Summary Table</title>
 
     <para>
      The schema detailed here is partly based on the <emphasis>Grocery Store
@@ -4569,7 +4505,7 @@ CREATE EVENT TRIGGER snitch ON ddl_command_start EXECUTE FUNCTION snitch();
   </sect1>
 
   <sect1 id="plpgsql-implementation">
-   <title><application>PL/pgSQL</application> under the Hood</title>
+   <title><application>PL/pgSQL</application> Under the Hood</title>
 
    <para>
     This section discusses some implementation details that are
@@ -4892,7 +4828,7 @@ $$ LANGUAGE plpgsql;
      to the local variable <varname>curtime</varname>, the
      <application>PL/pgSQL</application> interpreter casts this
      string to the <type>timestamp</type> type by calling the
-     <function>textout</function> and <function>timestamp_in</function>
+     <function>text_out</function> and <function>timestamp_in</function>
      functions for the conversion.  So, the computed time stamp is updated
      on each execution as the programmer expects.  Even though this
      happens to work as expected, it's not terribly efficient, so
@@ -5097,7 +5033,7 @@ a_output := a_output || $$ if v_$$ || referrer_keys.kind || $$ like '$$
 
   </sect2>
   <sect2 id="plpgsql-extra-checks">
-   <title>Additional Compile-Time and Run-Time Checks</title>
+   <title>Additional Compile-time Checks</title>
 
    <para>
     To aid the user in finding instances of simple but common problems before
@@ -5109,64 +5045,26 @@ a_output := a_output || $$ if v_$$ || referrer_keys.kind || $$ like '$$
     so you are advised to test in a separate development environment.
    </para>
 
-   <para>
-    Setting <varname>plpgsql.extra_warnings</varname>, or
-    <varname>plpgsql.extra_errors</varname>, as appropriate, to <literal>"all"</literal>
-    is encouraged in development and/or testing environments.
-   </para>
+ <para>
+  These additional checks are enabled through the configuration variables
+  <varname>plpgsql.extra_warnings</varname> for warnings and
+  <varname>plpgsql.extra_errors</varname> for errors. Both can be set either to
+  a comma-separated list of checks, <literal>"none"</literal> or <literal>"all"</literal>.
+  The default is <literal>"none"</literal>. Currently the list of available checks
+  includes only one:
+  <variablelist>
+   <varlistentry>
+    <term><varname>shadowed_variables</varname></term>
+    <listitem>
+     <para>
+      Checks if a declaration shadows a previously defined variable.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
 
-   <para>
-    These additional checks are enabled through the configuration variables
-    <varname>plpgsql.extra_warnings</varname> for warnings and
-    <varname>plpgsql.extra_errors</varname> for errors. Both can be set either to
-    a comma-separated list of checks, <literal>"none"</literal> or
-    <literal>"all"</literal>. The default is <literal>"none"</literal>. Currently
-    the list of available checks includes:
-    <variablelist>
-     <varlistentry>
-      <term><varname>shadowed_variables</varname></term>
-      <listitem>
-       <para>
-        Checks if a declaration shadows a previously defined variable.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><varname>strict_multi_assignment</varname></term>
-      <listitem>
-       <para>
-        Some <application>PL/PgSQL</application> commands allow assigning
-        values to more than one variable at a time, such as
-        <command>SELECT INTO</command>.  Typically, the number of target
-        variables and the number of source variables should match, though
-        <application>PL/PgSQL</application> will use <literal>NULL</literal>
-        for missing values and extra variables are ignored.  Enabling this
-        check will cause <application>PL/PgSQL</application> to throw a
-        <literal>WARNING</literal> or <literal>ERROR</literal> whenever the
-        number of target variables and the number of source variables are
-        different.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><varname>too_many_rows</varname></term>
-      <listitem>
-       <para>
-        Enabling this check will cause <application>PL/PgSQL</application> to
-        check if a given query returns more than one row when an
-        <literal>INTO</literal> clause is used.  As an <literal>INTO</literal>
-        statement will only ever use one row, having a query return multiple
-        rows is generally either inefficient and/or nondeterministic and
-        therefore is likely an error.
-       </para>
-      </listitem>
-     </varlistentry>
-    </variablelist>
-
-    The following example shows the effect of <varname>plpgsql.extra_warnings</varname>
-    set to <varname>shadowed_variables</varname>:
+  The following example shows the effect of <varname>plpgsql.extra_warnings</varname>
+  set to <varname>shadowed_variables</varname>:
 <programlisting>
 SET plpgsql.extra_warnings TO 'shadowed_variables';
 
@@ -5175,48 +5073,15 @@ DECLARE
 f1 int;
 BEGIN
 RETURN f1;
-END;
+END
 $$ LANGUAGE plpgsql;
 WARNING:  variable "f1" shadows a previously defined variable
 LINE 3: f1 int;
         ^
 CREATE FUNCTION
 </programlisting>
-    The below example shows the effects of setting
-    <varname>plpgsql.extra_warnings</varname> to
-    <varname>strict_multi_assignment</varname>:
-<programlisting>
-SET plpgsql.extra_warnings TO 'strict_multi_assignment';
-
-CREATE OR REPLACE FUNCTION public.foo()
- RETURNS void
- LANGUAGE plpgsql
-AS $$
-DECLARE
-  x int;
-  y int;
-BEGIN
-  SELECT 1 INTO x, y;
-  SELECT 1, 2 INTO x, y;
-  SELECT 1, 2, 3 INTO x, y;
-END;
-$$;
-
-SELECT foo();
-WARNING:  number of source and target fields in assignment does not match
-DETAIL:  strict_multi_assignment check of extra_warnings is active.
-HINT:  Make sure the query returns the exact list of columns.
-WARNING:  number of source and target fields in assignment does not match
-DETAIL:  strict_multi_assignment check of extra_warnings is active.
-HINT:  Make sure the query returns the exact list of columns.
-
- foo 
------
- 
-(1 row)
-</programlisting>
-   </para>
-  </sect2>
+ </para>
+ </sect2>
  </sect1>
 
   <!-- **** Porting from Oracle PL/SQL **** -->
@@ -5245,7 +5110,7 @@ HINT:  Make sure the query returns the exact list of columns.
   <para>
    <application>PL/pgSQL</application> is similar to PL/SQL in many
    aspects. It is a block-structured, imperative language, and all
-   variables have to be declared.  Assignments, loops, and conditionals
+   variables have to be declared.  Assignments, loops, conditionals
    are similar.  The main differences you should keep in mind when
    porting from <application>PL/SQL</application> to
    <application>PL/pgSQL</application> are:
@@ -5664,7 +5529,7 @@ BEGIN
     INSERT INTO cs_active_job(job_id) VALUES (v_job_id);
 
     BEGIN
-        INSERT INTO cs_jobs (job_id, start_stamp) VALUES (v_job_id, now());
+        INSERT INTO cs_jobs (job_id, start_stamp) VALUES (v_job_id, sysdate);
     EXCEPTION
         WHEN dup_val_on_index THEN NULL; -- don't worry if it already exists
     END;

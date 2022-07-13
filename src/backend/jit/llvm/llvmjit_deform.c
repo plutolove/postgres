@@ -7,7 +7,7 @@
  * knowledge of the tuple descriptor. Fixed column widths, NOT NULLness, etc
  * can be taken advantage of.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -31,8 +31,7 @@
  * Create a function that deforms a tuple of type desc up to natts columns.
  */
 LLVMValueRef
-slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
-					const TupleTableSlotOps *ops, int natts)
+slot_compile_deform(LLVMJitContext *context, TupleDesc desc, int natts)
 {
 	char	   *funcname;
 
@@ -61,7 +60,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 	LLVMValueRef v_tts_values;
 	LLVMValueRef v_tts_nulls;
 	LLVMValueRef v_slotoffp;
-	LLVMValueRef v_flagsp;
+	LLVMValueRef v_slowp;
 	LLVMValueRef v_nvalidp;
 	LLVMValueRef v_nvalid;
 	LLVMValueRef v_maxatt;
@@ -89,41 +88,32 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 
 	int			attnum;
 
-	/* virtual tuples never need deforming, so don't generate code */
-	if (ops == &TTSOpsVirtual)
-		return NULL;
-
-	/* decline to JIT for slot types we don't know to handle */
-	if (ops != &TTSOpsHeapTuple && ops != &TTSOpsBufferHeapTuple &&
-		ops != &TTSOpsMinimalTuple)
-		return NULL;
-
 	mod = llvm_mutable_module(context);
 
 	funcname = llvm_expand_funcname(context, "deform");
 
 	/*
-	 * Check which columns have to exist, so we don't have to check the row's
-	 * natts unnecessarily.
+	 * Check which columns do have to exist, so we don't have to check the
+	 * rows natts unnecessarily.
 	 */
 	for (attnum = 0; attnum < desc->natts; attnum++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, attnum);
 
 		/*
-		 * If the column is declared NOT NULL then it must be present in every
-		 * tuple, unless there's a "missing" entry that could provide a
-		 * non-NULL value for it. That in turn guarantees that the NULL bitmap
-		 * - if there are any NULLable columns - is at least long enough to
-		 * cover columns up to attnum.
-		 *
-		 * Be paranoid and also check !attisdropped, even though the
-		 * combination of attisdropped && attnotnull combination shouldn't
-		 * exist.
+		 * If the column is possibly missing, we can't rely on its (or
+		 * subsequent) NOT NULL constraints to indicate minimum attributes in
+		 * the tuple, so stop here.
 		 */
-		if (att->attnotnull &&
-			!att->atthasmissing &&
-			!att->attisdropped)
+		if (att->atthasmissing)
+			break;
+
+		/*
+		 * Column is NOT NULL and there've been no preceding missing columns,
+		 * it's guaranteed that all columns up to here exist at least in the
+		 * NULL bitmap.
+		 */
+		if (att->attnotnull)
 			guaranteed_column_number = attnum;
 	}
 
@@ -176,44 +166,14 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 	v_tts_nulls =
 		l_load_struct_gep(b, v_slot, FIELDNO_TUPLETABLESLOT_ISNULL,
 						  "tts_ISNULL");
-	v_flagsp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_FLAGS, "");
+
+	v_slotoffp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_OFF, "");
+	v_slowp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_SLOW, "");
 	v_nvalidp = LLVMBuildStructGEP(b, v_slot, FIELDNO_TUPLETABLESLOT_NVALID, "");
 
-	if (ops == &TTSOpsHeapTuple || ops == &TTSOpsBufferHeapTuple)
-	{
-		LLVMValueRef v_heapslot;
-
-		v_heapslot =
-			LLVMBuildBitCast(b,
-							 v_slot,
-							 l_ptr(StructHeapTupleTableSlot),
-							 "heapslot");
-		v_slotoffp = LLVMBuildStructGEP(b, v_heapslot, FIELDNO_HEAPTUPLETABLESLOT_OFF, "");
-		v_tupleheaderp =
-			l_load_struct_gep(b, v_heapslot, FIELDNO_HEAPTUPLETABLESLOT_TUPLE,
-							  "tupleheader");
-
-	}
-	else if (ops == &TTSOpsMinimalTuple)
-	{
-		LLVMValueRef v_minimalslot;
-
-		v_minimalslot =
-			LLVMBuildBitCast(b,
-							 v_slot,
-							 l_ptr(StructMinimalTupleTableSlot),
-							 "minimalslot");
-		v_slotoffp = LLVMBuildStructGEP(b, v_minimalslot, FIELDNO_MINIMALTUPLETABLESLOT_OFF, "");
-		v_tupleheaderp =
-			l_load_struct_gep(b, v_minimalslot, FIELDNO_MINIMALTUPLETABLESLOT_TUPLE,
-							  "tupleheader");
-	}
-	else
-	{
-		/* should've returned at the start of the function */
-		pg_unreachable();
-	}
-
+	v_tupleheaderp =
+		l_load_struct_gep(b, v_slot, FIELDNO_TUPLETABLESLOT_TUPLE,
+						  "tupleheader");
 	v_tuplep =
 		l_load_struct_gep(b, v_tupleheaderp, FIELDNO_HEAPTUPLEDATA_DATA,
 						  "tuple");
@@ -248,16 +208,10 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 							v_infomask2,
 							"maxatt");
 
-	/*
-	 * Need to zext, as getelementptr otherwise treats hoff as a signed 8bit
-	 * integer, which'd yield a negative offset for t_hoff > 127.
-	 */
 	v_hoff =
-		LLVMBuildZExt(b,
-					  l_load_struct_gep(b, v_tuplep,
-										FIELDNO_HEAPTUPLEHEADERDATA_HOFF,
-										""),
-					  LLVMInt32Type(), "t_hoff");
+		l_load_struct_gep(b, v_tuplep,
+						  FIELDNO_HEAPTUPLEHEADERDATA_HOFF,
+						  "t_hoff");
 
 	v_tupdata_base =
 		LLVMBuildGEP(b,
@@ -298,12 +252,9 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 	}
 
 	/*
-	 * Check if it is guaranteed that all the desired attributes are available
-	 * in the tuple (but still possibly NULL), by dint of either the last
-	 * to-be-deformed column being NOT NULL, or subsequent ones not accessed
-	 * here being NOT NULL.  If that's not guaranteed the tuple headers natt's
-	 * has to be checked, and missing attributes potentially have to be
-	 * fetched (using slot_getmissingattrs().
+	 * Check if's guaranteed the all the desired attributes are available in
+	 * tuple. If so, we can start deforming. If not, need to make sure to
+	 * fetch the missing columns.
 	 */
 	if ((natts - 1) <= guaranteed_column_number)
 	{
@@ -331,7 +282,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 		v_params[0] = v_slot;
 		v_params[1] = LLVMBuildZExt(b, v_maxatt, LLVMInt32Type(), "");
 		v_params[2] = l_int32_const(natts);
-		LLVMBuildCall(b, llvm_pg_func(mod, "slot_getmissingattrs"),
+		LLVMBuildCall(b, llvm_get_decl(mod, FuncSlotGetmissingattrs),
 					  v_params, lengthof(v_params), "");
 		LLVMBuildBr(b, b_find_start);
 	}
@@ -353,7 +304,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 
 		for (attnum = 0; attnum < natts; attnum++)
 		{
-			LLVMValueRef v_attno = l_int16_const(attnum);
+			LLVMValueRef v_attno = l_int32_const(attnum);
 
 			LLVMAddCase(v_switch, v_attno, attcheckattnoblocks[attnum]);
 		}
@@ -386,7 +337,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 
 		/*
 		 * If this is the first attribute, slot->tts_nvalid was 0. Therefore
-		 * also reset offset to 0, it may be from a previous execution.
+		 * reset offset to 0 to, it be from a previous execution.
 		 */
 		if (attnum == 0)
 		{
@@ -416,7 +367,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 
 		/*
 		 * Check for nulls if necessary. No need to take missing attributes
-		 * into account, because if they're present the heaptuple's natts
+		 * into account, because in case they're present the heaptuple's natts
 		 * would have indicated that a slot_getmissingattrs() is needed.
 		 */
 		if (!att->attnotnull)
@@ -476,13 +427,13 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 		LLVMPositionBuilderAtEnd(b, attcheckalignblocks[attnum]);
 
 		/* determine required alignment */
-		if (att->attalign == TYPALIGN_INT)
+		if (att->attalign == 'i')
 			alignto = ALIGNOF_INT;
-		else if (att->attalign == TYPALIGN_CHAR)
+		else if (att->attalign == 'c')
 			alignto = 1;
-		else if (att->attalign == TYPALIGN_DOUBLE)
+		else if (att->attalign == 'd')
 			alignto = ALIGNOF_DOUBLE;
-		else if (att->attalign == TYPALIGN_SHORT)
+		else if (att->attalign == 's')
 			alignto = ALIGNOF_SHORT;
 		else
 		{
@@ -503,13 +454,13 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 			(known_alignment < 0 || known_alignment != TYPEALIGN(alignto, known_alignment)))
 		{
 			/*
-			 * When accessing a varlena field, we have to "peek" to see if we
+			 * When accessing a varlena field we have to "peek" to see if we
 			 * are looking at a pad byte or the first byte of a 1-byte-header
 			 * datum.  A zero byte must be either a pad byte, or the first
-			 * byte of a correctly aligned 4-byte length word; in either case,
+			 * byte of a correctly aligned 4-byte length word; in either case
 			 * we can align safely.  A non-zero byte must be either a 1-byte
 			 * length word, or the first byte of a correctly aligned 4-byte
-			 * length word; in either case, we need not align.
+			 * length word; in either case we need not align.
 			 */
 			if (att->attlen == -1)
 			{
@@ -603,8 +554,8 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 		else if (att->attnotnull && attguaranteedalign && known_alignment >= 0)
 		{
 			/*
-			 * If the offset to the column was previously known, a NOT NULL &
-			 * fixed-width column guarantees that alignment is just the
+			 * If the offset to the column was previously known a NOT NULL &
+			 * fixed width column guarantees that alignment is just the
 			 * previous alignment plus column width.
 			 */
 			Assert(att->attlen > 0);
@@ -645,8 +596,8 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 					   LLVMBuildGEP(b, v_tts_nulls, &l_attno, 1, ""));
 
 		/*
-		 * Store datum. For byval: datums copy the value, extend to Datum's
-		 * width, and store. For byref types: store pointer to data.
+		 * Store datum. For byval datums copy the value, extend to Datum's
+		 * width, and store. For byref types, store pointer to data.
 		 */
 		if (att->attbyval)
 		{
@@ -682,7 +633,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 		else if (att->attlen == -1)
 		{
 			v_incby = LLVMBuildCall(b,
-									llvm_pg_func(mod, "varsize_any"),
+									llvm_get_decl(mod, FuncVarsizeAny),
 									&v_attdatap, 1,
 									"varsize_any");
 			l_callsite_ro(v_incby);
@@ -691,7 +642,7 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 		else if (att->attlen == -2)
 		{
 			v_incby = LLVMBuildCall(b,
-									llvm_pg_func(mod, "strlen"),
+									llvm_get_decl(mod, FuncStrlen),
 									&v_attdatap, 1, "strlen");
 
 			l_callsite_ro(v_incby);
@@ -739,14 +690,11 @@ slot_compile_deform(LLVMJitContext *context, TupleDesc desc,
 
 	{
 		LLVMValueRef v_off = LLVMBuildLoad(b, v_offp, "");
-		LLVMValueRef v_flags;
 
-		LLVMBuildStore(b, l_int16_const(natts), v_nvalidp);
+		LLVMBuildStore(b, l_int32_const(natts), v_nvalidp);
 		v_off = LLVMBuildTrunc(b, v_off, LLVMInt32Type(), "");
 		LLVMBuildStore(b, v_off, v_slotoffp);
-		v_flags = LLVMBuildLoad(b, v_flagsp, "tts_flags");
-		v_flags = LLVMBuildOr(b, v_flags, l_int16_const(TTS_FLAG_SLOW), "");
-		LLVMBuildStore(b, v_flags, v_flagsp);
+		LLVMBuildStore(b, l_int8_const(1), v_slowp);
 		LLVMBuildRetVoid(b);
 	}
 

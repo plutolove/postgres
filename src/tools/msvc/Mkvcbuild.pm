@@ -5,11 +5,10 @@ package Mkvcbuild;
 #
 # src/tools/msvc/Mkvcbuild.pm
 #
+use Carp;
+use Win32;
 use strict;
 use warnings;
-
-use Carp;
-use if ($^O eq "MSWin32"), 'Win32';
 use Project;
 use Solution;
 use Cwd;
@@ -43,14 +42,13 @@ my $contrib_extrasource = {
 	'seg'  => [ 'contrib/seg/segscan.l',   'contrib/seg/segparse.y' ],
 };
 my @contrib_excludes = (
-	'bool_plperl',      'commit_ts',
-	'hstore_plperl',    'hstore_plpython',
-	'intagg',           'jsonb_plperl',
-	'jsonb_plpython',   'ltree_plpython',
-	'pgcrypto',         'sepgsql',
-	'brin',             'test_extensions',
-	'test_misc',        'test_pg_dump',
-	'snapshot_too_old', 'unsafe_tests');
+	'commit_ts',       'hstore_plperl',
+	'hstore_plpython', 'intagg',
+	'jsonb_plperl',    'jsonb_plpython',
+	'ltree_plpython',  'pgcrypto',
+	'sepgsql',         'brin',
+	'test_extensions', 'test_pg_dump',
+	'snapshot_too_old');
 
 # Set of variables for frontend modules
 my $frontend_defines = { 'initdb' => 'FRONTEND' };
@@ -95,17 +93,15 @@ sub mkvcbuild
 	$solution = CreateSolution($vsVersion, $config);
 
 	our @pgportfiles = qw(
-	  chklocale.c explicit_bzero.c fls.c getpeereid.c getrusage.c inet_aton.c random.c
+	  chklocale.c crypt.c fls.c fseeko.c getrusage.c inet_aton.c random.c
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
-	  dirent.c dlopen.c getopt.c getopt_long.c link.c
-	  pread.c pwrite.c pg_bitutils.c
 	  pg_strong_random.c pgcheckdir.c pgmkdirp.c pgsleep.c pgstrcasecmp.c
 	  pqsignal.c mkdtemp.c qsort.c qsort_arg.c quotes.c system.c
-	  sprompt.c strerror.c tar.c thread.c
+	  sprompt.c tar.c thread.c getopt.c getopt_long.c dirent.c
 	  win32env.c win32error.c win32security.c win32setlocale.c);
 
-	push(@pgportfiles, 'strtof.c') if ($vsVersion < '14.00');
+	push(@pgportfiles, 'rint.c') if ($vsVersion < '12.00');
 
 	if ($vsVersion >= '9.00')
 	{
@@ -119,18 +115,14 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
-	  archive.c base64.c checksum_helper.c
-	  config_info.c controldata_utils.c d2s.c encnames.c exec.c
-	  f2s.c file_perm.c hashfn.c ip.c jsonapi.c
-	  keywords.c kwlookup.c link-canary.c md5.c
-	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
-	  saslprep.c scram-common.c string.c stringinfo.c unicode_norm.c username.c
-	  wait_error.c wchar.c);
+	  base64.c config_info.c controldata_utils.c exec.c file_perm.c ip.c
+	  keywords.c md5.c pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
+	  saslprep.c scram-common.c string.c unicode_norm.c username.c
+	  wait_error.c);
 
 	if ($solution->{options}->{openssl})
 	{
 		push(@pgcommonallfiles, 'sha2_openssl.c');
-		push(@pgcommonallfiles, 'protocol_openssl.c');
 	}
 	else
 	{
@@ -139,13 +131,12 @@ sub mkvcbuild
 
 	our @pgcommonfrontendfiles = (
 		@pgcommonallfiles, qw(fe_memutils.c file_utils.c
-		  logging.c restricted_token.c));
+		  restricted_token.c));
 
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 
 	our @pgfeutilsfiles = qw(
-	  archive.c cancel.c conditional.c mbprint.c print.c psqlscan.l
-	  psqlscan.c simple_list.c string_utils.c recovery_gen.c);
+	  conditional.c mbprint.c print.c psqlscan.l psqlscan.c simple_list.c string_utils.c);
 
 	$libpgport = $solution->AddProject('libpgport', 'lib', 'misc');
 	$libpgport->AddDefine('FRONTEND');
@@ -164,6 +155,9 @@ sub mkvcbuild
 	$postgres->AddIncludeDir('src/backend');
 	$postgres->AddDir('src/backend/port/win32');
 	$postgres->AddFile('src/backend/utils/fmgrtab.c');
+	$postgres->ReplaceFile(
+		'src/backend/port/dynloader.c',
+		'src/backend/port/dynloader/win32.c');
 	$postgres->ReplaceFile('src/backend/port/pg_sema.c',
 		'src/backend/port/win32_sema.c');
 	$postgres->ReplaceFile('src/backend/port/pg_shmem.c',
@@ -183,25 +177,18 @@ sub mkvcbuild
 		'src/backend/replication', 'repl_scanner.l',
 		'repl_gram.y',             'syncrep_scanner.l',
 		'syncrep_gram.y');
-	$postgres->AddFiles('src/backend/utils/adt', 'jsonpath_scan.l',
-		'jsonpath_gram.y');
 	$postgres->AddDefine('BUILDING_DLL');
 	$postgres->AddLibrary('secur32.lib');
 	$postgres->AddLibrary('ws2_32.lib');
 	$postgres->AddLibrary('wldap32.lib') if ($solution->{options}->{ldap});
 	$postgres->FullExportDLL('postgres.lib');
 
-	# The OBJS scraper doesn't know about ifdefs, so remove appropriate files
-	# if building without OpenSSL.
+	# The OBJS scraper doesn't know about ifdefs, so remove be-secure-openssl.c
+	# if building without OpenSSL
 	if (!$solution->{options}->{openssl})
 	{
 		$postgres->RemoveFile('src/backend/libpq/be-secure-common.c');
 		$postgres->RemoveFile('src/backend/libpq/be-secure-openssl.c');
-	}
-	if (!$solution->{options}->{gss})
-	{
-		$postgres->RemoveFile('src/backend/libpq/be-gssapi-common.c');
-		$postgres->RemoveFile('src/backend/libpq/be-secure-gssapi.c');
 	}
 
 	my $snowball = $solution->AddProject('dict_snowball', 'dll', '',
@@ -252,19 +239,22 @@ sub mkvcbuild
 	$libpq->AddLibrary('ws2_32.lib');
 	$libpq->AddLibrary('wldap32.lib') if ($solution->{options}->{ldap});
 	$libpq->UseDef('src/interfaces/libpq/libpqdll.def');
-	$libpq->AddReference($libpgcommon, $libpgport);
+	$libpq->ReplaceFile('src/interfaces/libpq/libpqrc.c',
+		'src/interfaces/libpq/libpq.rc');
+	$libpq->AddReference($libpgport);
 
-	# The OBJS scraper doesn't know about ifdefs, so remove appropriate files
-	# if building without OpenSSL.
+	# The OBJS scraper doesn't know about ifdefs, so remove fe-secure-openssl.c
+	# and sha2_openssl.c if building without OpenSSL, and remove sha2.c if
+	# building with OpenSSL.
 	if (!$solution->{options}->{openssl})
 	{
 		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-common.c');
 		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-openssl.c');
+		$libpq->RemoveFile('src/common/sha2_openssl.c');
 	}
-	if (!$solution->{options}->{gss})
+	else
 	{
-		$libpq->RemoveFile('src/interfaces/libpq/fe-gssapi-common.c');
-		$libpq->RemoveFile('src/interfaces/libpq/fe-secure-gssapi.c');
+		$libpq->RemoveFile('src/common/sha2.c');
 	}
 
 	my $libpqwalreceiver =
@@ -281,7 +271,7 @@ sub mkvcbuild
 		'libpgtypes', 'dll',
 		'interfaces', 'src/interfaces/ecpg/pgtypeslib');
 	$pgtypes->AddDefine('FRONTEND');
-	$pgtypes->AddReference($libpgcommon, $libpgport);
+	$pgtypes->AddReference($libpgport);
 	$pgtypes->UseDef('src/interfaces/ecpg/pgtypeslib/pgtypeslib.def');
 	$pgtypes->AddIncludeDir('src/interfaces/ecpg/include');
 
@@ -302,16 +292,15 @@ sub mkvcbuild
 	$libecpgcompat->AddIncludeDir('src/interfaces/ecpg/include');
 	$libecpgcompat->AddIncludeDir('src/interfaces/libpq');
 	$libecpgcompat->UseDef('src/interfaces/ecpg/compatlib/compatlib.def');
-	$libecpgcompat->AddReference($pgtypes, $libecpg, $libpgport,
-		$libpgcommon);
+	$libecpgcompat->AddReference($pgtypes, $libecpg, $libpgport);
 
 	my $ecpg = $solution->AddProject('ecpg', 'exe', 'interfaces',
 		'src/interfaces/ecpg/preproc');
 	$ecpg->AddIncludeDir('src/interfaces/ecpg/include');
-	$ecpg->AddIncludeDir('src/interfaces/ecpg/ecpglib');
 	$ecpg->AddIncludeDir('src/interfaces/libpq');
 	$ecpg->AddPrefixInclude('src/interfaces/ecpg/preproc');
 	$ecpg->AddFiles('src/interfaces/ecpg/preproc', 'pgc.l', 'preproc.y');
+	$ecpg->AddDefine('ECPG_COMPILE');
 	$ecpg->AddReference($libpgcommon, $libpgport);
 
 	my $pgregress_ecpg =
@@ -430,7 +419,7 @@ sub mkvcbuild
 
 	if (!$solution->{options}->{openssl})
 	{
-		push @contrib_excludes, 'sslinfo', 'ssl_passphrase_callback';
+		push @contrib_excludes, 'sslinfo';
 	}
 
 	if (!$solution->{options}->{uuid})
@@ -498,7 +487,7 @@ sub mkvcbuild
 		my $pythonprog = "import sys;print(sys.prefix);"
 		  . "print(str(sys.version_info[0])+str(sys.version_info[1]))";
 		my $prefixcmd =
-		  qq("$solution->{options}->{python}\\python" -c "$pythonprog");
+		  $solution->{options}->{python} . "\\python -c \"$pythonprog\"";
 		my $pyout = `$prefixcmd`;
 		die "Could not query for python version!\n" if $?;
 		my ($pyprefix, $pyver) = split(/\r?\n/, $pyout);
@@ -648,16 +637,12 @@ sub mkvcbuild
 				{
 
 					# Some builds exhibit runtime failure through Perl warning
-					# 'Can't spawn "conftest.exe"'; suppress that.
+					# 'Can't spawn "conftest.exe"'; supress that.
 					no warnings;
-
-					no strict 'subs';    ## no critic (ProhibitNoStrict)
 
 					# Disable error dialog boxes like we do in the postmaster.
 					# Here, we run code that triggers relevant errors.
-					use
-					  if ($^O eq "MSWin32"), 'Win32API::File',
-					  qw(SetErrorMode :SEM_);
+					use Win32API::File qw(SetErrorMode :SEM_);
 					my $oldmode = SetErrorMode(
 						SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 					system(".\\$exe");
@@ -767,9 +752,6 @@ sub mkvcbuild
 		}
 
 		# Add transform modules dependent on plperl
-		my $bool_plperl = AddTransformModule(
-			'bool_plperl', 'contrib/bool_plperl',
-			'plperl',      'src/pl/plperl');
 		my $hstore_plperl = AddTransformModule(
 			'hstore_plperl', 'contrib/hstore_plperl',
 			'plperl',        'src/pl/plperl',
@@ -780,7 +762,6 @@ sub mkvcbuild
 
 		foreach my $f (@perl_embed_ccflags)
 		{
-			$bool_plperl->AddDefine($f);
 			$hstore_plperl->AddDefine($f);
 			$jsonb_plperl->AddDefine($f);
 		}

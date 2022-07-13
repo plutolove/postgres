@@ -1,7 +1,6 @@
 #! /usr/bin/perl
 
 use strict;
-use warnings;
 use locale;
 
 open(my $in_fh, '<', $ARGV[0]) || die;

@@ -34,11 +34,13 @@
 #include <ctype.h>
 
 #include "parser/scansup.h"
-#include "pgcrypto.h"
-#include "px-crypt.h"
-#include "px.h"
+#include "utils/backend_random.h"
 #include "utils/builtins.h"
 #include "utils/uuid.h"
+
+#include "px.h"
+#include "px-crypt.h"
+#include "pgcrypto.h"
 
 PG_MODULE_MAGIC;
 
@@ -421,6 +423,7 @@ PG_FUNCTION_INFO_V1(pg_random_bytes);
 Datum
 pg_random_bytes(PG_FUNCTION_ARGS)
 {
+#ifdef HAVE_STRONG_RANDOM
 	int			len = PG_GETARG_INT32(0);
 	bytea	   *res;
 
@@ -437,6 +440,9 @@ pg_random_bytes(PG_FUNCTION_ARGS)
 		px_THROW_ERROR(PXE_NO_RANDOM);
 
 	PG_RETURN_BYTEA_P(res);
+#else
+	px_THROW_ERROR(PXE_NO_RANDOM);
+#endif
 }
 
 /* SQL function: gen_random_uuid() returns uuid */
@@ -445,8 +451,24 @@ PG_FUNCTION_INFO_V1(pg_random_uuid);
 Datum
 pg_random_uuid(PG_FUNCTION_ARGS)
 {
-	/* redirect to built-in function */
-	return gen_random_uuid(fcinfo);
+#ifdef HAVE_STRONG_RANDOM
+	uint8	   *buf = (uint8 *) palloc(UUID_LEN);
+
+	/* Generate random bits. */
+	if (!pg_backend_random((char *) buf, UUID_LEN))
+		px_THROW_ERROR(PXE_NO_RANDOM);
+
+	/*
+	 * Set magic numbers for a "version 4" (pseudorandom) UUID, see
+	 * http://tools.ietf.org/html/rfc4122#section-4.4
+	 */
+	buf[6] = (buf[6] & 0x0f) | 0x40;	/* "version" field */
+	buf[8] = (buf[8] & 0x3f) | 0x80;	/* "variant" field */
+
+	PG_RETURN_UUID_P((pg_uuid_t *) buf);
+#else
+	px_THROW_ERROR(PXE_NO_RANDOM);
+#endif
 }
 
 static void *

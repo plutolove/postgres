@@ -29,7 +29,7 @@
  * that because it's faster in typical non-inherited cases.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -40,20 +40,21 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/sysattr.h"
-#include "access/table.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
-#include "optimizer/optimizer.h"
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
-#include "parser/parse_coerce.h"
+#include "optimizer/var.h"
 #include "parser/parsetree.h"
+#include "parser/parse_coerce.h"
 #include "rewrite/rewriteHandler.h"
 #include "utils/rel.h"
 
+
 static List *expand_targetlist(List *tlist, int command_type,
-							   Index result_relation, Relation rel);
+				  Index result_relation, Relation rel);
 
 
 /*
@@ -93,7 +94,7 @@ preprocess_targetlist(PlannerInfo *root)
 		if (target_rte->rtekind != RTE_RELATION)
 			elog(ERROR, "result relation must be a regular relation");
 
-		target_relation = table_open(target_rte->relid, NoLock);
+		target_relation = heap_open(target_rte->relid, NoLock);
 	}
 	else
 		Assert(command_type == CMD_SELECT);
@@ -120,9 +121,7 @@ preprocess_targetlist(PlannerInfo *root)
 	/*
 	 * Add necessary junk columns for rowmarked rels.  These values are needed
 	 * for locking of rels selected FOR UPDATE/SHARE, and to do EvalPlanQual
-	 * rechecking.  See comments for PlanRowMark in plannodes.h.  If you
-	 * change this stanza, see also expand_inherited_rtentry(), which has to
-	 * be able to add on junk columns equivalent to these.
+	 * rechecking.  See comments for PlanRowMark in plannodes.h.
 	 */
 	foreach(lc, root->rowMarks)
 	{
@@ -234,7 +233,7 @@ preprocess_targetlist(PlannerInfo *root)
 							  target_relation);
 
 	if (target_relation)
-		table_close(target_relation, NoLock);
+		heap_close(target_relation, NoLock);
 
 	return tlist;
 }
@@ -284,7 +283,7 @@ expand_targetlist(List *tlist, int command_type,
 			if (!old_tle->resjunk && old_tle->resno == attrno)
 			{
 				new_tle = old_tle;
-				tlist_item = lnext(tlist, tlist_item);
+				tlist_item = lnext(tlist_item);
 			}
 		}
 
@@ -409,7 +408,7 @@ expand_targetlist(List *tlist, int command_type,
 		}
 		new_tlist = lappend(new_tlist, old_tle);
 		attrno++;
-		tlist_item = lnext(tlist, tlist_item);
+		tlist_item = lnext(tlist_item);
 	}
 
 	return new_tlist;

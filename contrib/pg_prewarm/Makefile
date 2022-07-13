@@ -1,10 +1,7 @@
 # contrib/pg_prewarm/Makefile
 
 MODULE_big = pg_prewarm
-OBJS = \
-	$(WIN32RES) \
-	autoprewarm.o \
-	pg_prewarm.o
+OBJS = pg_prewarm.o autoprewarm.o $(WIN32RES)
 
 EXTENSION = pg_prewarm
 DATA = pg_prewarm--1.1--1.2.sql pg_prewarm--1.1.sql pg_prewarm--1.0--1.1.sql

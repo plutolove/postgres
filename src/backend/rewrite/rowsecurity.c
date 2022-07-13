@@ -29,14 +29,14 @@
  * in the current environment, but that may change if the row_security GUC or
  * the current role changes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_policy.h"
@@ -47,40 +47,39 @@
 #include "nodes/pg_list.h"
 #include "nodes/plannodes.h"
 #include "parser/parsetree.h"
-#include "rewrite/rewriteDefine.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "rewrite/rowsecurity.h"
-#include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/syscache.h"
+#include "tcop/utility.h"
 
 static void get_policies_for_relation(Relation relation,
-									  CmdType cmd, Oid user_id,
-									  List **permissive_policies,
-									  List **restrictive_policies);
+						  CmdType cmd, Oid user_id,
+						  List **permissive_policies,
+						  List **restrictive_policies);
 
-static void sort_policies_by_name(List *policies);
+static List *sort_policies_by_name(List *policies);
 
-static int	row_security_policy_cmp(const ListCell *a, const ListCell *b);
+static int	row_security_policy_cmp(const void *a, const void *b);
 
 static void add_security_quals(int rt_index,
-							   List *permissive_policies,
-							   List *restrictive_policies,
-							   List **securityQuals,
-							   bool *hasSubLinks);
+				   List *permissive_policies,
+				   List *restrictive_policies,
+				   List **securityQuals,
+				   bool *hasSubLinks);
 
 static void add_with_check_options(Relation rel,
-								   int rt_index,
-								   WCOKind kind,
-								   List *permissive_policies,
-								   List *restrictive_policies,
-								   List **withCheckOptions,
-								   bool *hasSubLinks,
-								   bool force_using);
+					   int rt_index,
+					   WCOKind kind,
+					   List *permissive_policies,
+					   List *restrictive_policies,
+					   List **withCheckOptions,
+					   bool *hasSubLinks,
+					   bool force_using);
 
 static bool check_role_for_policy(ArrayType *policy_roles, Oid user_id);
 
@@ -163,7 +162,7 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 	 * for example in UPDATE t1 ... FROM t2 we need to apply t1's UPDATE
 	 * policies and t2's SELECT policies.
 	 */
-	rel = table_open(rte->relid, NoLock);
+	rel = heap_open(rte->relid, NoLock);
 
 	commandType = rt_index == root->resultRelation ?
 		root->commandType : CMD_SELECT;
@@ -380,20 +379,15 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 		}
 	}
 
-	table_close(rel, NoLock);
-
-	/*
-	 * Copy checkAsUser to the row security quals and WithCheckOption checks,
-	 * in case they contain any subqueries referring to other relations.
-	 */
-	setRuleCheckAsUser((Node *) *securityQuals, rte->checkAsUser);
-	setRuleCheckAsUser((Node *) *withCheckOptions, rte->checkAsUser);
+	heap_close(rel, NoLock);
 
 	/*
 	 * Mark this query as having row security, so plancache can invalidate it
 	 * when necessary (eg: role changes)
 	 */
 	*hasRowSecurity = true;
+
+	return;
 }
 
 /*
@@ -468,7 +462,7 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
 	 * We sort restrictive policies by name so that any WCOs they generate are
 	 * checked in a well-defined order.
 	 */
-	sort_policies_by_name(*restrictive_policies);
+	*restrictive_policies = sort_policies_by_name(*restrictive_policies);
 
 	/*
 	 * Then add any permissive or restrictive policies defined by extensions.
@@ -486,7 +480,7 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
 		 * always check all built-in restrictive policies, in name order,
 		 * before checking restrictive policies added by hooks, in name order.
 		 */
-		sort_policies_by_name(hook_policies);
+		hook_policies = sort_policies_by_name(hook_policies);
 
 		foreach(item, hook_policies)
 		{
@@ -520,20 +514,43 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
  * This is not necessary for permissive policies, since they are all combined
  * together using OR into a single WithCheckOption check.
  */
-static void
+static List *
 sort_policies_by_name(List *policies)
 {
-	list_sort(policies, row_security_policy_cmp);
+	int			npol = list_length(policies);
+	RowSecurityPolicy *pols;
+	ListCell   *item;
+	int			ii = 0;
+
+	if (npol <= 1)
+		return policies;
+
+	pols = (RowSecurityPolicy *) palloc(sizeof(RowSecurityPolicy) * npol);
+
+	foreach(item, policies)
+	{
+		RowSecurityPolicy *policy = (RowSecurityPolicy *) lfirst(item);
+
+		pols[ii++] = *policy;
+	}
+
+	qsort(pols, npol, sizeof(RowSecurityPolicy), row_security_policy_cmp);
+
+	policies = NIL;
+	for (ii = 0; ii < npol; ii++)
+		policies = lappend(policies, &pols[ii]);
+
+	return policies;
 }
 
 /*
- * list_sort comparator to sort RowSecurityPolicy entries by name
+ * qsort comparator to sort RowSecurityPolicy entries by name
  */
 static int
-row_security_policy_cmp(const ListCell *a, const ListCell *b)
+row_security_policy_cmp(const void *a, const void *b)
 {
-	const RowSecurityPolicy *pa = (const RowSecurityPolicy *) lfirst(a);
-	const RowSecurityPolicy *pb = (const RowSecurityPolicy *) lfirst(b);
+	const RowSecurityPolicy *pa = (const RowSecurityPolicy *) a;
+	const RowSecurityPolicy *pb = (const RowSecurityPolicy *) b;
 
 	/* Guard against NULL policy names from extensions */
 	if (pa->policy_name == NULL)

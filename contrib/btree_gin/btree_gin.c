@@ -10,12 +10,11 @@
 #include "utils/bytea.h"
 #include "utils/cash.h"
 #include "utils/date.h"
-#include "utils/float.h"
 #include "utils/inet.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
-#include "utils/uuid.h"
 #include "utils/varbit.h"
+#include "utils/uuid.h"
 
 PG_MODULE_MAGIC;
 
@@ -114,7 +113,8 @@ gin_btree_compare_prefix(FunctionCallInfo fcinfo)
 	int32		res,
 				cmp;
 
-	cmp = DatumGetInt32(CallerFInfoFunctionCall2(data->typecmp,
+	cmp = DatumGetInt32(CallerFInfoFunctionCall2(
+												 data->typecmp,
 												 fcinfo->flinfo,
 												 PG_GET_COLLATION(),
 												 (data->strategy == BTLessStrategyNumber ||
@@ -462,7 +462,8 @@ gin_enum_cmp(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		res = DatumGetInt32(CallerFInfoFunctionCall2(enum_cmp,
+		res = DatumGetInt32(CallerFInfoFunctionCall2(
+													 enum_cmp,
 													 fcinfo->flinfo,
 													 PG_GET_COLLATION(),
 													 ObjectIdGetDatum(a),

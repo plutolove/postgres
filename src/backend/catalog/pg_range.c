@@ -3,7 +3,7 @@
  * pg_range.c
  *	  routines to support manipulation of the pg_range relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,8 +15,8 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_collation.h"
@@ -26,6 +26,7 @@
 #include "catalog/pg_type.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 
 
 /*
@@ -44,7 +45,7 @@ RangeCreate(Oid rangeTypeOid, Oid rangeSubType, Oid rangeCollation,
 	ObjectAddress myself;
 	ObjectAddress referenced;
 
-	pg_range = table_open(RangeRelationId, RowExclusiveLock);
+	pg_range = heap_open(RangeRelationId, RowExclusiveLock);
 
 	memset(nulls, 0, sizeof(nulls));
 
@@ -100,7 +101,7 @@ RangeCreate(Oid rangeTypeOid, Oid rangeSubType, Oid rangeCollation,
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
-	table_close(pg_range, RowExclusiveLock);
+	heap_close(pg_range, RowExclusiveLock);
 }
 
 
@@ -116,7 +117,7 @@ RangeDelete(Oid rangeTypeOid)
 	SysScanDesc scan;
 	HeapTuple	tup;
 
-	pg_range = table_open(RangeRelationId, RowExclusiveLock);
+	pg_range = heap_open(RangeRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key[0],
 				Anum_pg_range_rngtypid,
@@ -133,5 +134,5 @@ RangeDelete(Oid rangeTypeOid)
 
 	systable_endscan(scan);
 
-	table_close(pg_range, RowExclusiveLock);
+	heap_close(pg_range, RowExclusiveLock);
 }

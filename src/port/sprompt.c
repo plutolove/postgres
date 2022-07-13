@@ -3,7 +3,7 @@
  * sprompt.c
  *	  simple_prompt() routine
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -144,11 +144,9 @@ simple_prompt(const char *prompt, char *destination, size_t destlen, bool echo)
 		} while (buflen > 0 && buf[buflen - 1] != '\n');
 	}
 
-	/* strip trailing newline, including \r in case we're on Windows */
-	while (length > 0 &&
-		   (destination[length - 1] == '\n' ||
-			destination[length - 1] == '\r'))
-		destination[--length] = '\0';
+	if (length > 0 && destination[length - 1] == '\n')
+		/* remove trailing newline */
+		destination[length - 1] = '\0';
 
 	if (!echo)
 	{

@@ -3,7 +3,7 @@
  * event_trigger.c
  *	  PostgreSQL EVENT TRIGGER support code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,9 +14,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/table.h"
 #include "access/xact.h"
-#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/objectaccess.h"
@@ -33,12 +31,11 @@
 #include "commands/extension.h"
 #include "commands/trigger.h"
 #include "funcapi.h"
-#include "lib/ilist.h"
-#include "miscadmin.h"
 #include "parser/parse_func.h"
 #include "pgstat.h"
+#include "lib/ilist.h"
+#include "miscadmin.h"
 #include "tcop/deparse_utility.h"
-#include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/evtcache.h"
@@ -46,7 +43,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 #include "utils/syscache.h"
+#include "tcop/utility.h"
 
 typedef struct EventTriggerQueryState
 {
@@ -72,6 +71,65 @@ typedef struct EventTriggerQueryState
 
 static EventTriggerQueryState *currentEventTriggerState = NULL;
 
+typedef struct
+{
+	const char *obtypename;
+	bool		supported;
+} event_trigger_support_data;
+
+typedef enum
+{
+	EVENT_TRIGGER_COMMAND_TAG_OK,
+	EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED,
+	EVENT_TRIGGER_COMMAND_TAG_NOT_RECOGNIZED
+} event_trigger_command_tag_check_result;
+
+/* XXX merge this with ObjectTypeMap? */
+static event_trigger_support_data event_trigger_support[] = {
+	{"ACCESS METHOD", true},
+	{"AGGREGATE", true},
+	{"CAST", true},
+	{"CONSTRAINT", true},
+	{"COLLATION", true},
+	{"CONVERSION", true},
+	{"DATABASE", false},
+	{"DOMAIN", true},
+	{"EXTENSION", true},
+	{"EVENT TRIGGER", false},
+	{"FOREIGN DATA WRAPPER", true},
+	{"FOREIGN TABLE", true},
+	{"FUNCTION", true},
+	{"INDEX", true},
+	{"LANGUAGE", true},
+	{"MATERIALIZED VIEW", true},
+	{"OPERATOR", true},
+	{"OPERATOR CLASS", true},
+	{"OPERATOR FAMILY", true},
+	{"POLICY", true},
+	{"PROCEDURE", true},
+	{"PUBLICATION", true},
+	{"ROLE", false},
+	{"ROUTINE", true},
+	{"RULE", true},
+	{"SCHEMA", true},
+	{"SEQUENCE", true},
+	{"SERVER", true},
+	{"STATISTICS", true},
+	{"SUBSCRIPTION", true},
+	{"TABLE", true},
+	{"TABLESPACE", false},
+	{"TRANSFORM", true},
+	{"TRIGGER", true},
+	{"TEXT SEARCH CONFIGURATION", true},
+	{"TEXT SEARCH DICTIONARY", true},
+	{"TEXT SEARCH PARSER", true},
+	{"TEXT SEARCH TEMPLATE", true},
+	{"TYPE", true},
+	{"USER MAPPING", true},
+	{"VIEW", true},
+	{NULL, false}
+};
+
 /* Support for dropped objects */
 typedef struct SQLDropObject
 {
@@ -89,12 +147,15 @@ typedef struct SQLDropObject
 } SQLDropObject;
 
 static void AlterEventTriggerOwner_internal(Relation rel,
-											HeapTuple tup,
-											Oid newOwnerId);
+								HeapTuple tup,
+								Oid newOwnerId);
+static event_trigger_command_tag_check_result check_ddl_tag(const char *tag);
+static event_trigger_command_tag_check_result check_table_rewrite_ddl_tag(
+							const char *tag);
 static void error_duplicate_filter_variable(const char *defname);
 static Datum filter_list_to_array(List *filterlist);
-static Oid	insert_event_trigger_tuple(const char *trigname, const char *eventname,
-									   Oid evtOwner, Oid funcoid, List *tags);
+static Oid insert_event_trigger_tuple(const char *trigname, const char *eventname,
+						   Oid evtOwner, Oid funcoid, List *tags);
 static void validate_ddl_tags(const char *filtervar, List *taglist);
 static void validate_table_rewrite_tags(const char *filtervar, List *taglist);
 static void EventTriggerInvoke(List *fn_oid_list, EventTriggerData *trigdata);
@@ -110,6 +171,7 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 	HeapTuple	tuple;
 	Oid			funcoid;
 	Oid			funcrettype;
+	Oid			fargtypes[1];	/* dummy */
 	Oid			evtowner = GetUserId();
 	ListCell   *lc;
 	List	   *tags = NULL;
@@ -175,7 +237,7 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 						stmt->trigname)));
 
 	/* Find and validate the trigger function. */
-	funcoid = LookupFuncName(stmt->funcname, 0, NULL, false);
+	funcoid = LookupFuncName(stmt->funcname, 0, fargtypes, false);
 	funcrettype = get_func_rettype(funcoid);
 	if (funcrettype != EVTTRIGGEROID)
 		ereport(ERROR,
@@ -198,21 +260,69 @@ validate_ddl_tags(const char *filtervar, List *taglist)
 
 	foreach(lc, taglist)
 	{
-		const char *tagstr = strVal(lfirst(lc));
-		CommandTag	commandTag = GetCommandTagEnum(tagstr);
+		const char *tag = strVal(lfirst(lc));
+		event_trigger_command_tag_check_result result;
 
-		if (commandTag == CMDTAG_UNKNOWN)
+		result = check_ddl_tag(tag);
+		if (result == EVENT_TRIGGER_COMMAND_TAG_NOT_RECOGNIZED)
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("filter value \"%s\" not recognized for filter variable \"%s\"",
-							tagstr, filtervar)));
-		if (!command_tag_event_trigger_ok(commandTag))
+							tag, filtervar)));
+		if (result == EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			/* translator: %s represents an SQL statement name */
 					 errmsg("event triggers are not supported for %s",
-							tagstr)));
+							tag)));
 	}
+}
+
+static event_trigger_command_tag_check_result
+check_ddl_tag(const char *tag)
+{
+	const char *obtypename;
+	event_trigger_support_data *etsd;
+
+	/*
+	 * Handle some idiosyncratic special cases.
+	 */
+	if (pg_strcasecmp(tag, "CREATE TABLE AS") == 0 ||
+		pg_strcasecmp(tag, "SELECT INTO") == 0 ||
+		pg_strcasecmp(tag, "REFRESH MATERIALIZED VIEW") == 0 ||
+		pg_strcasecmp(tag, "ALTER DEFAULT PRIVILEGES") == 0 ||
+		pg_strcasecmp(tag, "ALTER LARGE OBJECT") == 0 ||
+		pg_strcasecmp(tag, "COMMENT") == 0 ||
+		pg_strcasecmp(tag, "GRANT") == 0 ||
+		pg_strcasecmp(tag, "REVOKE") == 0 ||
+		pg_strcasecmp(tag, "DROP OWNED") == 0 ||
+		pg_strcasecmp(tag, "IMPORT FOREIGN SCHEMA") == 0 ||
+		pg_strcasecmp(tag, "SECURITY LABEL") == 0)
+		return EVENT_TRIGGER_COMMAND_TAG_OK;
+
+	/*
+	 * Otherwise, command should be CREATE, ALTER, or DROP.
+	 */
+	if (pg_strncasecmp(tag, "CREATE ", 7) == 0)
+		obtypename = tag + 7;
+	else if (pg_strncasecmp(tag, "ALTER ", 6) == 0)
+		obtypename = tag + 6;
+	else if (pg_strncasecmp(tag, "DROP ", 5) == 0)
+		obtypename = tag + 5;
+	else
+		return EVENT_TRIGGER_COMMAND_TAG_NOT_RECOGNIZED;
+
+	/*
+	 * ...and the object type should be something recognizable.
+	 */
+	for (etsd = event_trigger_support; etsd->obtypename != NULL; etsd++)
+		if (pg_strcasecmp(etsd->obtypename, obtypename) == 0)
+			break;
+	if (etsd->obtypename == NULL)
+		return EVENT_TRIGGER_COMMAND_TAG_NOT_RECOGNIZED;
+	if (!etsd->supported)
+		return EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED;
+	return EVENT_TRIGGER_COMMAND_TAG_OK;
 }
 
 /*
@@ -225,16 +335,27 @@ validate_table_rewrite_tags(const char *filtervar, List *taglist)
 
 	foreach(lc, taglist)
 	{
-		const char *tagstr = strVal(lfirst(lc));
-		CommandTag	commandTag = GetCommandTagEnum(tagstr);
+		const char *tag = strVal(lfirst(lc));
+		event_trigger_command_tag_check_result result;
 
-		if (!command_tag_table_rewrite_ok(commandTag))
+		result = check_table_rewrite_ddl_tag(tag);
+		if (result == EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			/* translator: %s represents an SQL statement name */
 					 errmsg("event triggers are not supported for %s",
-							tagstr)));
+							tag)));
 	}
+}
+
+static event_trigger_command_tag_check_result
+check_table_rewrite_ddl_tag(const char *tag)
+{
+	if (pg_strcasecmp(tag, "ALTER TABLE") == 0 ||
+		pg_strcasecmp(tag, "ALTER TYPE") == 0)
+		return EVENT_TRIGGER_COMMAND_TAG_OK;
+
+	return EVENT_TRIGGER_COMMAND_TAG_NOT_SUPPORTED;
 }
 
 /*
@@ -267,12 +388,9 @@ insert_event_trigger_tuple(const char *trigname, const char *eventname, Oid evtO
 				referenced;
 
 	/* Open pg_event_trigger. */
-	tgrel = table_open(EventTriggerRelationId, RowExclusiveLock);
+	tgrel = heap_open(EventTriggerRelationId, RowExclusiveLock);
 
 	/* Build the new pg_trigger tuple. */
-	trigoid = GetNewOidWithIndex(tgrel, EventTriggerOidIndexId,
-								 Anum_pg_event_trigger_oid);
-	values[Anum_pg_event_trigger_oid - 1] = ObjectIdGetDatum(trigoid);
 	memset(nulls, false, sizeof(nulls));
 	namestrcpy(&evtnamedata, trigname);
 	values[Anum_pg_event_trigger_evtname - 1] = NameGetDatum(&evtnamedata);
@@ -290,7 +408,7 @@ insert_event_trigger_tuple(const char *trigname, const char *eventname, Oid evtO
 
 	/* Insert heap tuple. */
 	tuple = heap_form_tuple(tgrel->rd_att, values, nulls);
-	CatalogTupleInsert(tgrel, tuple);
+	trigoid = CatalogTupleInsert(tgrel, tuple);
 	heap_freetuple(tuple);
 
 	/* Depend on owner. */
@@ -312,7 +430,7 @@ insert_event_trigger_tuple(const char *trigname, const char *eventname, Oid evtO
 	InvokeObjectPostCreateHook(EventTriggerRelationId, trigoid, 0);
 
 	/* Close pg_event_trigger. */
-	table_close(tgrel, RowExclusiveLock);
+	heap_close(tgrel, RowExclusiveLock);
 
 	return trigoid;
 }
@@ -351,8 +469,7 @@ filter_list_to_array(List *filterlist)
 		pfree(result);
 	}
 
-	return PointerGetDatum(construct_array(data, l, TEXTOID,
-										   -1, false, TYPALIGN_INT));
+	return PointerGetDatum(construct_array(data, l, TEXTOID, -1, false, 'i'));
 }
 
 /*
@@ -364,7 +481,7 @@ RemoveEventTriggerById(Oid trigOid)
 	Relation	tgrel;
 	HeapTuple	tup;
 
-	tgrel = table_open(EventTriggerRelationId, RowExclusiveLock);
+	tgrel = heap_open(EventTriggerRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(EVENTTRIGGEROID, ObjectIdGetDatum(trigOid));
 	if (!HeapTupleIsValid(tup))
@@ -374,7 +491,7 @@ RemoveEventTriggerById(Oid trigOid)
 
 	ReleaseSysCache(tup);
 
-	table_close(tgrel, RowExclusiveLock);
+	heap_close(tgrel, RowExclusiveLock);
 }
 
 /*
@@ -389,7 +506,7 @@ AlterEventTrigger(AlterEventTrigStmt *stmt)
 	Form_pg_event_trigger evtForm;
 	char		tgenabled = stmt->tgenabled;
 
-	tgrel = table_open(EventTriggerRelationId, RowExclusiveLock);
+	tgrel = heap_open(EventTriggerRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(EVENTTRIGGERNAME,
 							  CStringGetDatum(stmt->trigname));
@@ -399,14 +516,14 @@ AlterEventTrigger(AlterEventTrigStmt *stmt)
 				 errmsg("event trigger \"%s\" does not exist",
 						stmt->trigname)));
 
-	evtForm = (Form_pg_event_trigger) GETSTRUCT(tup);
-	trigoid = evtForm->oid;
+	trigoid = HeapTupleGetOid(tup);
 
 	if (!pg_event_trigger_ownercheck(trigoid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EVENT_TRIGGER,
 					   stmt->trigname);
 
 	/* tuple is a copy, so we can modify it below */
+	evtForm = (Form_pg_event_trigger) GETSTRUCT(tup);
 	evtForm->evtenabled = tgenabled;
 
 	CatalogTupleUpdate(tgrel, &tup->t_self, tup);
@@ -416,7 +533,7 @@ AlterEventTrigger(AlterEventTrigStmt *stmt)
 
 	/* clean up */
 	heap_freetuple(tup);
-	table_close(tgrel, RowExclusiveLock);
+	heap_close(tgrel, RowExclusiveLock);
 
 	return trigoid;
 }
@@ -429,11 +546,10 @@ AlterEventTriggerOwner(const char *name, Oid newOwnerId)
 {
 	Oid			evtOid;
 	HeapTuple	tup;
-	Form_pg_event_trigger evtForm;
 	Relation	rel;
 	ObjectAddress address;
 
-	rel = table_open(EventTriggerRelationId, RowExclusiveLock);
+	rel = heap_open(EventTriggerRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(EVENTTRIGGERNAME, CStringGetDatum(name));
 
@@ -442,8 +558,7 @@ AlterEventTriggerOwner(const char *name, Oid newOwnerId)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("event trigger \"%s\" does not exist", name)));
 
-	evtForm = (Form_pg_event_trigger) GETSTRUCT(tup);
-	evtOid = evtForm->oid;
+	evtOid = HeapTupleGetOid(tup);
 
 	AlterEventTriggerOwner_internal(rel, tup, newOwnerId);
 
@@ -451,7 +566,7 @@ AlterEventTriggerOwner(const char *name, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -465,7 +580,7 @@ AlterEventTriggerOwner_oid(Oid trigOid, Oid newOwnerId)
 	HeapTuple	tup;
 	Relation	rel;
 
-	rel = table_open(EventTriggerRelationId, RowExclusiveLock);
+	rel = heap_open(EventTriggerRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(EVENTTRIGGEROID, ObjectIdGetDatum(trigOid));
 
@@ -478,7 +593,7 @@ AlterEventTriggerOwner_oid(Oid trigOid, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -494,7 +609,7 @@ AlterEventTriggerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 	if (form->evtowner == newOwnerId)
 		return;
 
-	if (!pg_event_trigger_ownercheck(form->oid, GetUserId()))
+	if (!pg_event_trigger_ownercheck(HeapTupleGetOid(tup), GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_EVENT_TRIGGER,
 					   NameStr(form->evtname));
 
@@ -511,11 +626,11 @@ AlterEventTriggerOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(EventTriggerRelationId,
-							form->oid,
+							HeapTupleGetOid(tup),
 							newOwnerId);
 
 	InvokeObjectPostAlterHook(EventTriggerRelationId,
-							  form->oid, 0);
+							  HeapTupleGetOid(tup), 0);
 }
 
 /*
@@ -529,8 +644,7 @@ get_event_trigger_oid(const char *trigname, bool missing_ok)
 {
 	Oid			oid;
 
-	oid = GetSysCacheOid1(EVENTTRIGGERNAME, Anum_pg_event_trigger_oid,
-						  CStringGetDatum(trigname));
+	oid = GetSysCacheOid1(EVENTTRIGGERNAME, CStringGetDatum(trigname));
 	if (!OidIsValid(oid) && !missing_ok)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -544,7 +658,7 @@ get_event_trigger_oid(const char *trigname, bool missing_ok)
  * tags matching.
  */
 static bool
-filter_event_trigger(CommandTag tag, EventTriggerCacheItem *item)
+filter_event_trigger(const char **tag, EventTriggerCacheItem *item)
 {
 	/*
 	 * Filter by session replication role, knowing that we never see disabled
@@ -562,7 +676,9 @@ filter_event_trigger(CommandTag tag, EventTriggerCacheItem *item)
 	}
 
 	/* Filter by tags, if any were specified. */
-	if (!bms_is_empty(item->tagset) && !bms_is_member(tag, item->tagset))
+	if (item->ntags != 0 && bsearch(tag, item->tag,
+									item->ntags, sizeof(char *),
+									pg_qsort_strcmp) == NULL)
 		return false;
 
 	/* if we reach that point, we're not filtering out this item */
@@ -579,7 +695,7 @@ EventTriggerCommonSetup(Node *parsetree,
 						EventTriggerEvent event, const char *eventstr,
 						EventTriggerData *trigdata)
 {
-	CommandTag	tag;
+	const char *tag;
 	List	   *cachelist;
 	ListCell   *lc;
 	List	   *runlist = NIL;
@@ -595,25 +711,25 @@ EventTriggerCommonSetup(Node *parsetree,
 	 *
 	 * If this cross-check fails for you, you probably need to either adjust
 	 * standard_ProcessUtility() not to invoke event triggers for the command
-	 * type in question, or you need to adjust event_trigger_ok to accept the
+	 * type in question, or you need to adjust check_ddl_tag to accept the
 	 * relevant command tag.
 	 */
 #ifdef USE_ASSERT_CHECKING
 	{
-		CommandTag	dbgtag;
+		const char *dbgtag;
 
 		dbgtag = CreateCommandTag(parsetree);
 		if (event == EVT_DDLCommandStart ||
 			event == EVT_DDLCommandEnd ||
 			event == EVT_SQLDrop)
 		{
-			if (!command_tag_event_trigger_ok(dbgtag))
-				elog(ERROR, "unexpected command tag \"%s\"", GetCommandTagName(dbgtag));
+			if (check_ddl_tag(dbgtag) != EVENT_TRIGGER_COMMAND_TAG_OK)
+				elog(ERROR, "unexpected command tag \"%s\"", dbgtag);
 		}
 		else if (event == EVT_TableRewrite)
 		{
-			if (!command_tag_table_rewrite_ok(dbgtag))
-				elog(ERROR, "unexpected command tag \"%s\"", GetCommandTagName(dbgtag));
+			if (check_table_rewrite_ddl_tag(dbgtag) != EVENT_TRIGGER_COMMAND_TAG_OK)
+				elog(ERROR, "unexpected command tag \"%s\"", dbgtag);
 		}
 	}
 #endif
@@ -637,7 +753,7 @@ EventTriggerCommonSetup(Node *parsetree,
 	{
 		EventTriggerCacheItem *item = lfirst(lc);
 
-		if (filter_event_trigger(tag, item))
+		if (filter_event_trigger(&tag, item))
 		{
 			/* We must plan to fire this trigger. */
 			runlist = lappend_oid(runlist, item->fnoid);
@@ -812,11 +928,13 @@ EventTriggerSQLDrop(Node *parsetree)
 	{
 		EventTriggerInvoke(runlist, &trigdata);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		currentEventTriggerState->in_sql_drop = false;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	currentEventTriggerState->in_sql_drop = false;
 
 	/* Cleanup. */
 	list_free(runlist);
@@ -833,8 +951,20 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	EventTriggerData trigdata;
 
 	/*
-	 * See EventTriggerDDLCommandStart for a discussion about why event
-	 * triggers are disabled in single user mode.
+	 * Event Triggers are completely disabled in standalone mode.  There are
+	 * (at least) two reasons for this:
+	 *
+	 * 1. A sufficiently broken event trigger might not only render the
+	 * database unusable, but prevent disabling itself to fix the situation.
+	 * In this scenario, restarting in standalone mode provides an escape
+	 * hatch.
+	 *
+	 * 2. BuildEventTriggerCache relies on systable_beginscan_ordered, and
+	 * therefore will malfunction if pg_event_trigger's indexes are damaged.
+	 * To allow recovery from a damaged index, we need some operating mode
+	 * wherein event triggers are disabled.  (Or we could implement
+	 * heapscan-and-sort logic for that case, but having disaster recovery
+	 * scenarios depend on code that's otherwise untested isn't appetizing.)
 	 */
 	if (!IsUnderPostmaster)
 		return;
@@ -871,12 +1001,16 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	{
 		EventTriggerInvoke(runlist, &trigdata);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		currentEventTriggerState->table_rewrite_oid = InvalidOid;
 		currentEventTriggerState->table_rewrite_reason = 0;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	currentEventTriggerState->table_rewrite_oid = InvalidOid;
+	currentEventTriggerState->table_rewrite_reason = 0;
 
 	/* Cleanup. */
 	list_free(runlist);
@@ -914,9 +1048,9 @@ EventTriggerInvoke(List *fn_oid_list, EventTriggerData *trigdata)
 	/* Call each event trigger. */
 	foreach(lc, fn_oid_list)
 	{
-		LOCAL_FCINFO(fcinfo, 0);
 		Oid			fnoid = lfirst_oid(lc);
 		FmgrInfo	flinfo;
+		FunctionCallInfoData fcinfo;
 		PgStat_FunctionCallUsage fcusage;
 
 		elog(DEBUG1, "EventTriggerInvoke %u", fnoid);
@@ -936,10 +1070,10 @@ EventTriggerInvoke(List *fn_oid_list, EventTriggerData *trigdata)
 		fmgr_info(fnoid, &flinfo);
 
 		/* Call the function, passing no arguments but setting a context. */
-		InitFunctionCallInfoData(*fcinfo, &flinfo, 0,
+		InitFunctionCallInfoData(fcinfo, &flinfo, 0,
 								 InvalidOid, (Node *) trigdata, NULL);
-		pgstat_init_function_usage(fcinfo, &fcusage);
-		FunctionCallInvoke(fcinfo);
+		pgstat_init_function_usage(&fcinfo, &fcusage);
+		FunctionCallInvoke(&fcinfo);
 		pgstat_end_function_usage(&fcusage, true);
 
 		/* Reclaim memory. */
@@ -1222,10 +1356,8 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 		Relation	catalog;
 		HeapTuple	tuple;
 
-		catalog = table_open(obj->address.classId, AccessShareLock);
-		tuple = get_catalog_object_by_oid(catalog,
-										  get_object_attnum_oid(object->classId),
-										  obj->address.objectId);
+		catalog = heap_open(obj->address.classId, AccessShareLock);
+		tuple = get_catalog_object_by_oid(catalog, obj->address.objectId);
 
 		if (tuple)
 		{
@@ -1252,7 +1384,7 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 					else if (isAnyTempNamespace(namespaceId))
 					{
 						pfree(obj);
-						table_close(catalog, AccessShareLock);
+						heap_close(catalog, AccessShareLock);
 						MemoryContextSwitchTo(oldcxt);
 						return;
 					}
@@ -1278,7 +1410,7 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 			}
 		}
 
-		table_close(catalog, AccessShareLock);
+		heap_close(catalog, AccessShareLock);
 	}
 	else
 	{
@@ -1667,15 +1799,9 @@ EventTriggerAlterTableEnd(void)
 	/* If no subcommands, don't collect */
 	if (list_length(currentEventTriggerState->currentCommand->d.alterTable.subcmds) != 0)
 	{
-		MemoryContext oldcxt;
-
-		oldcxt = MemoryContextSwitchTo(currentEventTriggerState->cxt);
-
 		currentEventTriggerState->commandList =
 			lappend(currentEventTriggerState->commandList,
 					currentEventTriggerState->currentCommand);
-
-		MemoryContextSwitchTo(oldcxt);
 	}
 	else
 		pfree(currentEventTriggerState->currentCommand);
@@ -1978,9 +2104,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 							Oid			schema_oid;
 							bool		isnull;
 
-							catalog = table_open(addr.classId, AccessShareLock);
+							catalog = heap_open(addr.classId, AccessShareLock);
 							objtup = get_catalog_object_by_oid(catalog,
-															   get_object_attnum_oid(addr.classId),
 															   addr.objectId);
 							if (!HeapTupleIsValid(objtup))
 								elog(ERROR, "cache lookup failed for object %u/%u",
@@ -1998,7 +2123,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 							else
 								schema = get_namespace_name(schema_oid);
 
-							table_close(catalog, AccessShareLock);
+							heap_close(catalog, AccessShareLock);
 						}
 					}
 
@@ -2009,7 +2134,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					/* objsubid */
 					values[i++] = Int32GetDatum(addr.objectSubId);
 					/* command tag */
-					values[i++] = CStringGetTextDatum(CreateCommandName(cmd->parsetree));
+					values[i++] = CStringGetTextDatum(CreateCommandTag(cmd->parsetree));
 					/* object_type */
 					values[i++] = CStringGetTextDatum(type);
 					/* schema */
@@ -2034,9 +2159,10 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				/* objsubid */
 				nulls[i++] = true;
 				/* command tag */
-				values[i++] = CStringGetTextDatum(CreateCommandName(cmd->parsetree));
+				values[i++] = CStringGetTextDatum(CreateCommandTag(cmd->parsetree));
 				/* object_type */
-				values[i++] = CStringGetTextDatum(stringify_adefprivs_objtype(cmd->d.defprivs.objtype));
+				values[i++] = CStringGetTextDatum(stringify_adefprivs_objtype(
+																			  cmd->d.defprivs.objtype));
 				/* schema */
 				nulls[i++] = true;
 				/* identity */
@@ -2058,7 +2184,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				values[i++] = CStringGetTextDatum(cmd->d.grant.istmt->is_grant ?
 												  "GRANT" : "REVOKE");
 				/* object_type */
-				values[i++] = CStringGetTextDatum(stringify_grant_objtype(cmd->d.grant.istmt->objtype));
+				values[i++] = CStringGetTextDatum(stringify_grant_objtype(
+																		  cmd->d.grant.istmt->objtype));
 				/* schema */
 				nulls[i++] = true;
 				/* identity */

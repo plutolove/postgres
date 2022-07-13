@@ -7,7 +7,7 @@
  * detection and resolution algorithms.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -79,15 +79,15 @@ typedef struct
 static bool DeadLockCheckRecurse(PGPROC *proc);
 static int	TestConfiguration(PGPROC *startProc);
 static bool FindLockCycle(PGPROC *checkProc,
-						  EDGE *softEdges, int *nSoftEdges);
+			  EDGE *softEdges, int *nSoftEdges);
 static bool FindLockCycleRecurse(PGPROC *checkProc, int depth,
-								 EDGE *softEdges, int *nSoftEdges);
+					 EDGE *softEdges, int *nSoftEdges);
 static bool FindLockCycleRecurseMember(PGPROC *checkProc,
-									   PGPROC *checkProcLeader,
-									   int depth, EDGE *softEdges, int *nSoftEdges);
+						   PGPROC *checkProcLeader,
+						   int depth, EDGE *softEdges, int *nSoftEdges);
 static bool ExpandConstraints(EDGE *constraints, int nConstraints);
 static bool TopoSort(LOCK *lock, EDGE *constraints, int nConstraints,
-					 PGPROC **ordering);
+		 PGPROC **ordering);
 
 #ifdef DEBUG_DEADLOCK
 static void PrintLockQueue(LOCK *lock, const char *info);
@@ -555,15 +555,6 @@ FindLockCycleRecurseMember(PGPROC *checkProc,
 	int			numLockModes,
 				lm;
 
-	/*
-	 * The relation extension or page lock can never participate in actual
-	 * deadlock cycle.  See Asserts in LockAcquireExtended.  So, there is no
-	 * advantage in checking wait edges from them.
-	 */
-	if (LOCK_LOCKTAG(*lock) == LOCKTAG_RELATION_EXTEND ||
-		(LOCK_LOCKTAG(*lock) == LOCKTAG_PAGE))
-		return false;
-
 	lockMethodTable = GetLocksMethodTable(lock);
 	numLockModes = lockMethodTable->numLockModes;
 	conflictMask = lockMethodTable->conflictTab[checkProc->waitLockMode];
@@ -931,12 +922,6 @@ TopoSort(LOCK *lock,
 		 * in the same lock group on the queue, set their number of
 		 * beforeConstraints to -1 to indicate that they should be emitted
 		 * with their groupmates rather than considered separately.
-		 *
-		 * In this loop and the similar one just below, it's critical that we
-		 * consistently select the same representative member of any one lock
-		 * group, so that all the constraints are associated with the same
-		 * proc, and the -1's are only associated with not-representative
-		 * members.  We select the last one in the topoProcs array.
 		 */
 		proc = constraints[i].waiter;
 		Assert(proc != NULL);
@@ -955,6 +940,7 @@ TopoSort(LOCK *lock,
 					Assert(beforeConstraints[j] <= 0);
 					beforeConstraints[j] = -1;
 				}
+				break;
 			}
 		}
 
@@ -991,7 +977,6 @@ TopoSort(LOCK *lock,
 		if (kk < 0)
 			continue;
 
-		Assert(beforeConstraints[jj] >= 0);
 		beforeConstraints[jj]++;	/* waiter must come before */
 		/* add this constraint to list of after-constraints for blocker */
 		constraints[i].pred = jj;
@@ -1130,7 +1115,7 @@ DeadLockReport(void)
 	}
 
 	/* Duplicate all the above for the server ... */
-	appendBinaryStringInfo(&logbuf, clientbuf.data, clientbuf.len);
+	appendStringInfoString(&logbuf, clientbuf.data);
 
 	/* ... and add info about query strings */
 	for (i = 0; i < nDeadlockDetails; i++)

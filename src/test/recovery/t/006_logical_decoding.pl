@@ -7,7 +7,7 @@ use strict;
 use warnings;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 14;
+use Test::More tests => 16;
 use Config;
 
 # Initialize master node
@@ -27,30 +27,12 @@ $node_master->safe_psql('postgres',
 	qq[SELECT pg_create_logical_replication_slot('test_slot', 'test_decoding');]
 );
 
-# Cover walsender error shutdown code
-my ($result, $stdout, $stderr) = $node_master->psql(
-	'template1',
-	qq[START_REPLICATION SLOT test_slot LOGICAL 0/0],
-	replication => 'database');
-ok( $stderr =~
-	  m/replication slot "test_slot" was not created in this database/,
-	"Logical decoding correctly fails to start");
-
-# Check case of walsender not using a database connection.  Logical
-# decoding should not be allowed.
-($result, $stdout, $stderr) = $node_master->psql(
-	'template1',
-	qq[START_REPLICATION SLOT s1 LOGICAL 0/1],
-	replication => 'true');
-ok($stderr =~ /ERROR:  logical decoding requires a database connection/,
-	"Logical decoding fails on non-database connection");
-
 $node_master->safe_psql('postgres',
 	qq[INSERT INTO decoding_test(x,y) SELECT s, s::text FROM generate_series(1,10) s;]
 );
 
 # Basic decoding works
-$result = $node_master->safe_psql('postgres',
+my ($result) = $node_master->safe_psql('postgres',
 	qq[SELECT pg_logical_slot_get_changes('test_slot', NULL, NULL);]);
 is(scalar(my @foobar = split /^/m, $result),
 	12, 'Decoding produced 12 rows inc BEGIN/COMMIT');
@@ -89,13 +71,8 @@ my $endpos = $node_master->safe_psql('postgres',
 );
 print "waiting to replay $endpos\n";
 
-# Insert some rows after $endpos, which we won't read.
-$node_master->safe_psql('postgres',
-	qq[INSERT INTO decoding_test(x,y) SELECT s, s::text FROM generate_series(5,50) s;]
-);
-
 my $stdout_recv = $node_master->pg_recvlogical_upto(
-	'postgres', 'test_slot', $endpos, 180,
+	'postgres', 'test_slot', $endpos, 10,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 chomp($stdout_recv);
@@ -107,11 +84,12 @@ $node_master->poll_query_until('postgres',
 ) or die "slot never became inactive";
 
 $stdout_recv = $node_master->pg_recvlogical_upto(
-	'postgres', 'test_slot', $endpos, 180,
+	'postgres', 'test_slot', $endpos, 10,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 chomp($stdout_recv);
-is($stdout_recv, '', 'pg_recvlogical acknowledged changes');
+is($stdout_recv, '',
+	'pg_recvlogical acknowledged changes, nothing pending on slot');
 
 $node_master->safe_psql('postgres', 'CREATE DATABASE otherdb');
 
@@ -157,34 +135,26 @@ is($node_master->psql('postgres', 'DROP DATABASE otherdb'),
 is($node_master->slot('otherdb_slot')->{'slot_name'},
 	undef, 'logical slot was actually dropped with DB');
 
-# Test logical slot advancing and its durability.
-my $logical_slot = 'logical_slot';
-$node_master->safe_psql('postgres',
-	"SELECT pg_create_logical_replication_slot('$logical_slot', 'test_decoding', false);"
-);
-$node_master->psql(
-	'postgres', "
-	CREATE TABLE tab_logical_slot (a int);
-	INSERT INTO tab_logical_slot VALUES (generate_series(1,10));");
-my $current_lsn =
-  $node_master->safe_psql('postgres', "SELECT pg_current_wal_lsn();");
-chomp($current_lsn);
-my $psql_rc = $node_master->psql('postgres',
-	"SELECT pg_replication_slot_advance('$logical_slot', '$current_lsn'::pg_lsn);"
-);
-is($psql_rc, '0', 'slot advancing with logical slot');
-my $logical_restart_lsn_pre = $node_master->safe_psql('postgres',
-	"SELECT restart_lsn from pg_replication_slots WHERE slot_name = '$logical_slot';"
-);
-chomp($logical_restart_lsn_pre);
-# Slot advance should persist across clean restarts.
+# Restarting a node with wal_level = logical that has existing
+# slots must succeed, but decoding from those slots must fail.
+$node_master->safe_psql('postgres', 'ALTER SYSTEM SET wal_level = replica');
+is($node_master->safe_psql('postgres', 'SHOW wal_level'),
+	'logical', 'wal_level is still logical before restart');
 $node_master->restart;
-my $logical_restart_lsn_post = $node_master->safe_psql('postgres',
-	"SELECT restart_lsn from pg_replication_slots WHERE slot_name = '$logical_slot';"
-);
-chomp($logical_restart_lsn_post);
-ok(($logical_restart_lsn_pre cmp $logical_restart_lsn_post) == 0,
-	"logical slot advance persists across restarts");
+is($node_master->safe_psql('postgres', 'SHOW wal_level'),
+	'replica', 'wal_level is replica');
+isnt($node_master->slot('test_slot')->{'catalog_xmin'},
+	'0', 'restored slot catalog_xmin is nonzero');
+is( $node_master->psql(
+		'postgres',
+		qq[SELECT pg_logical_slot_get_changes('test_slot', NULL, NULL);]),
+	3,
+	'reading from slot with wal_level < logical fails');
+is( $node_master->psql(
+		'postgres', q[SELECT pg_drop_replication_slot('test_slot')]),
+	0,
+	'can drop logical slot while wal_level = replica');
+is($node_master->slot('test_slot')->{'catalog_xmin'}, '', 'slot was dropped');
 
 # done with the node
 $node_master->stop;

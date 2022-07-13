@@ -1,23 +1,18 @@
 #-------------------------------------------------------------------------
 #
 # Makefile
-#    Makefile for src/port
+#    Makefile for the port-specific subsystem of the backend
 #
-# These files are used by the Postgres backend, and also by frontend
-# programs.  Primarily, they are meant to provide portability on systems
-# with broken/missing library files.
+# These files are used in other directories for portability on systems
+# with broken/missing library files, and for common code sharing.
 #
-# This makefile generates three outputs:
+# This makefile generates two outputs:
 #
 #	libpgport.a - contains object files with FRONTEND defined,
-#		for use by client applications
-#
-#	libpgport_shlib.a - contains object files with FRONTEND defined,
-#		built suitably for use in shared libraries; for use
-#		by frontend libraries
+#		for use by client application and libraries
 #
 #	libpgport_srv.a - contains object files without FRONTEND defined,
-#		for use only by the backend
+#		for use only by the backend binaries
 #
 # LIBOBJS is set by configure (via Makefile.global) to be the list of object
 # files that are conditionally needed as determined by configure's probing.
@@ -35,84 +30,44 @@ include $(top_builddir)/src/Makefile.global
 override CPPFLAGS := -I$(top_builddir)/src/port -DFRONTEND $(CPPFLAGS)
 LIBS += $(PTHREAD_LIBS)
 
-OBJS = \
-	$(LIBOBJS) \
-	$(PG_CRC32C_OBJS) \
-	chklocale.o \
-	erand48.o \
-	inet_net_ntop.o \
-	noblock.o \
-	path.o \
-	pg_bitutils.o \
-	pg_strong_random.o \
-	pgcheckdir.o \
-	pgmkdirp.o \
-	pgsleep.o \
-	pgstrcasecmp.o \
-	pgstrsignal.o \
-	pqsignal.o \
-	qsort.o \
-	qsort_arg.o \
-	quotes.o \
-	snprintf.o \
-	sprompt.o \
-	strerror.o \
-	tar.o \
-	thread.o
+OBJS = $(LIBOBJS) $(PG_CRC32C_OBJS) chklocale.o erand48.o inet_net_ntop.o \
+	noblock.o path.o pgcheckdir.o pgmkdirp.o pgsleep.o \
+	pgstrcasecmp.o pqsignal.o \
+	qsort.o qsort_arg.o quotes.o sprompt.o tar.o thread.o
 
-# libpgport.a, libpgport_shlib.a, and libpgport_srv.a contain the same files
-# foo.o, foo_shlib.o, and foo_srv.o are all built from foo.c
-OBJS_SHLIB = $(OBJS:%.o=%_shlib.o)
+ifeq ($(enable_strong_random), yes)
+OBJS += pg_strong_random.o
+endif
+
+# foo_srv.o and foo.o are both built from foo.c, but only foo.o has -DFRONTEND
 OBJS_SRV = $(OBJS:%.o=%_srv.o)
 
-all: libpgport.a libpgport_shlib.a libpgport_srv.a
+all: libpgport.a libpgport_srv.a
 
 # libpgport is needed by some contrib
 install: all installdirs
 	$(INSTALL_STLIB) libpgport.a '$(DESTDIR)$(libdir)/libpgport.a'
-	$(INSTALL_STLIB) libpgport_shlib.a '$(DESTDIR)$(libdir)/libpgport_shlib.a'
 
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(libdir)'
 
 uninstall:
 	rm -f '$(DESTDIR)$(libdir)/libpgport.a'
-	rm -f '$(DESTDIR)$(libdir)/libpgport_shlib.a'
 
 libpgport.a: $(OBJS)
 	rm -f $@
 	$(AR) $(AROPT) $@ $^
 
-# thread.o and thread_shlib.o need PTHREAD_CFLAGS (but thread_srv.o does not)
+# thread.o needs PTHREAD_CFLAGS (but thread_srv.o does not)
 thread.o: CFLAGS+=$(PTHREAD_CFLAGS)
-thread_shlib.o: CFLAGS+=$(PTHREAD_CFLAGS)
 
-# all versions of pg_crc32c_sse42.o need CFLAGS_SSE42
+# pg_crc32c_sse42.o and its _srv.o version need CFLAGS_SSE42
 pg_crc32c_sse42.o: CFLAGS+=$(CFLAGS_SSE42)
-pg_crc32c_sse42_shlib.o: CFLAGS+=$(CFLAGS_SSE42)
 pg_crc32c_sse42_srv.o: CFLAGS+=$(CFLAGS_SSE42)
 
-# all versions of pg_crc32c_armv8.o need CFLAGS_ARMV8_CRC32C
+# pg_crc32c_armv8.o and its _srv.o version need CFLAGS_ARMV8_CRC32C
 pg_crc32c_armv8.o: CFLAGS+=$(CFLAGS_ARMV8_CRC32C)
-pg_crc32c_armv8_shlib.o: CFLAGS+=$(CFLAGS_ARMV8_CRC32C)
 pg_crc32c_armv8_srv.o: CFLAGS+=$(CFLAGS_ARMV8_CRC32C)
-
-#
-# Shared library versions of object files
-#
-
-libpgport_shlib.a: $(OBJS_SHLIB)
-	rm -f $@
-	$(AR) $(AROPT) $@ $^
-
-# Because this uses its own compilation rule, it doesn't use the
-# dependency tracking logic from Makefile.global.  To make sure that
-# dependency tracking works anyway for the *_shlib.o files, depend on
-# their *.o siblings as well, which do have proper dependencies.  It's
-# a hack that might fail someday if there is a *_shlib.o without a
-# corresponding *.o, but there seems little reason for that.
-%_shlib.o: %.c %.o
-	$(CC) $(CFLAGS) $(CFLAGS_SL) $(CPPFLAGS) -c $< -o $@
 
 #
 # Server versions of object files
@@ -136,8 +91,6 @@ libpgport_srv.a: $(OBJS_SRV)
 
 path.o: path.c pg_config_paths.h
 
-path_shlib.o: path.c pg_config_paths.h
-
 path_srv.o: path.c pg_config_paths.h
 
 # We create a separate file rather than put these in pg_config.h
@@ -158,5 +111,4 @@ pg_config_paths.h: $(top_builddir)/src/Makefile.global
 	echo "#define MANDIR \"$(mandir)\"" >>$@
 
 clean distclean maintainer-clean:
-	rm -f libpgport.a libpgport_shlib.a libpgport_srv.a
-	rm -f $(OBJS) $(OBJS_SHLIB) $(OBJS_SRV) pg_config_paths.h
+	rm -f libpgport.a libpgport_srv.a $(OBJS) $(OBJS_SRV) pg_config_paths.h

@@ -1,4 +1,4 @@
-#! /usr/bin/perl
+#! /usr/bin/perl -w
 
 #
 # This script looks for symbols that are referenced in #ifdef or defined()
@@ -21,7 +21,6 @@
 #
 
 use strict;
-use warnings;
 
 use Cwd;
 use File::Basename;

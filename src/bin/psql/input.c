@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2018, PostgreSQL Global Development Group
  *
  * src/bin/psql/input.c
  */
@@ -13,11 +13,10 @@
 #include <fcntl.h>
 #include <limits.h>
 
-#include "common.h"
-#include "common/logging.h"
 #include "input.h"
 #include "settings.h"
 #include "tab-complete.h"
+#include "common.h"
 
 #ifndef WIN32
 #define PSQLHISTORY ".psql_history"
@@ -214,7 +213,8 @@ gets_fromFile(FILE *source)
 		{
 			if (ferror(source))
 			{
-				pg_log_error("could not read from input file: %m");
+				psql_error("could not read from input file: %s\n",
+						   strerror(errno));
 				return NULL;
 			}
 			break;
@@ -224,7 +224,7 @@ gets_fromFile(FILE *source)
 
 		if (PQExpBufferBroken(buffer))
 		{
-			pg_log_error("out of memory");
+			psql_error("out of memory\n");
 			return NULL;
 		}
 
@@ -468,7 +468,8 @@ saveHistory(char *fname, int max_lines)
 		}
 #endif
 
-		pg_log_error("could not save history to file \"%s\": %m", fname);
+		psql_error("could not save history to file \"%s\": %s\n",
+				   fname, strerror(errnum));
 	}
 	return false;
 }
@@ -506,7 +507,8 @@ printHistory(const char *fname, unsigned short int pager)
 		output = fopen(fname, "w");
 		if (output == NULL)
 		{
-			pg_log_error("could not save history to file \"%s\": %m", fname);
+			psql_error("could not save history to file \"%s\": %s\n",
+					   fname, strerror(errno));
 			return false;
 		}
 		is_pager = false;
@@ -525,7 +527,7 @@ printHistory(const char *fname, unsigned short int pager)
 
 	return true;
 #else
-	pg_log_error("history is not supported by this installation");
+	psql_error("history is not supported by this installation\n");
 	return false;
 #endif
 }

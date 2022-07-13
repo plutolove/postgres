@@ -4,7 +4,7 @@
  *	  insert routines for the postgres inverted index access method.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -16,16 +16,16 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
-#include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/smgr.h"
 #include "storage/indexfsm.h"
 #include "storage/predicate.h"
-#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
 
 typedef struct
 {
@@ -189,10 +189,13 @@ ginEntryInsert(GinState *ginstate,
 
 	insertdata.isDelete = false;
 
-	ginPrepareEntryScan(&btree, attnum, key, category, ginstate);
-	btree.isBuild = (buildStats != NULL);
+	/* During index build, count the to-be-inserted entry */
+	if (buildStats)
+		buildStats->nEntries++;
 
-	stack = ginFindLeafPage(&btree, false, false, NULL);
+	ginPrepareEntryScan(&btree, attnum, key, category, ginstate);
+
+	stack = ginFindLeafPage(&btree, false, NULL);
 	page = BufferGetPage(stack->buffer);
 
 	if (btree.findItem(&btree, stack))
@@ -216,8 +219,7 @@ ginEntryInsert(GinState *ginstate,
 			return;
 		}
 
-		CheckForSerializableConflictIn(ginstate->index, NULL,
-									   BufferGetBlockNumber(stack->buffer));
+		CheckForSerializableConflictIn(ginstate->index, NULL, stack->buffer);
 		/* modify an existing leaf entry */
 		itup = addItemPointersToLeafTuple(ginstate, itup,
 										  items, nitem, buildStats, stack->buffer);
@@ -226,18 +228,10 @@ ginEntryInsert(GinState *ginstate,
 	}
 	else
 	{
-		CheckForSerializableConflictIn(ginstate->index, NULL,
-									   BufferGetBlockNumber(stack->buffer));
+		CheckForSerializableConflictIn(ginstate->index, NULL, stack->buffer);
 		/* no match, so construct a new leaf entry */
 		itup = buildFreshLeafTuple(ginstate, attnum, key, category,
 								   items, nitem, buildStats, stack->buffer);
-
-		/*
-		 * nEntries counts leaf tuples, so increment it only when we make a
-		 * new one.
-		 */
-		if (buildStats)
-			buildStats->nEntries++;
 	}
 
 	/* Insert the new or modified leaf tuple */
@@ -277,7 +271,7 @@ ginHeapTupleBulkInsert(GinBuildState *buildstate, OffsetNumber attnum,
 }
 
 static void
-ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
+ginBuildCallback(Relation index, HeapTuple htup, Datum *values,
 				 bool *isnull, bool tupleIsAlive, void *state)
 {
 	GinBuildState *buildstate = (GinBuildState *) state;
@@ -288,7 +282,8 @@ ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
 
 	for (i = 0; i < buildstate->ginstate.origTupdesc->natts; i++)
 		ginHeapTupleBulkInsert(buildstate, (OffsetNumber) (i + 1),
-							   values[i], isnull[i], tid);
+							   values[i], isnull[i],
+							   &htup->t_self);
 
 	/* If we've maxed out our available memory, dump everything to the index */
 	if (buildstate->accum.allocatedMemory >= (Size) maintenance_work_mem * 1024L)
@@ -351,6 +346,23 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	GinInitBuffer(RootBuffer, GIN_LEAF);
 	MarkBufferDirty(RootBuffer);
 
+	if (RelationNeedsWAL(index))
+	{
+		XLogRecPtr	recptr;
+		Page		page;
+
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, MetaBuffer, REGBUF_WILL_INIT | REGBUF_STANDARD);
+		XLogRegisterBuffer(1, RootBuffer, REGBUF_WILL_INIT);
+
+		recptr = XLogInsert(RM_GIN_ID, XLOG_GIN_CREATE_INDEX);
+
+		page = BufferGetPage(RootBuffer);
+		PageSetLSN(page, recptr);
+
+		page = BufferGetPage(MetaBuffer);
+		PageSetLSN(page, recptr);
+	}
 
 	UnlockReleaseBuffer(MetaBuffer);
 	UnlockReleaseBuffer(RootBuffer);
@@ -382,9 +394,8 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Do the heap scan.  We disallow sync scan here because dataPlaceToPage
 	 * prefers to receive tuples in TID order.
 	 */
-	reltuples = table_index_build_scan(heap, index, indexInfo, false, true,
-									   ginBuildCallback, (void *) &buildstate,
-									   NULL);
+	reltuples = IndexBuildHeapScan(heap, index, indexInfo, false,
+								   ginBuildCallback, (void *) &buildstate, NULL);
 
 	/* dump remaining entries to the index */
 	oldCtx = MemoryContextSwitchTo(buildstate.tmpCtx);
@@ -406,18 +417,7 @@ ginbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * Update metapage stats
 	 */
 	buildstate.buildStats.nTotalPages = RelationGetNumberOfBlocks(index);
-	ginUpdateStats(index, &buildstate.buildStats, true);
-
-	/*
-	 * We didn't write WAL records as we built the index, so if WAL-logging is
-	 * required, write all pages to the WAL now.
-	 */
-	if (RelationNeedsWAL(index))
-	{
-		log_newpage_range(index, MAIN_FORKNUM,
-						  0, RelationGetNumberOfBlocks(index),
-						  true);
-	}
+	ginUpdateStats(index, &buildstate.buildStats);
 
 	/*
 	 * Return statistics

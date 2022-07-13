@@ -3,7 +3,7 @@
  * pl_funcs.c		- Misc functions for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,8 +15,10 @@
 
 #include "postgres.h"
 
-#include "plpgsql.h"
 #include "utils/memutils.h"
+
+#include "plpgsql.h"
+
 
 /* ----------
  * Local variables for namespace handling
@@ -305,6 +307,8 @@ plpgsql_getdiag_kindname(PLpgSQL_getdiag_kind kind)
 	{
 		case PLPGSQL_GETDIAG_ROW_COUNT:
 			return "ROW_COUNT";
+		case PLPGSQL_GETDIAG_RESULT_OID:
+			return "RESULT_OID";
 		case PLPGSQL_GETDIAG_CONTEXT:
 			return "PG_CONTEXT";
 		case PLPGSQL_GETDIAG_ERROR_CONTEXT:
@@ -1316,20 +1320,14 @@ static void
 dump_commit(PLpgSQL_stmt_commit *stmt)
 {
 	dump_ind();
-	if (stmt->chain)
-		printf("COMMIT AND CHAIN\n");
-	else
-		printf("COMMIT\n");
+	printf("COMMIT\n");
 }
 
 static void
 dump_rollback(PLpgSQL_stmt_rollback *stmt)
 {
 	dump_ind();
-	if (stmt->chain)
-		printf("ROLLBACK AND CHAIN\n");
-	else
-		printf("ROLLBACK\n");
+	printf("ROLLBACK\n");
 }
 
 static void

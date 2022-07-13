@@ -7,9 +7,7 @@ subdir = src/bin/pg_archivecleanup
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	$(WIN32RES) \
-	pg_archivecleanup.o
+OBJS	= pg_archivecleanup.o $(WIN32RES)
 
 all: pg_archivecleanup
 

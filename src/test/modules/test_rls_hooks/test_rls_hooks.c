@@ -3,7 +3,7 @@
  * test_rls_hooks.c
  *		Code for testing RLS hooks.
  *
- * Copyright (c) 2015-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/test/modules/test_rls_hooks/test_rls_hooks.c
@@ -13,16 +13,18 @@
 
 #include "postgres.h"
 
-#include "catalog/pg_type.h"
 #include "fmgr.h"
 #include "miscadmin.h"
+
+#include "test_rls_hooks.h"
+
+#include "catalog/pg_type.h"
+#include "nodes/makefuncs.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_clause.h"
-#include "parser/parse_collate.h"
 #include "parser/parse_node.h"
 #include "parser/parse_relation.h"
 #include "rewrite/rowsecurity.h"
-#include "test_rls_hooks.h"
 #include "utils/acl.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
@@ -70,24 +72,23 @@ test_rls_hooks_permissive(CmdType cmdtype, Relation relation)
 	Node	   *e;
 	ColumnRef  *c;
 	ParseState *qual_pstate;
-	ParseNamespaceItem *nsitem;
+	RangeTblEntry *rte;
 
-	if (strcmp(RelationGetRelationName(relation), "rls_test_permissive") != 0 &&
-		strcmp(RelationGetRelationName(relation), "rls_test_both") != 0)
+	if (strcmp(RelationGetRelationName(relation), "rls_test_permissive")
+		&& strcmp(RelationGetRelationName(relation), "rls_test_both"))
 		return NIL;
 
 	qual_pstate = make_parsestate(NULL);
 
-	nsitem = addRangeTableEntryForRelation(qual_pstate,
-										   relation, AccessShareLock,
-										   NULL, false, false);
-	addNSItemToQuery(qual_pstate, nsitem, false, true, true);
+	rte = addRangeTableEntryForRelation(qual_pstate, relation, NULL, false,
+										false);
+	addRTEtoQuery(qual_pstate, rte, false, true, true);
 
 	role = ObjectIdGetDatum(ACL_ID_PUBLIC);
 
 	policy->policy_name = pstrdup("extension policy");
 	policy->polcmd = '*';
-	policy->roles = construct_array(&role, 1, OIDOID, sizeof(Oid), true, TYPALIGN_INT);
+	policy->roles = construct_array(&role, 1, OIDOID, sizeof(Oid), true, 'i');
 
 	/*
 	 * policy->qual = (Expr *) makeConst(BOOLOID, -1, InvalidOid,
@@ -106,8 +107,6 @@ test_rls_hooks_permissive(CmdType cmdtype, Relation relation)
 	policy->qual = (Expr *) transformWhereClause(qual_pstate, copyObject(e),
 												 EXPR_KIND_POLICY,
 												 "POLICY");
-	/* Fix up collation information */
-	assign_expr_collations(qual_pstate, (Node *) policy->qual);
 
 	policy->with_check_qual = copyObject(policy->qual);
 	policy->hassublinks = false;
@@ -135,24 +134,24 @@ test_rls_hooks_restrictive(CmdType cmdtype, Relation relation)
 	Node	   *e;
 	ColumnRef  *c;
 	ParseState *qual_pstate;
-	ParseNamespaceItem *nsitem;
+	RangeTblEntry *rte;
 
-	if (strcmp(RelationGetRelationName(relation), "rls_test_restrictive") != 0 &&
-		strcmp(RelationGetRelationName(relation), "rls_test_both") != 0)
+
+	if (strcmp(RelationGetRelationName(relation), "rls_test_restrictive")
+		&& strcmp(RelationGetRelationName(relation), "rls_test_both"))
 		return NIL;
 
 	qual_pstate = make_parsestate(NULL);
 
-	nsitem = addRangeTableEntryForRelation(qual_pstate,
-										   relation, AccessShareLock,
-										   NULL, false, false);
-	addNSItemToQuery(qual_pstate, nsitem, false, true, true);
+	rte = addRangeTableEntryForRelation(qual_pstate, relation, NULL, false,
+										false);
+	addRTEtoQuery(qual_pstate, rte, false, true, true);
 
 	role = ObjectIdGetDatum(ACL_ID_PUBLIC);
 
 	policy->policy_name = pstrdup("extension policy");
 	policy->polcmd = '*';
-	policy->roles = construct_array(&role, 1, OIDOID, sizeof(Oid), true, TYPALIGN_INT);
+	policy->roles = construct_array(&role, 1, OIDOID, sizeof(Oid), true, 'i');
 
 	n = makeFuncCall(list_make2(makeString("pg_catalog"),
 								makeString("current_user")), NIL, 0);
@@ -166,8 +165,6 @@ test_rls_hooks_restrictive(CmdType cmdtype, Relation relation)
 	policy->qual = (Expr *) transformWhereClause(qual_pstate, copyObject(e),
 												 EXPR_KIND_POLICY,
 												 "POLICY");
-	/* Fix up collation information */
-	assign_expr_collations(qual_pstate, (Node *) policy->qual);
 
 	policy->with_check_qual = copyObject(policy->qual);
 	policy->hassublinks = false;

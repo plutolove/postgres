@@ -13,7 +13,7 @@
  *
  * Author: Andreas Pflug <pgadmin@pse-consulting.de>
  *
- * Copyright (c) 2004-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2004-2018, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -31,7 +31,6 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
-#include "common/file_perm.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -58,9 +57,6 @@
  */
 #define READ_BUF_SIZE (2 * PIPE_CHUNK_SIZE)
 
-/* Log rotation signal file path, relative to $PGDATA */
-#define LOGROTATE_SIGNAL_FILE	"logrotate"
-
 
 /*
  * GUC parameters.  Logging_collector cannot be changed after postmaster
@@ -73,6 +69,11 @@ char	   *Log_directory = NULL;
 char	   *Log_filename = NULL;
 bool		Log_truncate_on_rotation = false;
 int			Log_file_mode = S_IRUSR | S_IWUSR;
+
+/*
+ * Globally visible state (used by elog.c)
+ */
+bool		am_syslogger = false;
 
 extern bool redirection_done;
 
@@ -136,7 +137,7 @@ NON_EXEC_STATIC void SysLoggerMain(int argc, char *argv[]) pg_attribute_noreturn
 static void process_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
 static void flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
 static FILE *logfile_open(const char *filename, const char *mode,
-						  bool allow_errors);
+			 bool allow_errors);
 
 #ifdef WIN32
 static unsigned int __stdcall pipeThread(void *arg);
@@ -164,7 +165,6 @@ SysLoggerMain(int argc, char *argv[])
 	char	   *currentLogFilename;
 	int			currentLogRotationAge;
 	pg_time_t	now;
-	WaitEventSet *wes;
 
 	now = MyStartTime;
 
@@ -172,8 +172,9 @@ SysLoggerMain(int argc, char *argv[])
 	syslogger_parseArgs(argc, argv);
 #endif							/* EXEC_BACKEND */
 
-	MyBackendType = B_LOGGER;
-	init_ps_display(NULL);
+	am_syslogger = true;
+
+	init_ps_display("logger", "", "", "");
 
 	/*
 	 * If we restarted, our stderr is already redirected into our own input
@@ -253,6 +254,10 @@ SysLoggerMain(int argc, char *argv[])
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
 	pqsignal(SIGCHLD, SIG_DFL);
+	pqsignal(SIGTTIN, SIG_DFL);
+	pqsignal(SIGTTOU, SIG_DFL);
+	pqsignal(SIGCONT, SIG_DFL);
+	pqsignal(SIGWINCH, SIG_DFL);
 
 	PG_SETMASK(&UnBlockSig);
 
@@ -290,29 +295,13 @@ SysLoggerMain(int argc, char *argv[])
 	 */
 	whereToSendOutput = DestNone;
 
-	/*
-	 * Set up a reusable WaitEventSet object we'll use to wait for our latch,
-	 * and (except on Windows) our socket.
-	 *
-	 * Unlike all other postmaster child processes, we'll ignore postmaster
-	 * death because we want to collect final log output from all backends and
-	 * then exit last.  We'll do that by running until we see EOF on the
-	 * syslog pipe, which implies that all other backends have exited
-	 * (including the postmaster).
-	 */
-	wes = CreateWaitEventSet(CurrentMemoryContext, 2);
-	AddWaitEventToSet(wes, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch, NULL);
-#ifndef WIN32
-	AddWaitEventToSet(wes, WL_SOCKET_READABLE, syslogPipe[0], NULL, NULL);
-#endif
-
 	/* main worker loop */
 	for (;;)
 	{
 		bool		time_based_rotation = false;
 		int			size_rotation_for = 0;
 		long		cur_timeout;
-		WaitEvent	event;
+		int			cur_flags;
 
 #ifndef WIN32
 		int			rc;
@@ -416,7 +405,7 @@ SysLoggerMain(int argc, char *argv[])
 		{
 			/*
 			 * Force rotation when both values are zero. It means the request
-			 * was sent by pg_rotate_logfile() or "pg_ctl logrotate".
+			 * was sent by pg_rotate_logfile.
 			 */
 			if (!time_based_rotation && size_rotation_for == 0)
 				size_rotation_for = LOG_DESTINATION_STDERR | LOG_DESTINATION_CSVLOG;
@@ -448,18 +437,25 @@ SysLoggerMain(int argc, char *argv[])
 			}
 			else
 				cur_timeout = 0;
+			cur_flags = WL_TIMEOUT;
 		}
 		else
+		{
 			cur_timeout = -1L;
+			cur_flags = 0;
+		}
 
 		/*
 		 * Sleep until there's something to do
 		 */
 #ifndef WIN32
-		rc = WaitEventSetWait(wes, cur_timeout, &event, 1,
-							  WAIT_EVENT_SYSLOGGER_MAIN);
+		rc = WaitLatchOrSocket(MyLatch,
+							   WL_LATCH_SET | WL_SOCKET_READABLE | cur_flags,
+							   syslogPipe[0],
+							   cur_timeout,
+							   WAIT_EVENT_SYSLOGGER_MAIN);
 
-		if (rc == 1 && event.events == WL_SOCKET_READABLE)
+		if (rc & WL_SOCKET_READABLE)
 		{
 			int			bytesRead;
 
@@ -506,8 +502,10 @@ SysLoggerMain(int argc, char *argv[])
 		 */
 		LeaveCriticalSection(&sysloggerSection);
 
-		(void) WaitEventSetWait(wes, cur_timeout, &event, 1,
-								WAIT_EVENT_SYSLOGGER_MAIN);
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | cur_flags,
+						 cur_timeout,
+						 WAIT_EVENT_SYSLOGGER_MAIN);
 
 		EnterCriticalSection(&sysloggerSection);
 #endif							/* WIN32 */
@@ -556,11 +554,6 @@ SysLogger_Start(void)
 	 * This means the postmaster must continue to hold the read end of the
 	 * pipe open, so we can pass it down to the reincarnated syslogger. This
 	 * is a bit klugy but we have little choice.
-	 *
-	 * Also note that we don't bother counting the pipe FDs by calling
-	 * Reserve/ReleaseExternalFD.  There's no real need to account for them
-	 * accurately in the postmaster or syslogger process, and both ends of the
-	 * pipe will wind up closed in all other postmaster children.
 	 */
 #ifndef WIN32
 	if (syslogPipe[0] < 0)
@@ -568,7 +561,7 @@ SysLogger_Start(void)
 		if (pipe(syslogPipe) < 0)
 			ereport(FATAL,
 					(errcode_for_socket_access(),
-					 errmsg("could not create pipe for syslog: %m")));
+					 (errmsg("could not create pipe for syslog: %m"))));
 	}
 #else
 	if (!syslogPipe[0])
@@ -582,7 +575,7 @@ SysLogger_Start(void)
 		if (!CreatePipe(&syslogPipe[0], &syslogPipe[1], &sa, 32768))
 			ereport(FATAL,
 					(errcode_for_file_access(),
-					 errmsg("could not create pipe for syslog: %m")));
+					 (errmsg("could not create pipe for syslog: %m"))));
 	}
 #endif
 
@@ -1071,7 +1064,7 @@ flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
 /*
  * Write text to the currently open logfile
  *
- * This is exported so that elog.c can call it when MyBackendType is B_LOGGER.
+ * This is exported so that elog.c can call it when am_syslogger is true.
  * This allows the syslogger process to record elog messages of its own,
  * even though its stderr does not point at the syslog pipe.
  */
@@ -1113,7 +1106,7 @@ write_syslogger_file(const char *buffer, int count, int destination)
 /*
  * Worker thread to transfer data from the pipe to the current logfile.
  *
- * We need this because on Windows, WaitForMultipleObjects does not work on
+ * We need this because on Windows, WaitforMultipleObjects does not work on
  * unnamed pipes: it always reports "signaled", so the blocking ReadFile won't
  * allow for SIGHUP; and select is for sockets only.
  */
@@ -1447,14 +1440,12 @@ set_next_rotation_time(void)
  * log messages.  Useful for finding the name(s) of the current log file(s)
  * when there is time-based logfile rotation.  Filenames are stored in a
  * temporary file and which is renamed into the final destination for
- * atomicity.  The file is opened with the same permissions as what gets
- * created in the data directory and has proper buffering options.
+ * atomicity.
  */
 static void
 update_metainfo_datafile(void)
 {
 	FILE	   *fh;
-	mode_t		oumask;
 
 	if (!(Log_destination & LOG_DESTINATION_STDERR) &&
 		!(Log_destination & LOG_DESTINATION_CSVLOG))
@@ -1467,21 +1458,7 @@ update_metainfo_datafile(void)
 		return;
 	}
 
-	/* use the same permissions as the data directory for the new file */
-	oumask = umask(pg_mode_mask);
-	fh = fopen(LOG_METAINFO_DATAFILE_TMP, "w");
-	umask(oumask);
-
-	if (fh)
-	{
-		setvbuf(fh, NULL, PG_IOLBF, 0);
-
-#ifdef WIN32
-		/* use CRLF line endings on Windows */
-		_setmode(_fileno(fh), _O_TEXT);
-#endif
-	}
-	else
+	if ((fh = logfile_open(LOG_METAINFO_DATAFILE_TMP, "w", true)) == NULL)
 	{
 		ereport(LOG,
 				(errcode_for_file_access(),
@@ -1528,30 +1505,6 @@ update_metainfo_datafile(void)
  *		signal handler routines
  * --------------------------------
  */
-
-/*
- * Check to see if a log rotation request has arrived.  Should be
- * called by postmaster after receiving SIGUSR1.
- */
-bool
-CheckLogrotateSignal(void)
-{
-	struct stat stat_buf;
-
-	if (stat(LOGROTATE_SIGNAL_FILE, &stat_buf) == 0)
-		return true;
-
-	return false;
-}
-
-/*
- * Remove the file signaling a log rotation request.
- */
-void
-RemoveLogrotateSignalFiles(void)
-{
-	unlink(LOGROTATE_SIGNAL_FILE);
-}
 
 /* SIGHUP: set flag to reload config file */
 static void

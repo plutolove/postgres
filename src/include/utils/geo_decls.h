@@ -3,10 +3,13 @@
  * geo_decls.h - Declarations for various 2D constructs.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/geo_decls.h
+ *
+ * NOTE
+ *	  These routines do *not* use the float types from adt/.
  *
  *	  XXX These routines were not written by a numerical analyst.
  *
@@ -18,14 +21,14 @@
 #ifndef GEO_DECLS_H
 #define GEO_DECLS_H
 
+#include <math.h>
+
 #include "fmgr.h"
 
 /*--------------------------------------------------------------------
  * Useful floating point utilities and constants.
- *-------------------------------------------------------------------
- *
- * XXX: They are not NaN-aware.
- */
+ *-------------------------------------------------------------------*/
+
 
 #define EPSILON					1.0E-06
 
@@ -54,7 +57,7 @@
  *-------------------------------------------------------------------*/
 typedef struct
 {
-	float8		x,
+	double		x,
 				y;
 } Point;
 
@@ -86,7 +89,7 @@ typedef struct
  *-------------------------------------------------------------------*/
 typedef struct
 {
-	float8		A,
+	double		A,
 				B,
 				C;
 } LINE;
@@ -121,7 +124,7 @@ typedef struct
 typedef struct
 {
 	Point		center;
-	float8		radius;
+	double		radius;
 } CIRCLE;
 
 /*
@@ -175,6 +178,10 @@ typedef struct
  * in geo_ops.c
  */
 
-extern float8 pg_hypot(float8 x, float8 y);
+/* private routines */
+extern double point_dt(Point *pt1, Point *pt2);
+extern double point_sl(Point *pt1, Point *pt2);
+extern double pg_hypot(double x, double y);
+extern BOX *box_copy(BOX *box);
 
 #endif							/* GEO_DECLS_H */

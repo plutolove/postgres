@@ -31,8 +31,8 @@
 
 #include "postgres.h"
 
-#include "pgp.h"
 #include "px.h"
+#include "pgp.h"
 
 /*
  * BASE64 - duplicated :(

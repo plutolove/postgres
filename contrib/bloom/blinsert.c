@@ -3,7 +3,7 @@
  * blinsert.c
  *		Bloom index build and insert functions.
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/bloom/blinsert.c
@@ -14,8 +14,6 @@
 
 #include "access/genam.h"
 #include "access/generic_xlog.h"
-#include "access/tableam.h"
-#include "bloom.h"
 #include "catalog/index.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -23,6 +21,8 @@
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+#include "bloom.h"
 
 PG_MODULE_MAGIC;
 
@@ -69,10 +69,10 @@ initCachedPage(BloomBuildState *buildstate)
 }
 
 /*
- * Per-tuple callback for table_index_build_scan.
+ * Per-tuple callback from IndexBuildHeapScan.
  */
 static void
-bloomBuildCallback(Relation index, ItemPointer tid, Datum *values,
+bloomBuildCallback(Relation index, HeapTuple htup, Datum *values,
 				   bool *isnull, bool tupleIsAlive, void *state)
 {
 	BloomBuildState *buildstate = (BloomBuildState *) state;
@@ -81,7 +81,7 @@ bloomBuildCallback(Relation index, ItemPointer tid, Datum *values,
 
 	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
 
-	itup = BloomFormTuple(&buildstate->blstate, tid, values, isnull);
+	itup = BloomFormTuple(&buildstate->blstate, &htup->t_self, values, isnull);
 
 	/* Try to add next item to cached page */
 	if (BloomPageAddItem(&buildstate->blstate, buildstate->data.data, itup))
@@ -141,9 +141,9 @@ blbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	initCachedPage(&buildstate);
 
 	/* Do the heap scan */
-	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-									   bloomBuildCallback, (void *) &buildstate,
-									   NULL);
+	reltuples = IndexBuildHeapScan(heap, index, indexInfo, true,
+								   bloomBuildCallback, (void *) &buildstate,
+								   NULL);
 
 	/* Flush last page if needed (it will be, unless heap was empty) */
 	if (buildstate.count > 0)

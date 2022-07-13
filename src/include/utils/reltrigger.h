@@ -4,7 +4,7 @@
  *	  POSTGRES relation trigger definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/reltrigger.h
@@ -29,7 +29,6 @@ typedef struct Trigger
 	int16		tgtype;
 	char		tgenabled;
 	bool		tgisinternal;
-	bool		tgisclone;
 	Oid			tgconstrrelid;
 	Oid			tgconstrindid;
 	Oid			tgconstraint;

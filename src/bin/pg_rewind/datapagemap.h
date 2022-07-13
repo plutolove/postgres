@@ -2,15 +2,16 @@
  *
  * datapagemap.h
  *
- * Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
 #ifndef DATAPAGEMAP_H
 #define DATAPAGEMAP_H
 
-#include "storage/block.h"
 #include "storage/relfilenode.h"
+#include "storage/block.h"
+
 
 struct datapagemap
 {

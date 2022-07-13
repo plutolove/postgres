@@ -9,10 +9,6 @@ BEGIN
     RAISE NOTICE 'test_event_trigger: % %', tg_event, tg_tag;
 END
 $$ language plpgsql;
--- should fail, can't call it as a plain function
-SELECT test_event_trigger();
-ERROR:  trigger functions can only be called as triggers
-CONTEXT:  compilation of PL/pgSQL function "test_event_trigger" near line 1
 -- should fail, event triggers cannot have declared arguments
 create function test_event_trigger_arg(name text)
 returns event_trigger as $$ BEGIN RETURN 1; END $$ language plpgsql;
@@ -116,45 +112,10 @@ create table event_trigger_fire5 (a int);
 NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
 NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
 NOTICE:  test_event_trigger: ddl_command_end CREATE TABLE
--- non-top-level command
-create function f1() returns int
-language plpgsql
-as $$
-begin
-  create table event_trigger_fire6 (a int);
-  return 0;
-end $$;
-NOTICE:  test_event_trigger: ddl_command_start CREATE FUNCTION
-NOTICE:  test_event_trigger: ddl_command_start CREATE FUNCTION
-NOTICE:  test_event_trigger: ddl_command_end CREATE FUNCTION
-select f1();
-NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
-NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
-NOTICE:  test_event_trigger: ddl_command_end CREATE TABLE
- f1 
-----
-  0
-(1 row)
-
--- non-top-level command
-create procedure p1()
-language plpgsql
-as $$
-begin
-  create table event_trigger_fire7 (a int);
-end $$;
-NOTICE:  test_event_trigger: ddl_command_start CREATE PROCEDURE
-NOTICE:  test_event_trigger: ddl_command_end CREATE PROCEDURE
-call p1();
-NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
-NOTICE:  test_event_trigger: ddl_command_start CREATE TABLE
-NOTICE:  test_event_trigger: ddl_command_end CREATE TABLE
 -- clean up
 alter event trigger regress_event_trigger disable;
-drop table event_trigger_fire2, event_trigger_fire3, event_trigger_fire4, event_trigger_fire5, event_trigger_fire6, event_trigger_fire7;
+drop table event_trigger_fire2, event_trigger_fire3, event_trigger_fire4, event_trigger_fire5;
 NOTICE:  test_event_trigger: ddl_command_end DROP TABLE
-drop routine f1(), p1();
-NOTICE:  test_event_trigger: ddl_command_end DROP ROUTINE
 -- regress_event_trigger_end should fire on these commands
 grant all on table event_trigger_fire1 to public;
 NOTICE:  test_event_trigger: ddl_command_end GRANT
@@ -192,8 +153,8 @@ ERROR:  event trigger "regress_event_trigger" does not exist
 drop role regress_evt_user;
 ERROR:  role "regress_evt_user" cannot be dropped because some objects depend on it
 DETAIL:  owner of event trigger regress_event_trigger3
-owner of user mapping for regress_evt_user on server useless_server
 owner of default privileges on new relations belonging to role regress_evt_user
+owner of user mapping for regress_evt_user on server useless_server
 -- cleanup before next test
 -- these are all OK; the second one should emit a NOTICE
 drop event trigger if exists regress_event_trigger2;
@@ -439,7 +400,7 @@ END;
 $$;
 create event trigger no_rewrite_allowed on table_rewrite
   execute procedure test_evtrig_no_rewrite();
-create table rewriteme (id serial primary key, foo float, bar timestamptz);
+create table rewriteme (id serial primary key, foo float);
 insert into rewriteme
      select x * 1.001 from generate_series(1, 500) as t(x);
 alter table rewriteme alter column foo type numeric;
@@ -462,15 +423,6 @@ alter table rewriteme
 NOTICE:  Table 'rewriteme' is being rewritten (reason = 4)
 -- shouldn't trigger a table_rewrite event
 alter table rewriteme alter column foo type numeric(12,4);
-begin;
-set timezone to 'UTC';
-alter table rewriteme alter column bar type timestamp;
-set timezone to '0';
-alter table rewriteme alter column bar type timestamptz;
-set timezone to 'Europe/London';
-alter table rewriteme alter column bar type timestamp; -- does rewrite
-NOTICE:  Table 'rewriteme' is being rewritten (reason = 4)
-rollback;
 -- typed tables are rewritten when their type changes.  Don't emit table
 -- name, because firing order is not stable.
 CREATE OR REPLACE FUNCTION test_evtrig_no_rewrite() RETURNS event_trigger
@@ -533,23 +485,6 @@ DROP POLICY p2 ON event_trigger_test;
 NOTICE:  DROP POLICY - ddl_command_start
 NOTICE:  DROP POLICY - sql_drop
 NOTICE:  DROP POLICY - ddl_command_end
--- Check the object addresses of all the event triggers.
-SELECT
-    e.evtname,
-    pg_describe_object('pg_event_trigger'::regclass, e.oid, 0) as descr,
-    b.type, b.object_names, b.object_args,
-    pg_identify_object(a.classid, a.objid, a.objsubid) as ident
-  FROM pg_event_trigger as e,
-    LATERAL pg_identify_object_as_address('pg_event_trigger'::regclass, e.oid, 0) as b,
-    LATERAL pg_get_object_address(b.type, b.object_names, b.object_args) as a
-  ORDER BY e.evtname;
-      evtname      |              descr              |     type      |    object_names     | object_args |                         ident                          
--------------------+---------------------------------+---------------+---------------------+-------------+--------------------------------------------------------
- end_rls_command   | event trigger end_rls_command   | event trigger | {end_rls_command}   | {}          | ("event trigger",,end_rls_command,end_rls_command)
- sql_drop_command  | event trigger sql_drop_command  | event trigger | {sql_drop_command}  | {}          | ("event trigger",,sql_drop_command,sql_drop_command)
- start_rls_command | event trigger start_rls_command | event trigger | {start_rls_command} | {}          | ("event trigger",,start_rls_command,start_rls_command)
-(3 rows)
-
 DROP EVENT TRIGGER start_rls_command;
 DROP EVENT TRIGGER end_rls_command;
 DROP EVENT TRIGGER sql_drop_command;

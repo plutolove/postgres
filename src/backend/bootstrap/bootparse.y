@@ -4,7 +4,7 @@
  * bootparse.y
  *	  yacc grammar for the "bootstrap" mode (BKI file format)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -113,8 +113,8 @@ static int num_columns_read = 0;
 %type <list>  boot_index_params
 %type <ielem> boot_index_param
 %type <str>   boot_ident
-%type <ival>  optbootstrap optsharedrelation boot_column_nullness
-%type <oidval> oidspec optrowtypeoid
+%type <ival>  optbootstrap optsharedrelation optwithoutoids boot_column_nullness
+%type <oidval> oidspec optoideq optrowtypeoid
 
 %token <str> ID
 %token COMMA EQUALS LPAREN RPAREN
@@ -123,7 +123,7 @@ static int num_columns_read = 0;
 /* All the rest are unreserved, and should be handled in boot_ident! */
 %token <kw> OPEN XCLOSE XCREATE INSERT_TUPLE
 %token <kw> XDECLARE INDEX ON USING XBUILD INDICES UNIQUE XTOAST
-%token <kw> OBJ_ID XBOOTSTRAP XSHARED_RELATION XROWTYPE_OID
+%token <kw> OBJ_ID XBOOTSTRAP XSHARED_RELATION XWITHOUT_OIDS XROWTYPE_OID
 %token <kw> XFORCE XNOT XNULL
 
 %start TopLevel
@@ -170,7 +170,7 @@ Boot_CloseStmt:
 		;
 
 Boot_CreateStmt:
-		  XCREATE boot_ident oidspec optbootstrap optsharedrelation optrowtypeoid LPAREN
+		  XCREATE boot_ident oidspec optbootstrap optsharedrelation optwithoutoids optrowtypeoid LPAREN
 				{
 					do_start();
 					numattr = 0;
@@ -192,7 +192,7 @@ Boot_CreateStmt:
 
 					do_start();
 
-					tupdesc = CreateTupleDesc(numattr, attrtypes);
+					tupdesc = CreateTupleDesc(numattr, !($6), attrtypes);
 
 					shared_relation = $5;
 
@@ -209,9 +209,6 @@ Boot_CreateStmt:
 
 					if ($4)
 					{
-						TransactionId relfrozenxid;
-						MultiXactId relminmxid;
-
 						if (boot_reldesc)
 						{
 							elog(DEBUG4, "create bootstrap: warning, open relation exists, closing first");
@@ -223,15 +220,12 @@ Boot_CreateStmt:
 												   shared_relation ? GLOBALTABLESPACE_OID : 0,
 												   $3,
 												   InvalidOid,
-												   HEAP_TABLE_AM_OID,
 												   tupdesc,
 												   RELKIND_RELATION,
 												   RELPERSISTENCE_PERMANENT,
 												   shared_relation,
 												   mapped_relation,
-												   true,
-												   &relfrozenxid,
-												   &relminmxid);
+												   true);
 						elog(DEBUG4, "bootstrap relation created");
 					}
 					else
@@ -242,16 +236,17 @@ Boot_CreateStmt:
 													  PG_CATALOG_NAMESPACE,
 													  shared_relation ? GLOBALTABLESPACE_OID : 0,
 													  $3,
-													  $6,
+													  $7,
 													  InvalidOid,
 													  BOOTSTRAP_SUPERUSERID,
-													  HEAP_TABLE_AM_OID,
 													  tupdesc,
 													  NIL,
 													  RELKIND_RELATION,
 													  RELPERSISTENCE_PERMANENT,
 													  shared_relation,
 													  mapped_relation,
+													  true,
+													  0,
 													  ONCOMMIT_NOOP,
 													  (Datum) 0,
 													  false,
@@ -266,10 +261,13 @@ Boot_CreateStmt:
 		;
 
 Boot_InsertStmt:
-		  INSERT_TUPLE
+		  INSERT_TUPLE optoideq
 				{
 					do_start();
-					elog(DEBUG4, "inserting row");
+					if ($2)
+						elog(DEBUG4, "inserting row with oid %u", $2);
+					else
+						elog(DEBUG4, "inserting row");
 					num_columns_read = 0;
 				}
 		  LPAREN boot_column_val_list RPAREN
@@ -279,7 +277,7 @@ Boot_InsertStmt:
 							 numattr, num_columns_read);
 					if (boot_reldesc == NULL)
 						elog(FATAL, "relation not open");
-					InsertOneTuple();
+					InsertOneTuple($2);
 					do_end();
 				}
 		;
@@ -306,8 +304,6 @@ Boot_DeclareIndexStmt:
 					stmt->idxcomment = NULL;
 					stmt->indexOid = InvalidOid;
 					stmt->oldNode = InvalidOid;
-					stmt->oldCreateSubid = InvalidSubTransactionId;
-					stmt->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
 					stmt->unique = false;
 					stmt->primary = false;
 					stmt->isconstraint = false;
@@ -316,7 +312,6 @@ Boot_DeclareIndexStmt:
 					stmt->transformed = false;
 					stmt->concurrent = false;
 					stmt->if_not_exists = false;
-					stmt->reset_default_tblspc = false;
 
 					/* locks and races need not concern us in bootstrap mode */
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,
@@ -358,8 +353,6 @@ Boot_DeclareUniqueIndexStmt:
 					stmt->idxcomment = NULL;
 					stmt->indexOid = InvalidOid;
 					stmt->oldNode = InvalidOid;
-					stmt->oldCreateSubid = InvalidSubTransactionId;
-					stmt->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
 					stmt->unique = true;
 					stmt->primary = false;
 					stmt->isconstraint = false;
@@ -368,7 +361,6 @@ Boot_DeclareUniqueIndexStmt:
 					stmt->transformed = false;
 					stmt->concurrent = false;
 					stmt->if_not_exists = false;
-					stmt->reset_default_tblspc = false;
 
 					/* locks and races need not concern us in bootstrap mode */
 					relationId = RangeVarGetRelid(stmt->relation, NoLock,
@@ -440,6 +432,11 @@ optsharedrelation:
 		|						{ $$ = 0; }
 		;
 
+optwithoutoids:
+			XWITHOUT_OIDS	{ $$ = 1; }
+		|					{ $$ = 0; }
+		;
+
 optrowtypeoid:
 			XROWTYPE_OID oidspec	{ $$ = $2; }
 		|							{ $$ = InvalidOid; }
@@ -467,6 +464,11 @@ boot_column_nullness:
 
 oidspec:
 			boot_ident							{ $$ = atooid($1); }
+		;
+
+optoideq:
+			OBJ_ID EQUALS oidspec				{ $$ = $3; }
+		|										{ $$ = InvalidOid; }
 		;
 
 boot_column_val_list:
@@ -499,6 +501,7 @@ boot_ident:
 		| OBJ_ID		{ $$ = pstrdup($1); }
 		| XBOOTSTRAP	{ $$ = pstrdup($1); }
 		| XSHARED_RELATION	{ $$ = pstrdup($1); }
+		| XWITHOUT_OIDS	{ $$ = pstrdup($1); }
 		| XROWTYPE_OID	{ $$ = pstrdup($1); }
 		| XFORCE		{ $$ = pstrdup($1); }
 		| XNOT			{ $$ = pstrdup($1); }

@@ -11,18 +11,18 @@
  * on callers, since this is an opaque structure.  This is the reason to
  * require a create function.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
  * IDENTIFICATION
- *	  src/backend/utils/misc/queryenvironment.c
+ *	  src/backend/backend/utils/misc/queryenvironment.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
-#include "access/table.h"
+#include "access/heapam.h"
 #include "utils/queryenvironment.h"
 #include "utils/rel.h"
 
@@ -36,7 +36,7 @@ struct QueryEnvironment
 
 
 QueryEnvironment *
-create_queryEnv(void)
+create_queryEnv()
 {
 	return (QueryEnvironment *) palloc0(sizeof(QueryEnvironment));
 }
@@ -135,9 +135,9 @@ ENRMetadataGetTupDesc(EphemeralNamedRelationMetadata enrmd)
 	{
 		Relation	relation;
 
-		relation = table_open(enrmd->reliddesc, NoLock);
+		relation = heap_open(enrmd->reliddesc, NoLock);
 		tupdesc = relation->rd_att;
-		table_close(relation, NoLock);
+		heap_close(relation, NoLock);
 	}
 
 	return tupdesc;

@@ -76,7 +76,7 @@ $node_replica->init_from_backup(
 	$node_master, $backup_name,
 	has_streaming => 1,
 	has_restoring => 1);
-$node_replica->append_conf('postgresql.conf',
+$node_replica->append_conf('recovery.conf',
 	q[primary_slot_name = 'phys_slot']);
 
 $node_replica->start;
@@ -131,7 +131,6 @@ cmp_ok(
 	'xmin on physical slot must not be lower than catalog_xmin');
 
 $node_master->safe_psql('postgres', 'CHECKPOINT');
-$node_master->wait_for_catchup($node_replica, 'write');
 
 # Boom, crash
 $node_master->stop('immediate');
@@ -184,7 +183,7 @@ my $endpos = $node_replica->safe_psql('postgres',
 
 $stdout = $node_replica->pg_recvlogical_upto(
 	'postgres', 'before_basebackup',
-	$endpos,    180,
+	$endpos,    30,
 	'include-xids'     => '0',
 	'skip-empty-xacts' => '1');
 

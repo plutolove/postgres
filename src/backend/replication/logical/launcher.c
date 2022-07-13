@@ -2,7 +2,7 @@
  * launcher.c
  *	   PostgreSQL logical replication worker launcher process
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/launcher.c
@@ -17,36 +17,42 @@
 
 #include "postgres.h"
 
+#include "funcapi.h"
+#include "miscadmin.h"
+#include "pgstat.h"
+
 #include "access/heapam.h"
 #include "access/htup.h"
 #include "access/htup_details.h"
-#include "access/tableam.h"
 #include "access/xact.h"
+
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
-#include "funcapi.h"
+
 #include "libpq/pqsignal.h"
-#include "miscadmin.h"
-#include "pgstat.h"
+
 #include "postmaster/bgworker.h"
 #include "postmaster/fork_process.h"
-#include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
+
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
 #include "replication/worker_internal.h"
+
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
+
 #include "tcop/tcopprot.h"
+
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
-#include "utils/snapmgr.h"
 #include "utils/timeout.h"
+#include "utils/snapmgr.h"
 
 /* max sleep time between cycles (3min) */
 #define DEFAULT_NAPTIME_PER_CYCLE 180000L
@@ -93,6 +99,9 @@ static void logicalrep_worker_onexit(int code, Datum arg);
 static void logicalrep_worker_detach(void);
 static void logicalrep_worker_cleanup(LogicalRepWorker *worker);
 
+/* Flags set by signal handlers */
+static volatile sig_atomic_t got_SIGHUP = false;
+
 static bool on_commit_launcher_wakeup = false;
 
 Datum		pg_stat_get_subscription(PG_FUNCTION_ARGS);
@@ -109,7 +118,7 @@ get_subscription_list(void)
 {
 	List	   *res = NIL;
 	Relation	rel;
-	TableScanDesc scan;
+	HeapScanDesc scan;
 	HeapTuple	tup;
 	MemoryContext resultcxt;
 
@@ -126,8 +135,8 @@ get_subscription_list(void)
 	StartTransactionCommand();
 	(void) GetTransactionSnapshot();
 
-	rel = table_open(SubscriptionRelationId, AccessShareLock);
-	scan = table_beginscan_catalog(rel, 0, NULL);
+	rel = heap_open(SubscriptionRelationId, AccessShareLock);
+	scan = heap_beginscan_catalog(rel, 0, NULL);
 
 	while (HeapTupleIsValid(tup = heap_getnext(scan, ForwardScanDirection)))
 	{
@@ -144,7 +153,7 @@ get_subscription_list(void)
 		oldcxt = MemoryContextSwitchTo(resultcxt);
 
 		sub = (Subscription *) palloc0(sizeof(Subscription));
-		sub->oid = subform->oid;
+		sub->oid = HeapTupleGetOid(tup);
 		sub->dbid = subform->subdbid;
 		sub->owner = subform->subowner;
 		sub->enabled = subform->subenabled;
@@ -155,8 +164,8 @@ get_subscription_list(void)
 		MemoryContextSwitchTo(oldcxt);
 	}
 
-	table_endscan(scan);
-	table_close(rel, AccessShareLock);
+	heap_endscan(scan);
+	heap_close(rel, AccessShareLock);
 
 	CommitTransactionCommand();
 
@@ -212,8 +221,12 @@ WaitForReplicationWorkerAttach(LogicalRepWorker *worker,
 		 * about the worker attach.  But we don't expect to have to wait long.
 		 */
 		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   10L, WAIT_EVENT_BGWORKER_STARTUP);
+
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 
 		if (rc & WL_LATCH_SET)
 		{
@@ -221,6 +234,8 @@ WaitForReplicationWorkerAttach(LogicalRepWorker *worker,
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
+
+	return;
 }
 
 /*
@@ -483,8 +498,12 @@ logicalrep_worker_stop(Oid subid, Oid relid)
 
 		/* Wait a bit --- we don't expect to have to wait long. */
 		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   10L, WAIT_EVENT_BGWORKER_STARTUP);
+
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 
 		if (rc & WL_LATCH_SET)
 		{
@@ -527,8 +546,12 @@ logicalrep_worker_stop(Oid subid, Oid relid)
 
 		/* Wait a bit --- we don't expect to have to wait long. */
 		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   10L, WAIT_EVENT_BGWORKER_SHUTDOWN);
+
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 
 		if (rc & WL_LATCH_SET)
 		{
@@ -710,6 +733,20 @@ logicalrep_worker_onexit(int code, Datum arg)
 	logicalrep_worker_detach();
 
 	ApplyLauncherWakeup();
+}
+
+/* SIGHUP: set flag to reload configuration at next convenient time */
+static void
+logicalrep_launcher_sighup(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_SIGHUP = true;
+
+	/* Waken anything waiting on the process latch */
+	SetLatch(MyLatch);
+
+	errno = save_errno;
 }
 
 /*
@@ -956,7 +993,7 @@ ApplyLauncherMain(Datum main_arg)
 	LogicalRepCtx->launcher_pid = MyProcPid;
 
 	/* Establish signal handlers. */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGHUP, logicalrep_launcher_sighup);
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
@@ -1035,9 +1072,13 @@ ApplyLauncherMain(Datum main_arg)
 
 		/* Wait for more work. */
 		rc = WaitLatch(MyLatch,
-					   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
 					   wait_time,
 					   WAIT_EVENT_LOGICAL_LAUNCHER_MAIN);
+
+		/* emergency bailout if postmaster has died */
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 
 		if (rc & WL_LATCH_SET)
 		{
@@ -1045,9 +1086,9 @@ ApplyLauncherMain(Datum main_arg)
 			CHECK_FOR_INTERRUPTS();
 		}
 
-		if (ConfigReloadPending)
+		if (got_SIGHUP)
 		{
-			ConfigReloadPending = false;
+			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
@@ -1087,7 +1128,8 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)

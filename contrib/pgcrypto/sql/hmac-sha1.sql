@@ -1,5 +1,5 @@
 --
--- HMAC-SHA1
+-- HMAC-MD5
 --
 
 SELECT encode(hmac(

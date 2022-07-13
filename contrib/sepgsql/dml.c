@@ -4,7 +4,7 @@
  *
  * Routines to handle DML permission checks
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -14,8 +14,8 @@
 #include "access/sysattr.h"
 #include "access/tupdesc.h"
 #include "catalog/catalog.h"
-#include "catalog/dependency.h"
 #include "catalog/heap.h"
+#include "catalog/dependency.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_inherits.h"
@@ -23,16 +23,17 @@
 #include "commands/tablecmds.h"
 #include "executor/executor.h"
 #include "nodes/bitmapset.h"
-#include "sepgsql.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+
+#include "sepgsql.h"
 
 /*
  * fixup_whole_row_references
  *
- * When user references a whole-row Var, it is equivalent to referencing
+ * When user reference a whole of row, it is equivalent to reference to
  * all the user columns (not system columns). So, we need to fix up the
- * given bitmapset, if it contains a whole-row reference.
+ * given bitmapset, if it contains a whole of the row reference.
  */
 static Bitmapset *
 fixup_whole_row_references(Oid relOid, Bitmapset *columns)
@@ -43,7 +44,7 @@ fixup_whole_row_references(Oid relOid, Bitmapset *columns)
 	AttrNumber	attno;
 	int			index;
 
-	/* if no whole-row references, nothing to do */
+	/* if no whole of row references, do not anything */
 	index = InvalidAttrNumber - FirstLowInvalidHeapAttributeNumber;
 	if (!bms_is_member(index, columns))
 		return columns;
@@ -55,7 +56,7 @@ fixup_whole_row_references(Oid relOid, Bitmapset *columns)
 	natts = ((Form_pg_class) GETSTRUCT(tuple))->relnatts;
 	ReleaseSysCache(tuple);
 
-	/* remove bit 0 from column set, add in all the non-dropped columns */
+	/* fix up the given columns */
 	result = bms_copy(columns);
 	result = bms_del_member(result, index);
 
@@ -65,13 +66,14 @@ fixup_whole_row_references(Oid relOid, Bitmapset *columns)
 								ObjectIdGetDatum(relOid),
 								Int16GetDatum(attno));
 		if (!HeapTupleIsValid(tuple))
-			continue;			/* unexpected case, should we error? */
+			continue;
 
-		if (!((Form_pg_attribute) GETSTRUCT(tuple))->attisdropped)
-		{
-			index = attno - FirstLowInvalidHeapAttributeNumber;
-			result = bms_add_member(result, index);
-		}
+		if (((Form_pg_attribute) GETSTRUCT(tuple))->attisdropped)
+			continue;
+
+		index = attno - FirstLowInvalidHeapAttributeNumber;
+
+		result = bms_add_member(result, index);
 
 		ReleaseSysCache(tuple);
 	}
@@ -84,7 +86,7 @@ fixup_whole_row_references(Oid relOid, Bitmapset *columns)
  * When user is querying on a table with children, it implicitly accesses
  * child tables also. So, we also need to check security label of child
  * tables and columns, but here is no guarantee attribute numbers are
- * same between the parent and children.
+ * same between the parent ans children.
  * It returns a bitmapset which contains attribute number of the child
  * table based on the given bitmapset of the parent.
  */
@@ -159,10 +161,12 @@ check_relation_privileges(Oid relOid,
 	 */
 	if (sepgsql_getenforce() > 0)
 	{
-		if ((required & (SEPG_DB_TABLE__UPDATE |
+		Oid			relnamespace = get_rel_namespace(relOid);
+
+		if (IsSystemNamespace(relnamespace) &&
+			(required & (SEPG_DB_TABLE__UPDATE |
 						 SEPG_DB_TABLE__INSERT |
-						 SEPG_DB_TABLE__DELETE)) != 0 &&
-			IsCatalogRelationOid(relOid))
+						 SEPG_DB_TABLE__DELETE)) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("SELinux: hardwired security policy violation")));

@@ -1,11 +1,11 @@
 # config/llvm.m4
 
 # PGAC_LLVM_SUPPORT
-# -----------------
+# ---------------
 #
 # Look for the LLVM installation, check that it's new enough, set the
 # corresponding LLVM_{CFLAGS,CXXFLAGS,BINPATH} and LDFLAGS
-# variables. Also verify that CLANG is available, to transform C
+# variables. Also verifies that CLANG is available, to transform C
 # into bitcode.
 #
 AC_DEFUN([PGAC_LLVM_SUPPORT],
@@ -76,7 +76,6 @@ AC_DEFUN([PGAC_LLVM_SUPPORT],
       debuginfodwarf) pgac_components="$pgac_components $pgac_component";;
       orcjit) pgac_components="$pgac_components $pgac_component";;
       passes) pgac_components="$pgac_components $pgac_component";;
-      native) pgac_components="$pgac_components $pgac_component";;
       perfjitevents) pgac_components="$pgac_components $pgac_component";;
     esac
   done;
@@ -92,25 +91,6 @@ AC_DEFUN([PGAC_LLVM_SUPPORT],
 
   LLVM_BINPATH=`$LLVM_CONFIG --bindir`
 
-dnl LLVM_CONFIG, CLANG are already output via AC_ARG_VAR
-  AC_SUBST(LLVM_LIBS)
-  AC_SUBST(LLVM_CPPFLAGS)
-  AC_SUBST(LLVM_CFLAGS)
-  AC_SUBST(LLVM_CXXFLAGS)
-  AC_SUBST(LLVM_BINPATH)
-
-])# PGAC_LLVM_SUPPORT
-
-
-# PGAC_CHECK_LLVM_FUNCTIONS
-# -------------------------
-#
-# Check presence of some optional LLVM functions.
-# (This shouldn't happen until we're ready to run AC_CHECK_DECLS tests;
-# because PGAC_LLVM_SUPPORT runs very early, it's not an appropriate place.)
-#
-AC_DEFUN([PGAC_CHECK_LLVM_FUNCTIONS],
-[
   # Check which functionality is present
   SAVE_CPPFLAGS="$CPPFLAGS"
   CPPFLAGS="$CPPFLAGS $LLVM_CPPFLAGS"
@@ -118,4 +98,12 @@ AC_DEFUN([PGAC_CHECK_LLVM_FUNCTIONS],
   AC_CHECK_DECLS([LLVMGetHostCPUName, LLVMGetHostCPUFeatures], [], [], [[#include <llvm-c/TargetMachine.h>]])
   AC_CHECK_DECLS([LLVMCreateGDBRegistrationListener, LLVMCreatePerfJITEventListener], [], [], [[#include <llvm-c/ExecutionEngine.h>]])
   CPPFLAGS="$SAVE_CPPFLAGS"
-])# PGAC_CHECK_LLVM_FUNCTIONS
+
+  # LLVM_CONFIG, CLANG are already output via AC_ARG_VAR
+  AC_SUBST(LLVM_LIBS)
+  AC_SUBST(LLVM_CPPFLAGS)
+  AC_SUBST(LLVM_CFLAGS)
+  AC_SUBST(LLVM_CXXFLAGS)
+  AC_SUBST(LLVM_BINPATH)
+
+])# PGAC_LLVM_SUPPORT

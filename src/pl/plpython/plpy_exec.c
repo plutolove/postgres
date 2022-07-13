@@ -12,16 +12,19 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "funcapi.h"
-#include "plpy_elog.h"
+#include "utils/builtins.h"
+#include "utils/rel.h"
+#include "utils/typcache.h"
+
+#include "plpython.h"
+
 #include "plpy_exec.h"
+
+#include "plpy_elog.h"
 #include "plpy_main.h"
 #include "plpy_procedure.h"
 #include "plpy_subxactobject.h"
-#include "plpython.h"
-#include "utils/builtins.h"
-#include "utils/lsyscache.h"
-#include "utils/rel.h"
-#include "utils/typcache.h"
+
 
 /* saved state for a set-returning function */
 typedef struct PLySRFState
@@ -41,9 +44,9 @@ static void plpython_srf_cleanup_callback(void *arg);
 static void plpython_return_error_callback(void *arg);
 
 static PyObject *PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc,
-										HeapTuple *rv);
+					   HeapTuple *rv);
 static HeapTuple PLy_modify_tuple(PLyProcedure *proc, PyObject *pltd,
-								  TriggerData *tdata, HeapTuple otup);
+				 TriggerData *tdata, HeapTuple otup);
 static void plpython_trigger_error_callback(void *arg);
 
 static PyObject *PLy_procedure_call(PLyProcedure *proc, const char *kargs, PyObject *vargs);
@@ -399,12 +402,17 @@ PLy_exec_trigger(FunctionCallInfo fcinfo, PLyProcedure *proc)
 			}
 		}
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		Py_XDECREF(plargs);
 		Py_XDECREF(plrv);
+
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	Py_DECREF(plargs);
+	Py_DECREF(plrv);
 
 	return rv;
 }
@@ -428,10 +436,10 @@ PLy_function_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc)
 		{
 			PLyDatumToOb *arginfo = &proc->args[i];
 
-			if (fcinfo->args[i].isnull)
+			if (fcinfo->argnull[i])
 				arg = NULL;
 			else
-				arg = PLy_input_convert(arginfo, fcinfo->args[i].value);
+				arg = PLy_input_convert(arginfo, fcinfo->arg[i]);
 
 			if (arg == NULL)
 			{
@@ -743,11 +751,6 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			PyDict_SetItemString(pltdata, "level", pltlevel);
 			Py_DECREF(pltlevel);
 
-			/*
-			 * Note: In BEFORE trigger, stored generated columns are not
-			 * computed yet, so don't make them accessible in NEW row.
-			 */
-
 			if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
 			{
 				pltevent = PyString_FromString("INSERT");
@@ -755,8 +758,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 				PyDict_SetItemString(pltdata, "old", Py_None);
 				pytnew = PLy_input_from_tuple(&proc->result_in,
 											  tdata->tg_trigtuple,
-											  rel_descr,
-											  !TRIGGER_FIRED_BEFORE(tdata->tg_event));
+											  rel_descr);
 				PyDict_SetItemString(pltdata, "new", pytnew);
 				Py_DECREF(pytnew);
 				*rv = tdata->tg_trigtuple;
@@ -768,8 +770,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 				PyDict_SetItemString(pltdata, "new", Py_None);
 				pytold = PLy_input_from_tuple(&proc->result_in,
 											  tdata->tg_trigtuple,
-											  rel_descr,
-											  true);
+											  rel_descr);
 				PyDict_SetItemString(pltdata, "old", pytold);
 				Py_DECREF(pytold);
 				*rv = tdata->tg_trigtuple;
@@ -780,14 +781,12 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 
 				pytnew = PLy_input_from_tuple(&proc->result_in,
 											  tdata->tg_newtuple,
-											  rel_descr,
-											  !TRIGGER_FIRED_BEFORE(tdata->tg_event));
+											  rel_descr);
 				PyDict_SetItemString(pltdata, "new", pytnew);
 				Py_DECREF(pytnew);
 				pytold = PLy_input_from_tuple(&proc->result_in,
 											  tdata->tg_trigtuple,
-											  rel_descr,
-											  true);
+											  rel_descr);
 				PyDict_SetItemString(pltdata, "old", pytold);
 				Py_DECREF(pytold);
 				*rv = tdata->tg_newtuple;
@@ -953,11 +952,6 @@ PLy_modify_tuple(PLyProcedure *proc, PyObject *pltd, TriggerData *tdata,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("cannot set system attribute \"%s\"",
 								plattstr)));
-			if (TupleDescAttr(tupdesc, attn - 1)->attgenerated)
-				ereport(ERROR,
-						(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-						 errmsg("cannot set generated column \"%s\"",
-								plattstr)));
 
 			plval = PyDict_GetItem(plntup, platt);
 			if (plval == NULL)
@@ -1021,7 +1015,7 @@ plpython_trigger_error_callback(void *arg)
 static PyObject *
 PLy_procedure_call(PLyProcedure *proc, const char *kargs, PyObject *vargs)
 {
-	PyObject   *rv = NULL;
+	PyObject   *rv;
 	int volatile save_subxact_level = list_length(explicit_subtransactions);
 
 	PyDict_SetItemString(proc->globals, kargs, vargs);
@@ -1043,11 +1037,14 @@ PLy_procedure_call(PLyProcedure *proc, const char *kargs, PyObject *vargs)
 		 */
 		Assert(list_length(explicit_subtransactions) >= save_subxact_level);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		PLy_abort_open_subtransactions(save_subxact_level);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	PLy_abort_open_subtransactions(save_subxact_level);
 
 	/* If the Python code returned an error, propagate it */
 	if (rv == NULL)

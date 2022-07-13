@@ -16,7 +16,7 @@
  *		relevant database in turn.  The former keeps running after the
  *		initial prewarm is complete to update the dump file periodically.
  *
- *	Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  *	IDENTIFICATION
  *		contrib/pg_prewarm/autoprewarm.c
@@ -28,7 +28,7 @@
 
 #include <unistd.h>
 
-#include "access/relation.h"
+#include "access/heapam.h"
 #include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
@@ -157,7 +157,6 @@ void
 autoprewarm_main(Datum main_arg)
 {
 	bool		first_time = true;
-	bool		final_dump_allowed = true;
 	TimestampTz last_dump_time = 0;
 
 	/* Establish signal handlers; once that's done, unblock signals. */
@@ -198,21 +197,18 @@ autoprewarm_main(Datum main_arg)
 	 * There's not much point in performing a dump immediately after we finish
 	 * preloading; so, if we do end up preloading, consider the last dump time
 	 * to be equal to the current time.
-	 *
-	 * If apw_load_buffers() is terminated early by a shutdown request,
-	 * prevent dumping out our state below the loop, because we'd effectively
-	 * just truncate the saved state to however much we'd managed to preload.
 	 */
 	if (first_time)
 	{
 		apw_load_buffers();
-		final_dump_allowed = !got_sigterm;
 		last_dump_time = GetCurrentTimestamp();
 	}
 
 	/* Periodically dump buffers until terminated. */
 	while (!got_sigterm)
 	{
+		int			rc;
+
 		/* In case of a SIGHUP, just reload the configuration. */
 		if (got_sighup)
 		{
@@ -223,23 +219,25 @@ autoprewarm_main(Datum main_arg)
 		if (autoprewarm_interval <= 0)
 		{
 			/* We're only dumping at shutdown, so just wait forever. */
-			(void) WaitLatch(&MyProc->procLatch,
-							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
-							 -1L,
-							 PG_WAIT_EXTENSION);
+			rc = WaitLatch(&MyProc->procLatch,
+						   WL_LATCH_SET | WL_POSTMASTER_DEATH,
+						   -1L,
+						   PG_WAIT_EXTENSION);
 		}
 		else
 		{
-			TimestampTz next_dump_time;
-			long		delay_in_ms;
+			long		delay_in_ms = 0;
+			TimestampTz next_dump_time = 0;
+			long		secs = 0;
+			int			usecs = 0;
 
 			/* Compute the next dump time. */
 			next_dump_time =
 				TimestampTzPlusMilliseconds(last_dump_time,
 											autoprewarm_interval * 1000);
-			delay_in_ms =
-				TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
-												next_dump_time);
+			TimestampDifference(GetCurrentTimestamp(), next_dump_time,
+								&secs, &usecs);
+			delay_in_ms = secs + (usecs / 1000);
 
 			/* Perform a dump if it's time. */
 			if (delay_in_ms <= 0)
@@ -250,22 +248,23 @@ autoprewarm_main(Datum main_arg)
 			}
 
 			/* Sleep until the next dump time. */
-			(void) WaitLatch(&MyProc->procLatch,
-							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-							 delay_in_ms,
-							 PG_WAIT_EXTENSION);
+			rc = WaitLatch(&MyProc->procLatch,
+						   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+						   delay_in_ms,
+						   PG_WAIT_EXTENSION);
 		}
 
-		/* Reset the latch, loop. */
+		/* Reset the latch, bail out if postmaster died, otherwise loop. */
 		ResetLatch(&MyProc->procLatch);
+		if (rc & WL_POSTMASTER_DEATH)
+			proc_exit(1);
 	}
 
 	/*
 	 * Dump one last time.  We assume this is probably the result of a system
 	 * shutdown, although it's possible that we've merely been terminated.
 	 */
-	if (final_dump_allowed)
-		apw_dump_now(true, true);
+	apw_dump_now(true, true);
 }
 
 /*
@@ -361,7 +360,7 @@ apw_load_buffers(void)
 		Oid			current_db = blkinfo[j].database;
 
 		/*
-		 * Advance the prewarm_stop_idx to the first BlockInfoRecord that does
+		 * Advance the prewarm_stop_idx to the first BlockRecordInfo that does
 		 * not belong to this database.
 		 */
 		j++;
@@ -370,7 +369,7 @@ apw_load_buffers(void)
 			if (current_db != blkinfo[j].database)
 			{
 				/*
-				 * Combine BlockInfoRecords for global objects with those of
+				 * Combine BlockRecordInfos for global objects with those of
 				 * the database.
 				 */
 				if (current_db != InvalidOid)
@@ -383,7 +382,7 @@ apw_load_buffers(void)
 
 		/*
 		 * If we reach this point with current_db == InvalidOid, then only
-		 * BlockInfoRecords belonging to global objects exist.  We can't
+		 * BlockRecordInfos belonging to global objects exist.  We can't
 		 * prewarm without a database connection, so just bail out.
 		 */
 		if (current_db == InvalidOid)
@@ -396,13 +395,6 @@ apw_load_buffers(void)
 
 		/* If we've run out of free buffers, don't launch another worker. */
 		if (!have_free_buffer())
-			break;
-
-		/*
-		 * Likewise, don't launch if we've already been told to shut down.
-		 * (The launch would fail anyway, but we might as well skip it.)
-		 */
-		if (got_sigterm)
 			break;
 
 		/*
@@ -422,11 +414,10 @@ apw_load_buffers(void)
 	apw_state->pid_using_dumpfile = InvalidPid;
 	LWLockRelease(&apw_state->lock);
 
-	/* Report our success, if we were able to finish. */
-	if (!got_sigterm)
-		ereport(LOG,
-				(errmsg("autoprewarm successfully prewarmed %d of %d previously-loaded blocks",
-						apw_state->prewarmed_blocks, num_elements)));
+	/* Report our success. */
+	ereport(LOG,
+			(errmsg("autoprewarm successfully prewarmed %d of %d previously-loaded blocks",
+					apw_state->prewarmed_blocks, num_elements)));
 }
 
 /*
@@ -650,7 +641,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not write to file \"%s\": %m",
+				 errmsg("could not write to file \"%s\" : %m",
 						transient_dump_file_path)));
 	}
 
@@ -673,7 +664,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 			errno = save_errno;
 			ereport(ERROR,
 					(errcode_for_file_access(),
-					 errmsg("could not write to file \"%s\": %m",
+					 errmsg("could not write to file \"%s\" : %m",
 							transient_dump_file_path)));
 		}
 	}
@@ -693,7 +684,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m",
+				 errmsg("could not close file \"%s\" : %m",
 						transient_dump_file_path)));
 	}
 
@@ -853,7 +844,6 @@ apw_start_database_worker(void)
 	worker.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
-	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	strcpy(worker.bgw_library_name, "pg_prewarm");
 	strcpy(worker.bgw_function_name, "autoprewarm_database_main");
 	strcpy(worker.bgw_name, "autoprewarm worker");

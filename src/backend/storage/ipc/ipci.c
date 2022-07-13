@@ -3,7 +3,7 @@
  * ipci.c
  *	  POSTGRES inter-process communication initialization code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -29,10 +29,10 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
-#include "replication/origin.h"
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
+#include "replication/origin.h"
 #include "storage/bufmgr.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
@@ -44,10 +44,9 @@
 #include "storage/procsignal.h"
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
+#include "utils/backend_random.h"
 #include "utils/snapmgr.h"
 
-/* GUCs */
-int			shared_memory_type = DEFAULT_SHARED_MEMORY_TYPE;
 
 shmem_startup_hook_type shmem_startup_hook = NULL;
 
@@ -89,9 +88,12 @@ RequestAddinShmemSpace(Size size)
  * through the same code as before.  (Note that the called routines mostly
  * check IsUnderPostmaster, rather than EXEC_BACKEND, to detect this case.
  * This is a bit code-wasteful and could be cleaned up.)
+ *
+ * If "makePrivate" is true then we only need private memory, not shared
+ * memory.  This is true for a standalone backend, false for a postmaster.
  */
 void
-CreateSharedMemoryAndSemaphores(void)
+CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 {
 	PGShmemHeader *shim = NULL;
 
@@ -147,6 +149,7 @@ CreateSharedMemoryAndSemaphores(void)
 		size = add_size(size, BTreeShmemSize());
 		size = add_size(size, SyncScanShmemSize());
 		size = add_size(size, AsyncShmemSize());
+		size = add_size(size, BackendRandomShmemSize());
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -163,14 +166,14 @@ CreateSharedMemoryAndSemaphores(void)
 		/*
 		 * Create the shmem segment
 		 */
-		seghdr = PGSharedMemoryCreate(size, &shim);
+		seghdr = PGSharedMemoryCreate(size, makePrivate, port, &shim);
 
 		InitShmemAccess(seghdr);
 
 		/*
 		 * Create semaphores
 		 */
-		PGReserveSemaphores(numSemas);
+		PGReserveSemaphores(numSemas, port);
 
 		/*
 		 * If spinlocks are disabled, initialize emulation layer (which
@@ -184,9 +187,12 @@ CreateSharedMemoryAndSemaphores(void)
 	{
 		/*
 		 * We are reattaching to an existing shared memory segment. This
-		 * should only be reached in the EXEC_BACKEND case.
+		 * should only be reached in the EXEC_BACKEND case, and even then only
+		 * with makePrivate == false.
 		 */
-#ifndef EXEC_BACKEND
+#ifdef EXEC_BACKEND
+		Assert(!makePrivate);
+#else
 		elog(PANIC, "should be attached to shared memory already");
 #endif
 	}
@@ -263,6 +269,7 @@ CreateSharedMemoryAndSemaphores(void)
 	BTreeShmemInit();
 	SyncScanShmemInit();
 	AsyncShmemInit();
+	BackendRandomShmemInit();
 
 #ifdef EXEC_BACKEND
 

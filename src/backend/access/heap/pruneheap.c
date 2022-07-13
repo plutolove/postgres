@@ -3,7 +3,7 @@
  * pruneheap.c
  *	  heap page pruning and HOT-chain management code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,15 +16,16 @@
 
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
-#include "access/htup_details.h"
 #include "access/transam.h"
+#include "access/htup_details.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
-#include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/rel.h"
+#include "utils/tqual.h"
 
 /* Working data for heap_page_prune and subroutines */
 typedef struct
@@ -43,13 +44,13 @@ typedef struct
 } PruneState;
 
 /* Local functions */
-static int	heap_prune_chain(Relation relation, Buffer buffer,
-							 OffsetNumber rootoffnum,
-							 TransactionId OldestXmin,
-							 PruneState *prstate);
+static int heap_prune_chain(Relation relation, Buffer buffer,
+				 OffsetNumber rootoffnum,
+				 TransactionId OldestXmin,
+				 PruneState *prstate);
 static void heap_prune_record_prunable(PruneState *prstate, TransactionId xid);
 static void heap_prune_record_redirect(PruneState *prstate,
-									   OffsetNumber offnum, OffsetNumber rdoffnum);
+						   OffsetNumber offnum, OffsetNumber rdoffnum);
 static void heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum);
 
@@ -256,7 +257,7 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 		MarkBufferDirty(buffer);
 
 		/*
-		 * Emit a WAL XLOG_HEAP2_CLEAN record showing what we did
+		 * Emit a WAL HEAP_CLEAN record showing what we did
 		 */
 		if (RelationNeedsWAL(relation))
 		{
@@ -324,7 +325,7 @@ heap_page_prune(Relation relation, Buffer buffer, TransactionId OldestXmin,
 
 
 /*
- * Prune specified line pointer or a HOT chain originating at line pointer.
+ * Prune specified item pointer or a HOT chain originating at that item.
  *
  * If the item is an index-referenced tuple (i.e. not a heap-only tuple),
  * the HOT chain is pruned by removing all DEAD tuples at the start of the HOT
@@ -454,7 +455,7 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 		}
 
 		/*
-		 * Likewise, a dead line pointer can't be part of the chain. (We
+		 * Likewise, a dead item pointer can't be part of the chain. (We
 		 * already eliminated the case of dead root tuple outside this
 		 * function.)
 		 */
@@ -630,7 +631,7 @@ heap_prune_record_prunable(PruneState *prstate, TransactionId xid)
 		prstate->new_prune_xid = xid;
 }
 
-/* Record line pointer to be redirected */
+/* Record item pointer to be redirected */
 static void
 heap_prune_record_redirect(PruneState *prstate,
 						   OffsetNumber offnum, OffsetNumber rdoffnum)
@@ -645,7 +646,7 @@ heap_prune_record_redirect(PruneState *prstate,
 	prstate->marked[rdoffnum] = true;
 }
 
-/* Record line pointer to be marked dead */
+/* Record item pointer to be marked dead */
 static void
 heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum)
 {
@@ -656,7 +657,7 @@ heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum)
 	prstate->marked[offnum] = true;
 }
 
-/* Record line pointer to be marked unused */
+/* Record item pointer to be marked unused */
 static void
 heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum)
 {
@@ -732,7 +733,7 @@ heap_page_prune_execute(Buffer buffer,
  * root_offsets[k - 1] = j.
  *
  * The passed-in root_offsets array must have MaxHeapTuplesPerPage entries.
- * Unused entries are filled with InvalidOffsetNumber (zero).
+ * We zero out all unused entries.
  *
  * The function must be called with at least share lock on the buffer, to
  * prevent concurrent prune operations.
@@ -747,8 +748,7 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 	OffsetNumber offnum,
 				maxoff;
 
-	MemSet(root_offsets, InvalidOffsetNumber,
-		   MaxHeapTuplesPerPage * sizeof(OffsetNumber));
+	MemSet(root_offsets, 0, MaxHeapTuplesPerPage * sizeof(OffsetNumber));
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))

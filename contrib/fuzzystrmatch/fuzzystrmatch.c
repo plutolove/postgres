@@ -6,7 +6,7 @@
  * Joe Conway <mail@joeconway.com>
  *
  * contrib/fuzzystrmatch/fuzzystrmatch.c
- * Copyright (c) 2001-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2018, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * metaphone()
@@ -698,6 +698,8 @@ _metaphone(char *word,			/* IN */
 	}							/* END FOR */
 
 	End_Phoned_Word;
+
+	return;
 }								/* END metaphone */
 
 

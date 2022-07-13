@@ -32,8 +32,8 @@
 
 #include <openssl/bn.h>
 
-#include "pgp.h"
 #include "px.h"
+#include "pgp.h"
 
 static BIGNUM *
 mpi_to_bn(PGP_MPI *n)

@@ -4,9 +4,7 @@ PGFILEDESC = "pg_standby - supports creation of a warm standby"
 PGAPPICON = win32
 
 PROGRAM = pg_standby
-OBJS = \
-	$(WIN32RES) \
-	pg_standby.o
+OBJS	= pg_standby.o $(WIN32RES)
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

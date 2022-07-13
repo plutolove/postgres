@@ -1,9 +1,9 @@
 #include "postgres.h"
 
 #include "fmgr.h"
-#include "hstore/hstore.h"
-#include "plpy_typeio.h"
 #include "plpython.h"
+#include "plpy_typeio.h"
+#include "hstore/hstore.h"
 
 PG_MODULE_MAGIC;
 
@@ -128,9 +128,9 @@ Datum
 plpython_to_hstore(PG_FUNCTION_ARGS)
 {
 	PyObject   *dict;
-	PyObject   *volatile items;
-	Py_ssize_t	pcount;
-	HStore	   *volatile out;
+	volatile PyObject *items_v = NULL;
+	int32		pcount;
+	HStore	   *out;
 
 	dict = (PyObject *) PG_GETARG_POINTER(0);
 	if (!PyMapping_Check(dict))
@@ -139,13 +139,14 @@ plpython_to_hstore(PG_FUNCTION_ARGS)
 				 errmsg("not a Python mapping")));
 
 	pcount = PyMapping_Size(dict);
-	items = PyMapping_Items(dict);
+	items_v = PyMapping_Items(dict);
 
 	PG_TRY();
 	{
 		int32		buflen;
-		Py_ssize_t	i;
+		int32		i;
 		Pairs	   *pairs;
+		PyObject   *items = (PyObject *) items_v;
 
 		pairs = palloc(pcount * sizeof(*pairs));
 
@@ -176,13 +177,15 @@ plpython_to_hstore(PG_FUNCTION_ARGS)
 				pairs[i].isnull = false;
 			}
 		}
+		Py_DECREF(items_v);
 
 		pcount = hstoreUniquePairs(pairs, pcount, &buflen);
 		out = hstorePairs(pairs, pcount, buflen);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
-		Py_DECREF(items);
+		Py_DECREF(items_v);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 

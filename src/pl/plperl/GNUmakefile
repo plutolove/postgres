@@ -12,13 +12,12 @@ override CPPFLAGS += -DPLPERL_HAVE_UID_GID
 override CPPFLAGS += -Wno-comment
 endif
 
-# Note: we need to include the perl_includespec directory last,
+# Note: we need to make sure that the CORE directory is included last,
 # probably because it sometimes contains some header files with names
 # that clash with some of ours, or with some that we include, notably on
 # Windows.
-override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) $(perl_embed_ccflags) $(perl_includespec)
+override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS) $(perl_embed_ccflags) -I$(perl_includedir)/CORE
 
-# this is often, but not always, the same directory named by perl_includespec
 rpathdir = $(perl_archlibexp)/CORE
 
 PGFILEDESC = "PL/Perl - procedural language"
@@ -27,8 +26,8 @@ NAME = plperl
 
 OBJS = plperl.o SPI.o Util.o $(WIN32RES)
 
-DATA = plperl.control plperl--1.0.sql \
-       plperlu.control plperlu--1.0.sql
+DATA = plperl.control plperl--1.0.sql plperl--unpackaged--1.0.sql \
+       plperlu.control plperlu--1.0.sql plperlu--unpackaged--1.0.sql
 
 PERLCHUNKS = plc_perlboot.pl plc_trusted.pl
 
@@ -55,10 +54,8 @@ endif # win32
 
 SHLIB_LINK = $(perl_embed_ldflags)
 
-REGRESS_OPTS = --dbname=$(PL_TESTDB)
-REGRESS = plperl_setup plperl plperl_lc plperl_trigger plperl_shared \
-	plperl_elog plperl_util plperl_init plperlu plperl_array \
-	plperl_call plperl_transaction
+REGRESS_OPTS = --dbname=$(PL_TESTDB) --load-extension=plperl  --load-extension=plperlu
+REGRESS = plperl plperl_lc plperl_trigger plperl_shared plperl_elog plperl_util plperl_init plperlu plperl_array plperl_call plperl_transaction
 # if Perl can support two interpreters in one backend,
 # test plperl-and-plperlu cases
 ifneq ($(PERL),)

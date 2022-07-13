@@ -19,7 +19,7 @@
  * tree after local transformations that might introduce nested AND/ORs.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,8 +32,7 @@
 #include "postgres.h"
 
 #include "nodes/makefuncs.h"
-#include "nodes/nodeFuncs.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/clauses.h"
 #include "optimizer/prep.h"
 #include "utils/lsyscache.h"
 
@@ -328,7 +327,13 @@ pull_ands(List *andlist)
 	{
 		Node	   *subexpr = (Node *) lfirst(arg);
 
-		if (is_andclause(subexpr))
+		/*
+		 * Note: we can destructively concat the subexpression's arglist
+		 * because we know the recursive invocation of pull_ands will have
+		 * built a new arglist not shared with any other expr. Otherwise we'd
+		 * need a list_copy here.
+		 */
+		if (and_clause(subexpr))
 			out_list = list_concat(out_list,
 								   pull_ands(((BoolExpr *) subexpr)->args));
 		else
@@ -354,7 +359,13 @@ pull_ors(List *orlist)
 	{
 		Node	   *subexpr = (Node *) lfirst(arg);
 
-		if (is_orclause(subexpr))
+		/*
+		 * Note: we can destructively concat the subexpression's arglist
+		 * because we know the recursive invocation of pull_ors will have
+		 * built a new arglist not shared with any other expr. Otherwise we'd
+		 * need a list_copy here.
+		 */
+		if (or_clause(subexpr))
 			out_list = list_concat(out_list,
 								   pull_ors(((BoolExpr *) subexpr)->args));
 		else
@@ -404,7 +415,7 @@ pull_ors(List *orlist)
 static Expr *
 find_duplicate_ors(Expr *qual, bool is_check)
 {
-	if (is_orclause(qual))
+	if (or_clause((Node *) qual))
 	{
 		List	   *orlist = NIL;
 		ListCell   *temp;
@@ -448,7 +459,7 @@ find_duplicate_ors(Expr *qual, bool is_check)
 		/* Now we can look for duplicate ORs */
 		return process_duplicate_ors(orlist);
 	}
-	else if (is_andclause(qual))
+	else if (and_clause((Node *) qual))
 	{
 		List	   *andlist = NIL;
 		ListCell   *temp;
@@ -539,7 +550,7 @@ process_duplicate_ors(List *orlist)
 	{
 		Expr	   *clause = (Expr *) lfirst(temp);
 
-		if (is_andclause(clause))
+		if (and_clause((Node *) clause))
 		{
 			List	   *subclauses = ((BoolExpr *) clause)->args;
 			int			nclauses = list_length(subclauses);
@@ -577,7 +588,7 @@ process_duplicate_ors(List *orlist)
 		{
 			Expr	   *clause = (Expr *) lfirst(temp2);
 
-			if (is_andclause(clause))
+			if (and_clause((Node *) clause))
 			{
 				if (!list_member(((BoolExpr *) clause)->args, refclause))
 				{
@@ -620,7 +631,7 @@ process_duplicate_ors(List *orlist)
 	{
 		Expr	   *clause = (Expr *) lfirst(temp);
 
-		if (is_andclause(clause))
+		if (and_clause((Node *) clause))
 		{
 			List	   *subclauses = ((BoolExpr *) clause)->args;
 

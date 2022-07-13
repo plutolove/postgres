@@ -1,9 +1,7 @@
 # contrib/ltree_plpython/Makefile
 
 MODULE_big = ltree_plpython$(python_majorversion)
-OBJS = \
-	$(WIN32RES) \
-	ltree_plpython.o
+OBJS = ltree_plpython.o $(WIN32RES)
 PGFILEDESC = "ltree_plpython - ltree transform for plpython"
 
 EXTENSION = ltree_plpythonu ltree_plpython2u ltree_plpython3u

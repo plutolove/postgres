@@ -64,17 +64,9 @@ SELECT array_to_json(ARRAY [jsonb '{"a":1}', jsonb '{"b":[2,3]}']);
 
 -- anyarray column
 
-CREATE TEMP TABLE rows AS
-SELECT x, 'txt' || x as y
-FROM generate_series(1,3) AS x;
-
-analyze rows;
-
-select attname, to_jsonb(histogram_bounds) histogram_bounds
+select to_jsonb(histogram_bounds) histogram_bounds
 from pg_stats
-where tablename = 'rows' and
-      schemaname = pg_my_temp_schema()::regnamespace::text
-order by 1;
+where attname = 'tmplname' and tablename = 'pg_pltemplate';
 
 -- to_jsonb, timestamps
 
@@ -97,6 +89,10 @@ select to_jsonb(timestamptz 'Infinity');
 select to_jsonb(timestamptz '-Infinity');
 
 --jsonb_agg
+
+CREATE TEMP TABLE rows AS
+SELECT x, 'txt' || x as y
+FROM generate_series(1,3) AS x;
 
 SELECT jsonb_agg(q)
   FROM ( SELECT $$a$$ || x AS b, y AS c,
@@ -646,8 +642,6 @@ SELECT rec FROM jsonb_populate_record(
 -- anonymous record type
 SELECT jsonb_populate_record(null::record, '{"x": 0, "y": 1}');
 SELECT jsonb_populate_record(row(1,2), '{"f1": 0, "f2": 1}');
-SELECT * FROM
-  jsonb_populate_record(null::record, '{"x": 776}') AS (x int, y int);
 
 -- composite domain
 SELECT jsonb_populate_record(null::jb_ordered_pair, '{"x": 0, "y": 1}');
@@ -671,15 +665,6 @@ SELECT jsonb_populate_recordset(null::record, '[{"x": 0, "y": 1}]');
 SELECT jsonb_populate_recordset(row(1,2), '[{"f1": 0, "f2": 1}]');
 SELECT i, jsonb_populate_recordset(row(i,50), '[{"f1":"42"},{"f2":"43"}]')
 FROM (VALUES (1),(2)) v(i);
-SELECT * FROM
-  jsonb_populate_recordset(null::record, '[{"x": 776}]') AS (x int, y int);
-
--- empty array is a corner case
-SELECT jsonb_populate_recordset(null::record, '[]');
-SELECT jsonb_populate_recordset(row(1,2), '[]');
-SELECT * FROM jsonb_populate_recordset(NULL::jbpop,'[]') q;
-SELECT * FROM
-  jsonb_populate_recordset(null::record, '[]') AS (x int, y int);
 
 -- composite domain
 SELECT jsonb_populate_recordset(null::jb_ordered_pair, '[{"x": 0, "y": 1}]');
@@ -719,13 +704,6 @@ select * from jsonb_to_record('{"ia2": [1, 2, 3]}') as x(ia2 int[][]);
 select * from jsonb_to_record('{"ia2": [[1, 2], [3, 4]]}') as x(ia2 int4[][]);
 select * from jsonb_to_record('{"ia2": [[[1], [2], [3]]]}') as x(ia2 int4[][]);
 
-select * from jsonb_to_record('{"out": {"key": 1}}') as x(out json);
-select * from jsonb_to_record('{"out": [{"key": 1}]}') as x(out json);
-select * from jsonb_to_record('{"out": "{\"key\": 1}"}') as x(out json);
-select * from jsonb_to_record('{"out": {"key": 1}}') as x(out jsonb);
-select * from jsonb_to_record('{"out": [{"key": 1}]}') as x(out jsonb);
-select * from jsonb_to_record('{"out": "{\"key\": 1}"}') as x(out jsonb);
-
 -- test type info caching in jsonb_populate_record()
 CREATE TEMP TABLE jsbpoptest (js jsonb);
 
@@ -757,24 +735,6 @@ SELECT count(*) FROM testjsonb WHERE j ? 'public';
 SELECT count(*) FROM testjsonb WHERE j ? 'bar';
 SELECT count(*) FROM testjsonb WHERE j ?| ARRAY['public','disabled'];
 SELECT count(*) FROM testjsonb WHERE j ?& ARRAY['public','disabled'];
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == null';
-SELECT count(*) FROM testjsonb WHERE j @@ '"CC" == $.wait';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == "CC" && true == $.public';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25.0';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.bar)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public) || exists($.disabled)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public) && exists($.disabled)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? (@ == null)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? ("CC" == @)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.wait == "CC" && true == @.public)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.age ? (@ == 25)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.age == 25.0)';
-SELECT count(*) FROM testjsonb WHERE j @? '$';
-SELECT count(*) FROM testjsonb WHERE j @? '$.public';
-SELECT count(*) FROM testjsonb WHERE j @? '$.bar';
 
 CREATE INDEX jidx ON testjsonb USING gin (j);
 SET enable_seqscan = off;
@@ -792,39 +752,6 @@ SELECT count(*) FROM testjsonb WHERE j ? 'public';
 SELECT count(*) FROM testjsonb WHERE j ? 'bar';
 SELECT count(*) FROM testjsonb WHERE j ?| ARRAY['public','disabled'];
 SELECT count(*) FROM testjsonb WHERE j ?& ARRAY['public','disabled'];
-
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == null';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == null';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($ ? (@.wait == null))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.wait ? (@ == null))';
-SELECT count(*) FROM testjsonb WHERE j @@ '"CC" == $.wait';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == "CC" && true == $.public';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25.0';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.array[*] == "foo"';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.array[*] == "bar"';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($ ? (@.array[*] == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.array ? (@[*] == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.array[*] ? (@ == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.bar)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public) || exists($.disabled)';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.public) && exists($.disabled)';
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? (@ == null)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? (@ == null)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? ("CC" == @)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.wait == "CC" && true == @.public)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.age ? (@ == 25)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.age == 25.0)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.array[*] == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$.array ? (@[*] == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$.array[*] ? (@ == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$';
-SELECT count(*) FROM testjsonb WHERE j @? '$.public';
-SELECT count(*) FROM testjsonb WHERE j @? '$.bar';
 
 -- array exists - array elements should behave as keys (for GIN index scans too)
 CREATE INDEX jidx_array ON testjsonb USING gin((j->'array'));
@@ -874,34 +801,6 @@ SELECT count(*) FROM testjsonb WHERE j @> '{"age":25}';
 SELECT count(*) FROM testjsonb WHERE j @> '{"age":25.0}';
 -- exercise GIN_SEARCH_MODE_ALL
 SELECT count(*) FROM testjsonb WHERE j @> '{}';
-
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == null';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($ ? (@.wait == null))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.wait ? (@ == null))';
-SELECT count(*) FROM testjsonb WHERE j @@ '"CC" == $.wait';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.wait == "CC" && true == $.public';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.age == 25.0';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.array[*] == "foo"';
-SELECT count(*) FROM testjsonb WHERE j @@ '$.array[*] == "bar"';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($ ? (@.array[*] == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.array ? (@[*] == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($.array[*] ? (@ == "bar"))';
-SELECT count(*) FROM testjsonb WHERE j @@ 'exists($)';
-
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? (@ == null)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? (@ == null)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.wait ? ("CC" == @)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.wait == "CC" && true == @.public)';
-SELECT count(*) FROM testjsonb WHERE j @? '$.age ? (@ == 25)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.age == 25.0)';
-SELECT count(*) FROM testjsonb WHERE j @? '$ ? (@.array[*] == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$.array ? (@[*] == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$.array[*] ? (@ == "bar")';
-SELECT count(*) FROM testjsonb WHERE j @? '$';
-SELECT count(*) FROM testjsonb WHERE j @? '$.public';
-SELECT count(*) FROM testjsonb WHERE j @? '$.bar';
 
 RESET enable_seqscan;
 DROP INDEX jidx;
@@ -1056,11 +955,6 @@ select '{"a":"b"}'::jsonb || '[]'::jsonb;
 select '"a"'::jsonb || '{"a":1}';
 select '{"a":1}' || '"a"'::jsonb;
 
-select '[3]'::jsonb || '{}'::jsonb;
-select '3'::jsonb || '[]'::jsonb;
-select '3'::jsonb || '4'::jsonb;
-select '3'::jsonb || '{}'::jsonb;
-
 select '["a", "b"]'::jsonb || '{"c":1}';
 select '{"c": 1}'::jsonb || '["a", "b"]';
 
@@ -1158,26 +1052,6 @@ select jsonb_set('{"a": [1, 2, 3]}', '{a, non_integer}', '"new_value"');
 select jsonb_set('{"a": {"b": [1, 2, 3]}}', '{a, b, non_integer}', '"new_value"');
 select jsonb_set('{"a": {"b": [1, 2, 3]}}', '{a, b, NULL}', '"new_value"');
 
--- jsonb_set_lax
-
-\pset null NULL
-
--- pass though non nulls to jsonb_set
-select jsonb_set_lax('{"a":1,"b":2}','{b}','5') ;
-select jsonb_set_lax('{"a":1,"b":2}','{d}','6', true) ;
--- using the default treatment
-select jsonb_set_lax('{"a":1,"b":2}','{b}',null);
-select jsonb_set_lax('{"a":1,"b":2}','{d}',null,true);
--- errors
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, true, null);
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, true, 'no_such_treatment');
--- explicit treatments
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'raise_exception') as raise_exception;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'return_target') as return_target;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'delete_key') as delete_key;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'use_json_null') as use_json_null;
-
-\pset null
 
 -- jsonb_insert
 select jsonb_insert('{"a": [0,1,2]}', '{a, 1}', '"new_value"');
@@ -1235,7 +1109,7 @@ select jsonb_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d"
 select jsonb_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d": true, "f": false, "g": null}'::jsonb, '"boolean"');
 select jsonb_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d": true, "f": false, "g": null}'::jsonb, '["string", "numeric"]');
 
--- to_tsvector corner cases
+-- ts_vector corner cases
 select to_tsvector('""'::jsonb);
 select to_tsvector('{}'::jsonb);
 select to_tsvector('[]'::jsonb);

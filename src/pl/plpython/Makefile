@@ -20,7 +20,6 @@ PGFILEDESC = "PL/Python - procedural language"
 NAME = plpython$(python_majorversion)
 
 OBJS = \
-	$(WIN32RES) \
 	plpy_cursorobject.o \
 	plpy_elog.o \
 	plpy_exec.o \
@@ -32,11 +31,12 @@ OBJS = \
 	plpy_spi.o \
 	plpy_subxactobject.o \
 	plpy_typeio.o \
-	plpy_util.o
+	plpy_util.o \
+	$(WIN32RES)
 
-DATA = $(NAME)u.control $(NAME)u--1.0.sql
+DATA = $(NAME)u.control $(NAME)u--1.0.sql $(NAME)u--unpackaged--1.0.sql
 ifeq ($(python_majorversion),2)
-DATA += plpythonu.control plpythonu--1.0.sql
+DATA += plpythonu.control plpythonu--1.0.sql plpythonu--unpackaged--1.0.sql
 endif
 
 # header files to install - it's not clear which of these might be needed

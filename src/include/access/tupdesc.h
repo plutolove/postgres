@@ -4,7 +4,7 @@
  *	  POSTGRES tuple descriptor definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/tupdesc.h
@@ -19,13 +19,15 @@
 #include "nodes/pg_list.h"
 
 
-typedef struct AttrDefault
+typedef struct attrDefault
 {
 	AttrNumber	adnum;
 	char	   *adbin;			/* nodeToString representation of expr */
 } AttrDefault;
 
-typedef struct ConstrCheck
+typedef struct attrMissing *MissingPtr;
+
+typedef struct constrCheck
 {
 	char	   *ccname;
 	char	   *ccbin;			/* nodeToString representation of expr */
@@ -34,15 +36,14 @@ typedef struct ConstrCheck
 } ConstrCheck;
 
 /* This structure contains constraints of a tuple */
-typedef struct TupleConstr
+typedef struct tupleConstr
 {
 	AttrDefault *defval;		/* array */
 	ConstrCheck *check;			/* array */
-	struct AttrMissing *missing;	/* missing attributes values, NULL if none */
+	MissingPtr	missing;		/* missing attributes values, NULL if none */
 	uint16		num_defval;
 	uint16		num_check;
 	bool		has_not_null;
-	bool		has_generated_stored;
 } TupleConstr;
 
 /*
@@ -54,7 +55,7 @@ typedef struct TupleConstr
  * structure is designed to let the constraints be omitted efficiently.
  *
  * Note that only user attributes, not system attributes, are mentioned in
- * TupleDesc.
+ * TupleDesc; with the exception that tdhasoid indicates if OID is present.
  *
  * If the tupdesc is known to correspond to a named rowtype (such as a table's
  * rowtype) then tdtypeid identifies that type and tdtypmod is -1.  Otherwise
@@ -76,37 +77,38 @@ typedef struct TupleConstr
  * field of such a descriptor to -1, while reference-counted descriptors
  * always have tdrefcount >= 0.
  */
-typedef struct TupleDescData
+typedef struct tupleDesc
 {
 	int			natts;			/* number of attributes in the tuple */
 	Oid			tdtypeid;		/* composite type ID for tuple type */
 	int32		tdtypmod;		/* typmod for tuple type */
+	bool		tdhasoid;		/* tuple has oid attribute in its header */
 	int			tdrefcount;		/* reference count, or -1 if not counting */
 	TupleConstr *constr;		/* constraints, or NULL if none */
 	/* attrs[N] is the description of Attribute Number N+1 */
 	FormData_pg_attribute attrs[FLEXIBLE_ARRAY_MEMBER];
-}			TupleDescData;
-typedef struct TupleDescData *TupleDesc;
+}		   *TupleDesc;
 
 /* Accessor for the i'th attribute of tupdesc. */
 #define TupleDescAttr(tupdesc, i) (&(tupdesc)->attrs[(i)])
 
-extern TupleDesc CreateTemplateTupleDesc(int natts);
+extern TupleDesc CreateTemplateTupleDesc(int natts, bool hasoid);
 
-extern TupleDesc CreateTupleDesc(int natts, Form_pg_attribute *attrs);
+extern TupleDesc CreateTupleDesc(int natts, bool hasoid,
+				Form_pg_attribute *attrs);
 
 extern TupleDesc CreateTupleDescCopy(TupleDesc tupdesc);
 
 extern TupleDesc CreateTupleDescCopyConstr(TupleDesc tupdesc);
 
 #define TupleDescSize(src) \
-	(offsetof(struct TupleDescData, attrs) + \
+	(offsetof(struct tupleDesc, attrs) + \
 	 (src)->natts * sizeof(FormData_pg_attribute))
 
 extern void TupleDescCopy(TupleDesc dst, TupleDesc src);
 
 extern void TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
-							   TupleDesc src, AttrNumber srcAttno);
+				   TupleDesc src, AttrNumber srcAttno);
 
 extern void FreeTupleDesc(TupleDesc tupdesc);
 
@@ -130,22 +132,22 @@ extern bool equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 extern uint32 hashTupleDesc(TupleDesc tupdesc);
 
 extern void TupleDescInitEntry(TupleDesc desc,
-							   AttrNumber attributeNumber,
-							   const char *attributeName,
-							   Oid oidtypeid,
-							   int32 typmod,
-							   int attdim);
+				   AttrNumber attributeNumber,
+				   const char *attributeName,
+				   Oid oidtypeid,
+				   int32 typmod,
+				   int attdim);
 
 extern void TupleDescInitBuiltinEntry(TupleDesc desc,
-									  AttrNumber attributeNumber,
-									  const char *attributeName,
-									  Oid oidtypeid,
-									  int32 typmod,
-									  int attdim);
+						  AttrNumber attributeNumber,
+						  const char *attributeName,
+						  Oid oidtypeid,
+						  int32 typmod,
+						  int attdim);
 
 extern void TupleDescInitEntryCollation(TupleDesc desc,
-										AttrNumber attributeNumber,
-										Oid collationid);
+							AttrNumber attributeNumber,
+							Oid collationid);
 
 extern TupleDesc BuildDescForRelation(List *schema);
 

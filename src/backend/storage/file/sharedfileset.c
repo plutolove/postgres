@@ -3,13 +3,13 @@
  * sharedfileset.c
  *	  Shared temporary file management.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
  *	  src/backend/storage/file/sharedfileset.c
  *
- * SharedFileSets provide a temporary namespace (think directory) so that
+ * SharefFileSets provide a temporary namespace (think directory) so that
  * files can be discovered by name, and a shared ownership semantics so that
  * shared files survive until the last user detaches.
  *
@@ -18,11 +18,9 @@
 
 #include "postgres.h"
 
-#include <limits.h>
-
+#include "access/hash.h"
 #include "catalog/pg_tablespace.h"
 #include "commands/tablespace.h"
-#include "common/hashfn.h"
 #include "miscadmin.h"
 #include "storage/dsm.h"
 #include "storage/sharedfileset.h"
@@ -63,24 +61,8 @@ SharedFileSetInit(SharedFileSet *fileset, dsm_segment *seg)
 						   lengthof(fileset->tablespaces));
 	if (fileset->ntablespaces == 0)
 	{
-		/* If the GUC is empty, use current database's default tablespace */
-		fileset->tablespaces[0] = MyDatabaseTableSpace;
+		fileset->tablespaces[0] = DEFAULTTABLESPACE_OID;
 		fileset->ntablespaces = 1;
-	}
-	else
-	{
-		int			i;
-
-		/*
-		 * An entry of InvalidOid means use the default tablespace for the
-		 * current database.  Replace that now, to be sure that all users of
-		 * the SharedFileSet agree on what to do.
-		 */
-		for (i = 0; i < fileset->ntablespaces; i++)
-		{
-			if (fileset->tablespaces[i] == InvalidOid)
-				fileset->tablespaces[i] = MyDatabaseTableSpace;
-		}
 	}
 
 	/* Register our cleanup callback. */
@@ -159,7 +141,7 @@ SharedFileSetOpen(SharedFileSet *fileset, const char *name)
 }
 
 /*
- * Delete a file that was created with SharedFileSetCreate().
+ * Delete a file that was created with PathNameCreateShared().
  * Return true if the file existed, false if didn't.
  */
 bool

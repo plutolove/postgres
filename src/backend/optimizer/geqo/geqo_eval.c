@@ -3,7 +3,7 @@
  * geqo_eval.c
  *	  Routines to evaluate query trees
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/optimizer/geqo/geqo_eval.c
@@ -40,9 +40,9 @@ typedef struct
 } Clump;
 
 static List *merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump,
-						 int num_gene, bool force);
+			int num_gene, bool force);
 static bool desirable_join(PlannerInfo *root,
-						   RelOptInfo *outer_rel, RelOptInfo *inner_rel);
+			   RelOptInfo *outer_rel, RelOptInfo *inner_rel);
 
 
 /*
@@ -238,10 +238,11 @@ static List *
 merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
 			bool force)
 {
+	ListCell   *prev;
 	ListCell   *lc;
-	int			pos;
 
 	/* Look for a clump that new_clump can join to */
+	prev = NULL;
 	foreach(lc, clumps)
 	{
 		Clump	   *old_clump = (Clump *) lfirst(lc);
@@ -274,7 +275,7 @@ merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
 				 * grouping_planner).
 				 */
 				if (old_clump->size + new_clump->size < num_gene)
-					generate_useful_gather_paths(root, joinrel, false);
+					generate_gather_paths(root, joinrel, false);
 
 				/* Find and save the cheapest paths for this joinrel */
 				set_cheapest(joinrel);
@@ -285,7 +286,7 @@ merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
 				pfree(new_clump);
 
 				/* Remove old_clump from list */
-				clumps = foreach_delete_current(clumps, lc);
+				clumps = list_delete_cell(clumps, lc, prev);
 
 				/*
 				 * Recursively try to merge the enlarged old_clump with
@@ -295,6 +296,7 @@ merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
 				return merge_clump(root, clumps, old_clump, num_gene, force);
 			}
 		}
+		prev = lc;
 	}
 
 	/*
@@ -305,15 +307,21 @@ merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
 	if (clumps == NIL || new_clump->size == 1)
 		return lappend(clumps, new_clump);
 
-	/* Else search for the place to insert it */
-	for (pos = 0; pos < list_length(clumps); pos++)
-	{
-		Clump	   *old_clump = (Clump *) list_nth(clumps, pos);
+	/* Check if it belongs at the front */
+	lc = list_head(clumps);
+	if (new_clump->size > ((Clump *) lfirst(lc))->size)
+		return lcons(new_clump, clumps);
 
-		if (new_clump->size > old_clump->size)
-			break;				/* new_clump belongs before old_clump */
+	/* Else search for the place to insert it */
+	for (;;)
+	{
+		ListCell   *nxt = lnext(lc);
+
+		if (nxt == NULL || new_clump->size > ((Clump *) lfirst(nxt))->size)
+			break;				/* it belongs after 'lc', before 'nxt' */
+		lc = nxt;
 	}
-	clumps = list_insert_nth(clumps, pos, new_clump);
+	lappend_cell(clumps, lc, new_clump);
 
 	return clumps;
 }

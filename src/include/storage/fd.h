@@ -4,7 +4,7 @@
  *	  Virtual file descriptor definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/fd.h
@@ -15,7 +15,7 @@
 /*
  * calls:
  *
- *	File {Close, Read, Write, Size, Sync}
+ *	File {Close, Read, Write, Seek, Tell, Sync}
  *	{Path Name Open, Allocate, Free} File
  *
  * These are NOT JUST RENAMINGS OF THE UNIX ROUTINES.
@@ -33,12 +33,8 @@
  * no way for them to share kernel file descriptors with other files.
  *
  * Likewise, use AllocateDir/FreeDir, not opendir/closedir, to allocate
- * open directories (DIR*), and OpenTransientFile/CloseTransientFile for an
+ * open directories (DIR*), and OpenTransientFile/CloseTransient File for an
  * unbuffered file descriptor.
- *
- * If you really can't use any of the above, at least call AcquireExternalFD
- * or ReserveExternalFD to report any file descriptors that are held for any
- * length of time.  Failure to do so risks unnecessary EMFILE errors.
  */
 #ifndef FD_H
 #define FD_H
@@ -46,30 +42,21 @@
 #include <dirent.h>
 
 
+/*
+ * FileSeek uses the standard UNIX lseek(2) flags.
+ */
+
 typedef int File;
 
 
 /* GUC parameter */
 extern PGDLLIMPORT int max_files_per_process;
-extern PGDLLIMPORT bool data_sync_retry;
 
 /*
  * This is private to fd.c, but exported for save/restore_backend_variables()
  */
 extern int	max_safe_fds;
 
-/*
- * On Windows, we have to interpret EACCES as possibly meaning the same as
- * ENOENT, because if a file is unlinked-but-not-yet-gone on that platform,
- * that's what you get.  Ugh.  This code is designed so that we don't
- * actually believe these cases are okay without further evidence (namely,
- * a pending fsync request getting canceled ... see ProcessSyncRequests).
- */
-#ifndef WIN32
-#define FILE_POSSIBLY_DELETED(err)	((err) == ENOENT)
-#else
-#define FILE_POSSIBLY_DELETED(err)	((err) == ENOENT || (err) == EACCES)
-#endif
 
 /*
  * prototypes for functions in fd.c
@@ -81,10 +68,10 @@ extern File PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fil
 extern File OpenTemporaryFile(bool interXact);
 extern void FileClose(File file);
 extern int	FilePrefetch(File file, off_t offset, int amount, uint32 wait_event_info);
-extern int	FileRead(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
-extern int	FileWrite(File file, char *buffer, int amount, off_t offset, uint32 wait_event_info);
+extern int	FileRead(File file, char *buffer, int amount, uint32 wait_event_info);
+extern int	FileWrite(File file, char *buffer, int amount, uint32 wait_event_info);
 extern int	FileSync(File file, uint32 wait_event_info);
-extern off_t FileSize(File file);
+extern off_t FileSeek(File file, off_t offset, int whence);
 extern int	FileTruncate(File file, off_t offset, uint32 wait_event_info);
 extern void FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info);
 extern char *FilePathName(File file);
@@ -112,7 +99,7 @@ extern int	ClosePipeStream(FILE *file);
 extern DIR *AllocateDir(const char *dirname);
 extern struct dirent *ReadDir(DIR *dir, const char *dirname);
 extern struct dirent *ReadDirExtended(DIR *dir, const char *dirname,
-									  int elevel);
+				int elevel);
 extern int	FreeDir(DIR *dir);
 
 /* Operations to allow use of a plain kernel FD, with automatic cleanup */
@@ -124,12 +111,7 @@ extern int	CloseTransientFile(int fd);
 extern int	BasicOpenFile(const char *fileName, int fileFlags);
 extern int	BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
 
-/* Use these for other cases, and also for long-lived BasicOpenFile FDs */
-extern bool AcquireExternalFD(void);
-extern void ReserveExternalFD(void);
-extern void ReleaseExternalFD(void);
-
-/* Make a directory with default permissions */
+ /* Make a directory with default permissions */
 extern int	MakePGDirectory(const char *directoryName);
 
 /* Miscellaneous support routines */
@@ -142,10 +124,8 @@ extern int	GetTempTablespaces(Oid *tableSpaces, int numSpaces);
 extern Oid	GetNextTempTableSpace(void);
 extern void AtEOXact_Files(bool isCommit);
 extern void AtEOSubXact_Files(bool isCommit, SubTransactionId mySubid,
-							  SubTransactionId parentSubid);
+				  SubTransactionId parentSubid);
 extern void RemovePgTempFiles(void);
-extern void RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok,
-								   bool unlink_all);
 extern bool looks_like_temp_rel_name(const char *name);
 
 extern int	pg_fsync(int fd);
@@ -154,12 +134,10 @@ extern int	pg_fsync_writethrough(int fd);
 extern int	pg_fdatasync(int fd);
 extern void pg_flush_data(int fd, off_t offset, off_t amount);
 extern void fsync_fname(const char *fname, bool isdir);
-extern int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);
 extern int	durable_rename(const char *oldfile, const char *newfile, int loglevel);
 extern int	durable_unlink(const char *fname, int loglevel);
-extern int	durable_rename_excl(const char *oldfile, const char *newfile, int loglevel);
+extern int	durable_link_or_rename(const char *oldfile, const char *newfile, int loglevel);
 extern void SyncDataDirectory(void);
-extern int	data_sync_elevel(int elevel);
 
 /* Filename components */
 #define PG_TEMP_FILES_DIR "pgsql_tmp"

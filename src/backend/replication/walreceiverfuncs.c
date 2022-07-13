@@ -6,7 +6,7 @@
  * with the walreceiver process. Functions implementing walreceiver itself
  * are in walreceiver.c.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -63,7 +63,6 @@ WalRcvShmemInit(void)
 		MemSet(WalRcv, 0, WalRcvShmemSize());
 		WalRcv->walRcvState = WALRCV_STOPPED;
 		SpinLockInit(&WalRcv->mutex);
-		pg_atomic_init_u64(&WalRcv->writtenUpto, 0);
 		WalRcv->latch = NULL;
 	}
 }
@@ -216,19 +215,13 @@ ShutdownWalRcv(void)
 /*
  * Request postmaster to start walreceiver.
  *
- * "recptr" indicates the position where streaming should begin.  "conninfo"
- * is a libpq connection string to use.  "slotname" is, optionally, the name
- * of a replication slot to acquire.  "create_temp_slot" indicates to create
- * a temporary slot when no "slotname" is given.
- *
- * WAL receivers do not directly load GUC parameters used for the connection
- * to the primary, and rely on the values passed down by the caller of this
- * routine instead.  Hence, the addition of any new parameters should happen
- * through this code path.
+ * recptr indicates the position where streaming should begin, conninfo
+ * is a libpq connection string to use, and slotname is, optionally, the name
+ * of a replication slot to acquire.
  */
 void
 RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
-					 const char *slotname, bool create_temp_slot)
+					 const char *slotname)
 {
 	WalRcvData *walrcv = WalRcv;
 	bool		launch = false;
@@ -255,22 +248,10 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 	else
 		walrcv->conninfo[0] = '\0';
 
-	/*
-	 * Use configured replication slot if present, and ignore the value of
-	 * create_temp_slot as the slot name should be persistent.  Otherwise, use
-	 * create_temp_slot to determine whether this WAL receiver should create a
-	 * temporary slot by itself and use it, or not.
-	 */
-	if (slotname != NULL && slotname[0] != '\0')
-	{
+	if (slotname != NULL)
 		strlcpy((char *) walrcv->slotname, slotname, NAMEDATALEN);
-		walrcv->is_temp_slot = false;
-	}
 	else
-	{
 		walrcv->slotname[0] = '\0';
-		walrcv->is_temp_slot = create_temp_slot;
-	}
 
 	if (walrcv->walRcvState == WALRCV_STOPPED)
 	{
@@ -283,11 +264,11 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 
 	/*
 	 * If this is the first startup of walreceiver (on this timeline),
-	 * initialize flushedUpto and latestChunkStart to the starting point.
+	 * initialize receivedUpto and latestChunkStart to the starting point.
 	 */
 	if (walrcv->receiveStart == 0 || walrcv->receivedTLI != tli)
 	{
-		walrcv->flushedUpto = recptr;
+		walrcv->receivedUpto = recptr;
 		walrcv->receivedTLI = tli;
 		walrcv->latestChunkStart = recptr;
 	}
@@ -305,7 +286,7 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
 }
 
 /*
- * Returns the last+1 byte position that walreceiver has flushed.
+ * Returns the last+1 byte position that walreceiver has written.
  *
  * Optionally, returns the previous chunk start, that is the first byte
  * written in the most recent walreceiver flush cycle.  Callers not
@@ -313,13 +294,13 @@ RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr, const char *conninfo,
  * receiveTLI.
  */
 XLogRecPtr
-GetWalRcvFlushRecPtr(XLogRecPtr *latestChunkStart, TimeLineID *receiveTLI)
+GetWalRcvWriteRecPtr(XLogRecPtr *latestChunkStart, TimeLineID *receiveTLI)
 {
 	WalRcvData *walrcv = WalRcv;
 	XLogRecPtr	recptr;
 
 	SpinLockAcquire(&walrcv->mutex);
-	recptr = walrcv->flushedUpto;
+	recptr = walrcv->receivedUpto;
 	if (latestChunkStart)
 		*latestChunkStart = walrcv->latestChunkStart;
 	if (receiveTLI)
@@ -327,18 +308,6 @@ GetWalRcvFlushRecPtr(XLogRecPtr *latestChunkStart, TimeLineID *receiveTLI)
 	SpinLockRelease(&walrcv->mutex);
 
 	return recptr;
-}
-
-/*
- * Returns the last+1 byte position that walreceiver has written.
- * This returns a recently written value without taking a lock.
- */
-XLogRecPtr
-GetWalRcvWriteRecPtr(void)
-{
-	WalRcvData *walrcv = WalRcv;
-
-	return pg_atomic_read_u64(&walrcv->writtenUpto);
 }
 
 /*
@@ -351,10 +320,14 @@ GetReplicationApplyDelay(void)
 	WalRcvData *walrcv = WalRcv;
 	XLogRecPtr	receivePtr;
 	XLogRecPtr	replayPtr;
+
+	long		secs;
+	int			usecs;
+
 	TimestampTz chunkReplayStartTime;
 
 	SpinLockAcquire(&walrcv->mutex);
-	receivePtr = walrcv->flushedUpto;
+	receivePtr = walrcv->receivedUpto;
 	SpinLockRelease(&walrcv->mutex);
 
 	replayPtr = GetXLogReplayRecPtr(NULL);
@@ -367,8 +340,11 @@ GetReplicationApplyDelay(void)
 	if (chunkReplayStartTime == 0)
 		return -1;
 
-	return TimestampDifferenceMilliseconds(chunkReplayStartTime,
-										   GetCurrentTimestamp());
+	TimestampDifference(chunkReplayStartTime,
+						GetCurrentTimestamp(),
+						&secs, &usecs);
+
+	return (((int) secs * 1000) + (usecs / 1000));
 }
 
 /*
@@ -379,14 +355,24 @@ int
 GetReplicationTransferLatency(void)
 {
 	WalRcvData *walrcv = WalRcv;
+
 	TimestampTz lastMsgSendTime;
 	TimestampTz lastMsgReceiptTime;
+
+	long		secs = 0;
+	int			usecs = 0;
+	int			ms;
 
 	SpinLockAcquire(&walrcv->mutex);
 	lastMsgSendTime = walrcv->lastMsgSendTime;
 	lastMsgReceiptTime = walrcv->lastMsgReceiptTime;
 	SpinLockRelease(&walrcv->mutex);
 
-	return TimestampDifferenceMilliseconds(lastMsgSendTime,
-										   lastMsgReceiptTime);
+	TimestampDifference(lastMsgSendTime,
+						lastMsgReceiptTime,
+						&secs, &usecs);
+
+	ms = ((int) secs * 1000) + (usecs / 1000);
+
+	return ms;
 }

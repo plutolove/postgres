@@ -7,7 +7,14 @@
 
 exec sql include ../regression;
 
-exec sql include ../printf_hack;
+
+/*
+
+NOTE: This file has a different expect file for regression tests on MinGW32
+
+*/
+
+
 
 
 /*
@@ -108,9 +115,7 @@ main(void)
 			/* this is a libc problem since we only call strtod() */
 			r = dectodbl(dec, &dbl);
 			if (r) check_errno();
-			printf("dec[%d,10]: ", i);
-			print_double(r ? 0.0 : dbl);
-			printf(" (r: %d)\n", r);
+			printf("dec[%d,10]: %g (r: %d)\n", i, r?0.0:dbl, r);
 		}
 
 		PGTYPESdecimal_free(din);

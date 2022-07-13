@@ -106,17 +106,15 @@ WHERE p1.typinput = p2.oid AND NOT
 
 -- Check for type of the variadic array parameter's elements.
 -- provariadic should be ANYOID if the type of the last element is ANYOID,
--- ANYELEMENTOID if the type of the last element is ANYARRAYOID,
--- ANYCOMPATIBLEOID if the type of the last element is ANYCOMPATIBLEARRAYOID,
--- and otherwise the element type corresponding to the array type.
+-- ANYELEMENTOID if the type of the last element is ANYARRAYOID, and otherwise
+-- the element type corresponding to the array type.
 
 SELECT oid::regprocedure, provariadic::regtype, proargtypes::regtype[]
 FROM pg_proc
 WHERE provariadic != 0
 AND case proargtypes[array_length(proargtypes, 1)-1]
-	WHEN '"any"'::regtype THEN '"any"'::regtype
-	WHEN 'anyarray'::regtype THEN 'anyelement'::regtype
-	WHEN 'anycompatiblearray'::regtype THEN 'anycompatible'::regtype
+    WHEN 2276 THEN 2276 -- any -> any
+	WHEN 2277 THEN 2283 -- anyarray -> anyelement
 	ELSE (SELECT t.oid
 		  FROM pg_type t
 		  WHERE t.typarray = proargtypes[array_length(proargtypes, 1)-1])
@@ -369,29 +367,12 @@ WHERE relkind NOT IN ('r', 'i', 'S', 't', 'v', 'm', 'c', 'f', 'p') OR
     relpersistence NOT IN ('p', 'u', 't') OR
     relreplident NOT IN ('d', 'n', 'f', 'i');
 
--- All tables and indexes should have an access method.
+-- Indexes should have an access method, others not.
+
 SELECT p1.oid, p1.relname
 FROM pg_class as p1
-WHERE p1.relkind NOT IN ('S', 'v', 'f', 'c') and
-    p1.relam = 0;
-
--- Conversely, sequences, views, types shouldn't have them
-SELECT p1.oid, p1.relname
-FROM pg_class as p1
-WHERE p1.relkind IN ('S', 'v', 'f', 'c') and
-    p1.relam != 0;
-
--- Indexes should have AMs of type 'i'
-SELECT pc.oid, pc.relname, pa.amname, pa.amtype
-FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
-WHERE pc.relkind IN ('i') and
-    pa.amtype != 'i';
-
--- Tables, matviews etc should have AMs of type 't'
-SELECT pc.oid, pc.relname, pa.amname, pa.amtype
-FROM pg_class as pc JOIN pg_am AS pa ON (pc.relam = pa.oid)
-WHERE pc.relkind IN ('r', 't', 'm') and
-    pa.amtype != 't';
+WHERE (p1.relkind = 'i' AND p1.relam = 0) OR
+    (p1.relkind != 'i' AND p1.relam != 0);
 
 -- **************** pg_attribute ****************
 

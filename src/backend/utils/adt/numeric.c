@@ -11,7 +11,7 @@
  * Transactions on Mathematical Software, Vol. 24, No. 4, December 1998,
  * pages 359-367.
  *
- * Copyright (c) 1998-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/adt/numeric.c
@@ -26,18 +26,16 @@
 #include <limits.h>
 #include <math.h>
 
+#include "access/hash.h"
 #include "catalog/pg_type.h"
-#include "common/hashfn.h"
 #include "common/int.h"
 #include "funcapi.h"
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/supportnodes.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
-#include "utils/float.h"
 #include "utils/guc.h"
 #include "utils/int8.h"
 #include "utils/numeric.h"
@@ -393,6 +391,16 @@ static const NumericVar const_ten =
 #endif
 
 #if DEC_DIGITS == 4
+static const NumericDigit const_zero_point_five_data[1] = {5000};
+#elif DEC_DIGITS == 2
+static const NumericDigit const_zero_point_five_data[1] = {50};
+#elif DEC_DIGITS == 1
+static const NumericDigit const_zero_point_five_data[1] = {5};
+#endif
+static const NumericVar const_zero_point_five =
+{1, -1, NUMERIC_POS, 1, NULL, (NumericDigit *) const_zero_point_five_data};
+
+#if DEC_DIGITS == 4
 static const NumericDigit const_zero_point_nine_data[1] = {9000};
 #elif DEC_DIGITS == 2
 static const NumericDigit const_zero_point_nine_data[1] = {90};
@@ -457,7 +465,7 @@ static void free_var(NumericVar *var);
 static void zero_var(NumericVar *var);
 
 static const char *set_var_from_str(const char *str, const char *cp,
-									NumericVar *dest);
+				 NumericVar *dest);
 static void set_var_from_num(Numeric value, NumericVar *dest);
 static void init_var_from_num(Numeric num, NumericVar *dest);
 static void set_var_from_var(const NumericVar *value, NumericVar *dest);
@@ -465,11 +473,10 @@ static char *get_str_from_var(const NumericVar *var);
 static char *get_str_from_var_sci(const NumericVar *var, int rscale);
 
 static Numeric make_result(const NumericVar *var);
-static Numeric make_result_opt_error(const NumericVar *var, bool *error);
 
 static void apply_typmod(NumericVar *var, int32 typmod);
 
-static bool numericvar_to_int32(const NumericVar *var, int32 *result);
+static int32 numericvar_to_int32(const NumericVar *var);
 static bool numericvar_to_int64(const NumericVar *var, int64 *result);
 static void int64_to_numericvar(int64 val, NumericVar *var);
 #ifdef HAVE_INT128
@@ -485,61 +492,57 @@ static int	numeric_fast_cmp(Datum x, Datum y, SortSupport ssup);
 static int	numeric_cmp_abbrev(Datum x, Datum y, SortSupport ssup);
 
 static Datum numeric_abbrev_convert_var(const NumericVar *var,
-										NumericSortSupport *nss);
+						   NumericSortSupport *nss);
 
 static int	cmp_numerics(Numeric num1, Numeric num2);
 static int	cmp_var(const NumericVar *var1, const NumericVar *var2);
-static int	cmp_var_common(const NumericDigit *var1digits, int var1ndigits,
-						   int var1weight, int var1sign,
-						   const NumericDigit *var2digits, int var2ndigits,
-						   int var2weight, int var2sign);
+static int cmp_var_common(const NumericDigit *var1digits, int var1ndigits,
+			   int var1weight, int var1sign,
+			   const NumericDigit *var2digits, int var2ndigits,
+			   int var2weight, int var2sign);
 static void add_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
+		NumericVar *result);
 static void sub_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
+		NumericVar *result);
 static void mul_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result,
-					int rscale);
+		NumericVar *result,
+		int rscale);
 static void div_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result,
-					int rscale, bool round);
+		NumericVar *result,
+		int rscale, bool round);
 static void div_var_fast(const NumericVar *var1, const NumericVar *var2,
-						 NumericVar *result, int rscale, bool round);
+			 NumericVar *result, int rscale, bool round);
 static int	select_div_scale(const NumericVar *var1, const NumericVar *var2);
 static void mod_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
-static void div_mod_var(const NumericVar *var1, const NumericVar *var2,
-						NumericVar *quot, NumericVar *rem);
+		NumericVar *result);
 static void ceil_var(const NumericVar *var, NumericVar *result);
 static void floor_var(const NumericVar *var, NumericVar *result);
 
-static void gcd_var(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
 static void sqrt_var(const NumericVar *arg, NumericVar *result, int rscale);
 static void exp_var(const NumericVar *arg, NumericVar *result, int rscale);
 static int	estimate_ln_dweight(const NumericVar *var);
 static void ln_var(const NumericVar *arg, NumericVar *result, int rscale);
 static void log_var(const NumericVar *base, const NumericVar *num,
-					NumericVar *result);
+		NumericVar *result);
 static void power_var(const NumericVar *base, const NumericVar *exp,
-					  NumericVar *result);
+		  NumericVar *result);
 static void power_var_int(const NumericVar *base, int exp, NumericVar *result,
-						  int rscale);
+			  int rscale);
 
 static int	cmp_abs(const NumericVar *var1, const NumericVar *var2);
-static int	cmp_abs_common(const NumericDigit *var1digits, int var1ndigits,
-						   int var1weight,
-						   const NumericDigit *var2digits, int var2ndigits,
-						   int var2weight);
+static int cmp_abs_common(const NumericDigit *var1digits, int var1ndigits,
+			   int var1weight,
+			   const NumericDigit *var2digits, int var2ndigits,
+			   int var2weight);
 static void add_abs(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
+		NumericVar *result);
 static void sub_abs(const NumericVar *var1, const NumericVar *var2,
-					NumericVar *result);
+		NumericVar *result);
 static void round_var(NumericVar *var, int rscale);
 static void trunc_var(NumericVar *var, int rscale);
 static void strip_var(NumericVar *var);
 static void compute_bucket(Numeric operand, Numeric bound1, Numeric bound2,
-						   const NumericVar *count_var, NumericVar *result_var);
+			   const NumericVar *count_var, NumericVar *result_var);
 
 static void accum_sum_add(NumericSumAccum *accum, const NumericVar *var1);
 static void accum_sum_rescale(NumericSumAccum *accum, const NumericVar *val);
@@ -886,53 +889,45 @@ numeric_send(PG_FUNCTION_ARGS)
 
 
 /*
- * numeric_support()
+ * numeric_transform() -
  *
- * Planner support function for the numeric() length coercion function.
- *
- * Flatten calls that solely represent increases in allowable precision.
- * Scale changes mutate every datum, so they are unoptimizable.  Some values,
- * e.g. 1E-1001, can only fit into an unconstrained numeric, so a change from
- * an unconstrained numeric to any constrained numeric is also unoptimizable.
+ * Flatten calls to numeric's length coercion function that solely represent
+ * increases in allowable precision.  Scale changes mutate every datum, so
+ * they are unoptimizable.  Some values, e.g. 1E-1001, can only fit into an
+ * unconstrained numeric, so a change from an unconstrained numeric to any
+ * constrained numeric is also unoptimizable.
  */
 Datum
-numeric_support(PG_FUNCTION_ARGS)
+numeric_transform(PG_FUNCTION_ARGS)
 {
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
+	FuncExpr   *expr = castNode(FuncExpr, PG_GETARG_POINTER(0));
 	Node	   *ret = NULL;
+	Node	   *typmod;
 
-	if (IsA(rawreq, SupportRequestSimplify))
+	Assert(list_length(expr->args) >= 2);
+
+	typmod = (Node *) lsecond(expr->args);
+
+	if (IsA(typmod, Const) &&!((Const *) typmod)->constisnull)
 	{
-		SupportRequestSimplify *req = (SupportRequestSimplify *) rawreq;
-		FuncExpr   *expr = req->fcall;
-		Node	   *typmod;
+		Node	   *source = (Node *) linitial(expr->args);
+		int32		old_typmod = exprTypmod(source);
+		int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
+		int32		old_scale = (old_typmod - VARHDRSZ) & 0xffff;
+		int32		new_scale = (new_typmod - VARHDRSZ) & 0xffff;
+		int32		old_precision = (old_typmod - VARHDRSZ) >> 16 & 0xffff;
+		int32		new_precision = (new_typmod - VARHDRSZ) >> 16 & 0xffff;
 
-		Assert(list_length(expr->args) >= 2);
-
-		typmod = (Node *) lsecond(expr->args);
-
-		if (IsA(typmod, Const) && !((Const *) typmod)->constisnull)
-		{
-			Node	   *source = (Node *) linitial(expr->args);
-			int32		old_typmod = exprTypmod(source);
-			int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
-			int32		old_scale = (old_typmod - VARHDRSZ) & 0xffff;
-			int32		new_scale = (new_typmod - VARHDRSZ) & 0xffff;
-			int32		old_precision = (old_typmod - VARHDRSZ) >> 16 & 0xffff;
-			int32		new_precision = (new_typmod - VARHDRSZ) >> 16 & 0xffff;
-
-			/*
-			 * If new_typmod < VARHDRSZ, the destination is unconstrained;
-			 * that's always OK.  If old_typmod >= VARHDRSZ, the source is
-			 * constrained, and we're OK if the scale is unchanged and the
-			 * precision is not decreasing.  See further notes in function
-			 * header comment.
-			 */
-			if (new_typmod < (int32) VARHDRSZ ||
-				(old_typmod >= (int32) VARHDRSZ &&
-				 new_scale == old_scale && new_precision >= old_precision))
-				ret = relabel_to_typmod(source, new_typmod);
-		}
+		/*
+		 * If new_typmod < VARHDRSZ, the destination is unconstrained; that's
+		 * always OK.  If old_typmod >= VARHDRSZ, the source is constrained,
+		 * and we're OK if the scale is unchanged and the precision is not
+		 * decreasing.  See further notes in function header comment.
+		 */
+		if (new_typmod < (int32) VARHDRSZ ||
+			(old_typmod >= (int32) VARHDRSZ &&
+			 new_scale == old_scale && new_precision >= old_precision))
+			ret = relabel_to_typmod(source, new_typmod);
 	}
 
 	PG_RETURN_POINTER(ret);
@@ -1553,10 +1548,7 @@ width_bucket_numeric(PG_FUNCTION_ARGS)
 	}
 
 	/* if result exceeds the range of a legal int4, we ereport here */
-	if (!numericvar_to_int32(&result_var, &result))
-		ereport(ERROR,
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("integer out of range")));
+	result = numericvar_to_int32(&result_var);
 
 	free_var(&count_var);
 	free_var(&result_var);
@@ -2404,23 +2396,6 @@ numeric_add(PG_FUNCTION_ARGS)
 {
 	Numeric		num1 = PG_GETARG_NUMERIC(0);
 	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	Numeric		res;
-
-	res = numeric_add_opt_error(num1, num2, NULL);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-/*
- * numeric_add_opt_error() -
- *
- *	Internal version of numeric_add().  If "*have_error" flag is provided,
- *	on error it's set to true, NULL returned.  This is helpful when caller
- *	need to handle errors by itself.
- */
-Numeric
-numeric_add_opt_error(Numeric num1, Numeric num2, bool *have_error)
-{
 	NumericVar	arg1;
 	NumericVar	arg2;
 	NumericVar	result;
@@ -2430,7 +2405,7 @@ numeric_add_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	 * Handle NaN
 	 */
 	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		return make_result(&const_nan);
+		PG_RETURN_NUMERIC(make_result(&const_nan));
 
 	/*
 	 * Unpack the values, let add_var() compute the result and return it.
@@ -2441,11 +2416,11 @@ numeric_add_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	init_var(&result);
 	add_var(&arg1, &arg2, &result);
 
-	res = make_result_opt_error(&result, have_error);
+	res = make_result(&result);
 
 	free_var(&result);
 
-	return res;
+	PG_RETURN_NUMERIC(res);
 }
 
 
@@ -2459,24 +2434,6 @@ numeric_sub(PG_FUNCTION_ARGS)
 {
 	Numeric		num1 = PG_GETARG_NUMERIC(0);
 	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	Numeric		res;
-
-	res = numeric_sub_opt_error(num1, num2, NULL);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-
-/*
- * numeric_sub_opt_error() -
- *
- *	Internal version of numeric_sub().  If "*have_error" flag is provided,
- *	on error it's set to true, NULL returned.  This is helpful when caller
- *	need to handle errors by itself.
- */
-Numeric
-numeric_sub_opt_error(Numeric num1, Numeric num2, bool *have_error)
-{
 	NumericVar	arg1;
 	NumericVar	arg2;
 	NumericVar	result;
@@ -2486,7 +2443,7 @@ numeric_sub_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	 * Handle NaN
 	 */
 	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		return make_result(&const_nan);
+		PG_RETURN_NUMERIC(make_result(&const_nan));
 
 	/*
 	 * Unpack the values, let sub_var() compute the result and return it.
@@ -2497,11 +2454,11 @@ numeric_sub_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	init_var(&result);
 	sub_var(&arg1, &arg2, &result);
 
-	res = make_result_opt_error(&result, have_error);
+	res = make_result(&result);
 
 	free_var(&result);
 
-	return res;
+	PG_RETURN_NUMERIC(res);
 }
 
 
@@ -2515,24 +2472,6 @@ numeric_mul(PG_FUNCTION_ARGS)
 {
 	Numeric		num1 = PG_GETARG_NUMERIC(0);
 	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	Numeric		res;
-
-	res = numeric_mul_opt_error(num1, num2, NULL);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-
-/*
- * numeric_mul_opt_error() -
- *
- *	Internal version of numeric_mul().  If "*have_error" flag is provided,
- *	on error it's set to true, NULL returned.  This is helpful when caller
- *	need to handle errors by itself.
- */
-Numeric
-numeric_mul_opt_error(Numeric num1, Numeric num2, bool *have_error)
-{
 	NumericVar	arg1;
 	NumericVar	arg2;
 	NumericVar	result;
@@ -2542,7 +2481,7 @@ numeric_mul_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	 * Handle NaN
 	 */
 	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		return make_result(&const_nan);
+		PG_RETURN_NUMERIC(make_result(&const_nan));
 
 	/*
 	 * Unpack the values, let mul_var() compute the result and return it.
@@ -2557,11 +2496,11 @@ numeric_mul_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	init_var(&result);
 	mul_var(&arg1, &arg2, &result, arg1.dscale + arg2.dscale);
 
-	res = make_result_opt_error(&result, have_error);
+	res = make_result(&result);
 
 	free_var(&result);
 
-	return res;
+	PG_RETURN_NUMERIC(res);
 }
 
 
@@ -2575,38 +2514,17 @@ numeric_div(PG_FUNCTION_ARGS)
 {
 	Numeric		num1 = PG_GETARG_NUMERIC(0);
 	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	Numeric		res;
-
-	res = numeric_div_opt_error(num1, num2, NULL);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-
-/*
- * numeric_div_opt_error() -
- *
- *	Internal version of numeric_div().  If "*have_error" flag is provided,
- *	on error it's set to true, NULL returned.  This is helpful when caller
- *	need to handle errors by itself.
- */
-Numeric
-numeric_div_opt_error(Numeric num1, Numeric num2, bool *have_error)
-{
 	NumericVar	arg1;
 	NumericVar	arg2;
 	NumericVar	result;
 	Numeric		res;
 	int			rscale;
 
-	if (have_error)
-		*have_error = false;
-
 	/*
 	 * Handle NaN
 	 */
 	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		return make_result(&const_nan);
+		PG_RETURN_NUMERIC(make_result(&const_nan));
 
 	/*
 	 * Unpack the arguments
@@ -2622,24 +2540,15 @@ numeric_div_opt_error(Numeric num1, Numeric num2, bool *have_error)
 	rscale = select_div_scale(&arg1, &arg2);
 
 	/*
-	 * If "have_error" is provided, check for division by zero here
-	 */
-	if (have_error && (arg2.ndigits == 0 || arg2.digits[0] == 0))
-	{
-		*have_error = true;
-		return NULL;
-	}
-
-	/*
 	 * Do the divide and return the result
 	 */
 	div_var(&arg1, &arg2, &result, rscale, true);
 
-	res = make_result_opt_error(&result, have_error);
+	res = make_result(&result);
 
 	free_var(&result);
 
-	return res;
+	PG_RETURN_NUMERIC(res);
 }
 
 
@@ -2696,55 +2605,25 @@ numeric_mod(PG_FUNCTION_ARGS)
 	Numeric		num1 = PG_GETARG_NUMERIC(0);
 	Numeric		num2 = PG_GETARG_NUMERIC(1);
 	Numeric		res;
-
-	res = numeric_mod_opt_error(num1, num2, NULL);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-
-/*
- * numeric_mod_opt_error() -
- *
- *	Internal version of numeric_mod().  If "*have_error" flag is provided,
- *	on error it's set to true, NULL returned.  This is helpful when caller
- *	need to handle errors by itself.
- */
-Numeric
-numeric_mod_opt_error(Numeric num1, Numeric num2, bool *have_error)
-{
-	Numeric		res;
 	NumericVar	arg1;
 	NumericVar	arg2;
 	NumericVar	result;
 
-	if (have_error)
-		*have_error = false;
-
 	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		return make_result(&const_nan);
+		PG_RETURN_NUMERIC(make_result(&const_nan));
 
 	init_var_from_num(num1, &arg1);
 	init_var_from_num(num2, &arg2);
 
 	init_var(&result);
 
-	/*
-	 * If "have_error" is provided, check for division by zero here
-	 */
-	if (have_error && (arg2.ndigits == 0 || arg2.digits[0] == 0))
-	{
-		*have_error = true;
-		return NULL;
-	}
-
 	mod_var(&arg1, &arg2, &result);
 
-	res = make_result_opt_error(&result, NULL);
+	res = make_result(&result);
 
 	free_var(&result);
 
-	return res;
+	PG_RETURN_NUMERIC(res);
 }
 
 
@@ -2831,107 +2710,6 @@ numeric_larger(PG_FUNCTION_ARGS)
  *
  * ----------------------------------------------------------------------
  */
-
-/*
- * numeric_gcd() -
- *
- *	Calculate the greatest common divisor of two numerics
- */
-Datum
-numeric_gcd(PG_FUNCTION_ARGS)
-{
-	Numeric		num1 = PG_GETARG_NUMERIC(0);
-	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	NumericVar	arg1;
-	NumericVar	arg2;
-	NumericVar	result;
-	Numeric		res;
-
-	/*
-	 * Handle NaN
-	 */
-	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		PG_RETURN_NUMERIC(make_result(&const_nan));
-
-	/*
-	 * Unpack the arguments
-	 */
-	init_var_from_num(num1, &arg1);
-	init_var_from_num(num2, &arg2);
-
-	init_var(&result);
-
-	/*
-	 * Find the GCD and return the result
-	 */
-	gcd_var(&arg1, &arg2, &result);
-
-	res = make_result(&result);
-
-	free_var(&result);
-
-	PG_RETURN_NUMERIC(res);
-}
-
-
-/*
- * numeric_lcm() -
- *
- *	Calculate the least common multiple of two numerics
- */
-Datum
-numeric_lcm(PG_FUNCTION_ARGS)
-{
-	Numeric		num1 = PG_GETARG_NUMERIC(0);
-	Numeric		num2 = PG_GETARG_NUMERIC(1);
-	NumericVar	arg1;
-	NumericVar	arg2;
-	NumericVar	result;
-	Numeric		res;
-
-	/*
-	 * Handle NaN
-	 */
-	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
-		PG_RETURN_NUMERIC(make_result(&const_nan));
-
-	/*
-	 * Unpack the arguments
-	 */
-	init_var_from_num(num1, &arg1);
-	init_var_from_num(num2, &arg2);
-
-	init_var(&result);
-
-	/*
-	 * Compute the result using lcm(x, y) = abs(x / gcd(x, y) * y), returning
-	 * zero if either input is zero.
-	 *
-	 * Note that the division is guaranteed to be exact, returning an integer
-	 * result, so the LCM is an integral multiple of both x and y.  A display
-	 * scale of Min(x.dscale, y.dscale) would be sufficient to represent it,
-	 * but as with other numeric functions, we choose to return a result whose
-	 * display scale is no smaller than either input.
-	 */
-	if (arg1.ndigits == 0 || arg2.ndigits == 0)
-		set_var_from_var(&const_zero, &result);
-	else
-	{
-		gcd_var(&arg1, &arg2, &result);
-		div_var(&arg1, &result, &result, 0, false);
-		mul_var(&arg2, &result, &result, arg2.dscale);
-		result.sign = NUMERIC_POS;
-	}
-
-	result.dscale = Max(arg1.dscale, arg2.dscale);
-
-	res = make_result(&result);
-
-	free_var(&result);
-
-	PG_RETURN_NUMERIC(res);
-}
-
 
 /*
  * numeric_fac()
@@ -3274,97 +3052,6 @@ numeric_scale(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(NUMERIC_DSCALE(num));
 }
 
-/*
- * Calculate minimum scale for value.
- */
-static int
-get_min_scale(NumericVar *var)
-{
-	int			min_scale;
-	int			last_digit_pos;
-
-	/*
-	 * Ordinarily, the input value will be "stripped" so that the last
-	 * NumericDigit is nonzero.  But we don't want to get into an infinite
-	 * loop if it isn't, so explicitly find the last nonzero digit.
-	 */
-	last_digit_pos = var->ndigits - 1;
-	while (last_digit_pos >= 0 &&
-		   var->digits[last_digit_pos] == 0)
-		last_digit_pos--;
-
-	if (last_digit_pos >= 0)
-	{
-		/* compute min_scale assuming that last ndigit has no zeroes */
-		min_scale = (last_digit_pos - var->weight) * DEC_DIGITS;
-
-		/*
-		 * We could get a negative result if there are no digits after the
-		 * decimal point.  In this case the min_scale must be zero.
-		 */
-		if (min_scale > 0)
-		{
-			/*
-			 * Reduce min_scale if trailing digit(s) in last NumericDigit are
-			 * zero.
-			 */
-			NumericDigit last_digit = var->digits[last_digit_pos];
-
-			while (last_digit % 10 == 0)
-			{
-				min_scale--;
-				last_digit /= 10;
-			}
-		}
-		else
-			min_scale = 0;
-	}
-	else
-		min_scale = 0;			/* result if input is zero */
-
-	return min_scale;
-}
-
-/*
- * Returns minimum scale required to represent supplied value without loss.
- */
-Datum
-numeric_min_scale(PG_FUNCTION_ARGS)
-{
-	Numeric		num = PG_GETARG_NUMERIC(0);
-	NumericVar	arg;
-	int			min_scale;
-
-	if (NUMERIC_IS_NAN(num))
-		PG_RETURN_NULL();
-
-	init_var_from_num(num, &arg);
-	min_scale = get_min_scale(&arg);
-	free_var(&arg);
-
-	PG_RETURN_INT32(min_scale);
-}
-
-/*
- * Reduce scale of numeric value to represent supplied value without loss.
- */
-Datum
-numeric_trim_scale(PG_FUNCTION_ARGS)
-{
-	Numeric		num = PG_GETARG_NUMERIC(0);
-	Numeric		res;
-	NumericVar	result;
-
-	if (NUMERIC_IS_NAN(num))
-		PG_RETURN_NUMERIC(make_result(&const_nan));
-
-	init_var_from_num(num, &result);
-	result.dscale = get_min_scale(&result);
-	res = make_result(&result);
-	free_var(&result);
-
-	PG_RETURN_NUMERIC(res);
-}
 
 
 /* ----------------------------------------------------------------------
@@ -3393,78 +3080,52 @@ int4_numeric(PG_FUNCTION_ARGS)
 	PG_RETURN_NUMERIC(res);
 }
 
-int32
-numeric_int4_opt_error(Numeric num, bool *have_error)
-{
-	NumericVar	x;
-	int32		result;
-
-	if (have_error)
-		*have_error = false;
-
-	/* XXX would it be better to return NULL? */
-	if (NUMERIC_IS_NAN(num))
-	{
-		if (have_error)
-		{
-			*have_error = true;
-			return 0;
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot convert NaN to integer")));
-		}
-	}
-
-	/* Convert to variable format, then convert to int4 */
-	init_var_from_num(num, &x);
-
-	if (!numericvar_to_int32(&x, &result))
-	{
-		if (have_error)
-		{
-			*have_error = true;
-			return 0;
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("integer out of range")));
-		}
-	}
-
-	return result;
-}
 
 Datum
 numeric_int4(PG_FUNCTION_ARGS)
 {
 	Numeric		num = PG_GETARG_NUMERIC(0);
+	NumericVar	x;
+	int32		result;
 
-	PG_RETURN_INT32(numeric_int4_opt_error(num, NULL));
+	/* XXX would it be better to return NULL? */
+	if (NUMERIC_IS_NAN(num))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot convert NaN to integer")));
+
+	/* Convert to variable format, then convert to int4 */
+	init_var_from_num(num, &x);
+	result = numericvar_to_int32(&x);
+	PG_RETURN_INT32(result);
 }
 
 /*
  * Given a NumericVar, convert it to an int32. If the NumericVar
- * exceeds the range of an int32, false is returned, otherwise true is returned.
- * The input NumericVar is *not* free'd.
+ * exceeds the range of an int32, raise the appropriate error via
+ * ereport(). The input NumericVar is *not* free'd.
  */
-static bool
-numericvar_to_int32(const NumericVar *var, int32 *result)
+static int32
+numericvar_to_int32(const NumericVar *var)
 {
+	int32		result;
 	int64		val;
 
 	if (!numericvar_to_int64(var, &val))
-		return false;
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("integer out of range")));
 
 	/* Down-convert to int4 */
-	*result = (int32) val;
+	result = (int32) val;
 
 	/* Test for overflow by reverse-conversion. */
-	return ((int64) *result == val);
+	if ((int64) result != val)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("integer out of range")));
+
+	return result;
 }
 
 Datum
@@ -3967,11 +3628,11 @@ numeric_combine(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(state1);
 	}
 
-	state1->N += state2->N;
-	state1->NaNcount += state2->NaNcount;
-
 	if (state2->N > 0)
 	{
+		state1->N += state2->N;
+		state1->NaNcount += state2->NaNcount;
+
 		/*
 		 * These are currently only needed for moving aggregates, but let's do
 		 * the right thing anyway...
@@ -4054,11 +3715,11 @@ numeric_avg_combine(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(state1);
 	}
 
-	state1->N += state2->N;
-	state1->NaNcount += state2->NaNcount;
-
 	if (state2->N > 0)
 	{
+		state1->N += state2->N;
+		state1->NaNcount += state2->NaNcount;
+
 		/*
 		 * These are currently only needed for moving aggregates, but let's do
 		 * the right thing anyway...
@@ -6427,15 +6088,13 @@ get_str_from_var_sci(const NumericVar *var, int rscale)
 
 
 /*
- * make_result_opt_error() -
+ * make_result() -
  *
  *	Create the packed db numeric format in palloc()'d memory from
- *	a variable.  If "*have_error" flag is provided, on error it's set to
- *	true, NULL returned.  This is helpful when caller need to handle errors
- *	by itself.
+ *	a variable.
  */
 static Numeric
-make_result_opt_error(const NumericVar *var, bool *have_error)
+make_result(const NumericVar *var)
 {
 	Numeric		result;
 	NumericDigit *digits = var->digits;
@@ -6443,9 +6102,6 @@ make_result_opt_error(const NumericVar *var, bool *have_error)
 	int			sign = var->sign;
 	int			n;
 	Size		len;
-
-	if (have_error)
-		*have_error = false;
 
 	if (sign == NUMERIC_NAN)
 	{
@@ -6509,34 +6165,12 @@ make_result_opt_error(const NumericVar *var, bool *have_error)
 	/* Check for overflow of int16 fields */
 	if (NUMERIC_WEIGHT(result) != weight ||
 		NUMERIC_DSCALE(result) != var->dscale)
-	{
-		if (have_error)
-		{
-			*have_error = true;
-			return NULL;
-		}
-		else
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value overflows numeric format")));
-		}
-	}
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("value overflows numeric format")));
 
 	dump_numeric("make_result()", result);
 	return result;
-}
-
-
-/*
- * make_result() -
- *
- *	An interface to make_result_opt_error() without "have_error" argument.
- */
-static Numeric
-make_result(const NumericVar *var)
-{
-	return make_result_opt_error(var, NULL);
 }
 
 
@@ -7704,7 +7338,6 @@ div_var_fast(const NumericVar *var1, const NumericVar *var2,
 			 NumericVar *result, int rscale, bool round)
 {
 	int			div_ndigits;
-	int			load_ndigits;
 	int			res_sign;
 	int			res_weight;
 	int		   *div;
@@ -7759,6 +7392,9 @@ div_var_fast(const NumericVar *var1, const NumericVar *var2,
 	div_ndigits += DIV_GUARD_DIGITS;
 	if (div_ndigits < DIV_GUARD_DIGITS)
 		div_ndigits = DIV_GUARD_DIGITS;
+	/* Must be at least var1ndigits, too, to simplify data-loading loop */
+	if (div_ndigits < var1ndigits)
+		div_ndigits = var1ndigits;
 
 	/*
 	 * We do the arithmetic in an array "div[]" of signed int's.  Since
@@ -7771,16 +7407,9 @@ div_var_fast(const NumericVar *var1, const NumericVar *var2,
 	 * (approximate) quotient digit and stores it into div[], removing one
 	 * position of dividend space.  A final pass of carry propagation takes
 	 * care of any mistaken quotient digits.
-	 *
-	 * Note that div[] doesn't necessarily contain all of the digits from the
-	 * dividend --- the desired precision plus guard digits might be less than
-	 * the dividend's precision.  This happens, for example, in the square
-	 * root algorithm, where we typically divide a 2N-digit number by an
-	 * N-digit number, and only require a result with N digits of precision.
 	 */
 	div = (int *) palloc0((div_ndigits + 1) * sizeof(int));
-	load_ndigits = Min(div_ndigits, var1ndigits);
-	for (i = 0; i < load_ndigits; i++)
+	for (i = 0; i < var1ndigits; i++)
 		div[i + 1] = var1digits[i];
 
 	/*
@@ -7841,15 +7470,9 @@ div_var_fast(const NumericVar *var1, const NumericVar *var2,
 			maxdiv += Abs(qdigit);
 			if (maxdiv > (INT_MAX - INT_MAX / NBASE - 1) / (NBASE - 1))
 			{
-				/*
-				 * Yes, do it.  Note that if var2ndigits is much smaller than
-				 * div_ndigits, we can save a significant amount of effort
-				 * here by noting that we only need to normalise those div[]
-				 * entries touched where prior iterations subtracted multiples
-				 * of the divisor.
-				 */
+				/* Yes, do it */
 				carry = 0;
-				for (i = Min(qi + var2ndigits - 2, div_ndigits); i > qi; i--)
+				for (i = div_ndigits; i > qi; i--)
 				{
 					newdig = div[i] + carry;
 					if (newdig < 0)
@@ -8098,76 +7721,6 @@ mod_var(const NumericVar *var1, const NumericVar *var2, NumericVar *result)
 
 
 /*
- * div_mod_var() -
- *
- *	Calculate the truncated integer quotient and numeric remainder of two
- *	numeric variables.  The remainder is precise to var2's dscale.
- */
-static void
-div_mod_var(const NumericVar *var1, const NumericVar *var2,
-			NumericVar *quot, NumericVar *rem)
-{
-	NumericVar	q;
-	NumericVar	r;
-
-	init_var(&q);
-	init_var(&r);
-
-	/*
-	 * Use div_var_fast() to get an initial estimate for the integer quotient.
-	 * This might be inaccurate (per the warning in div_var_fast's comments),
-	 * but we can correct it below.
-	 */
-	div_var_fast(var1, var2, &q, 0, false);
-
-	/* Compute initial estimate of remainder using the quotient estimate. */
-	mul_var(var2, &q, &r, var2->dscale);
-	sub_var(var1, &r, &r);
-
-	/*
-	 * Adjust the results if necessary --- the remainder should have the same
-	 * sign as var1, and its absolute value should be less than the absolute
-	 * value of var2.
-	 */
-	while (r.ndigits != 0 && r.sign != var1->sign)
-	{
-		/* The absolute value of the quotient is too large */
-		if (var1->sign == var2->sign)
-		{
-			sub_var(&q, &const_one, &q);
-			add_var(&r, var2, &r);
-		}
-		else
-		{
-			add_var(&q, &const_one, &q);
-			sub_var(&r, var2, &r);
-		}
-	}
-
-	while (cmp_abs(&r, var2) >= 0)
-	{
-		/* The absolute value of the quotient is too small */
-		if (var1->sign == var2->sign)
-		{
-			add_var(&q, &const_one, &q);
-			sub_var(&r, var2, &r);
-		}
-		else
-		{
-			sub_var(&q, &const_one, &q);
-			add_var(&r, var2, &r);
-		}
-	}
-
-	set_var_from_var(&q, quot);
-	set_var_from_var(&r, rem);
-
-	free_var(&q);
-	free_var(&r);
-}
-
-
-/*
  * ceil_var() -
  *
  *	Return the smallest integer greater than or equal to the argument
@@ -8216,100 +7769,20 @@ floor_var(const NumericVar *var, NumericVar *result)
 
 
 /*
- * gcd_var() -
- *
- *	Calculate the greatest common divisor of two numerics at variable level
- */
-static void
-gcd_var(const NumericVar *var1, const NumericVar *var2, NumericVar *result)
-{
-	int			res_dscale;
-	int			cmp;
-	NumericVar	tmp_arg;
-	NumericVar	mod;
-
-	res_dscale = Max(var1->dscale, var2->dscale);
-
-	/*
-	 * Arrange for var1 to be the number with the greater absolute value.
-	 *
-	 * This would happen automatically in the loop below, but avoids an
-	 * expensive modulo operation.
-	 */
-	cmp = cmp_abs(var1, var2);
-	if (cmp < 0)
-	{
-		const NumericVar *tmp = var1;
-
-		var1 = var2;
-		var2 = tmp;
-	}
-
-	/*
-	 * Also avoid the taking the modulo if the inputs have the same absolute
-	 * value, or if the smaller input is zero.
-	 */
-	if (cmp == 0 || var2->ndigits == 0)
-	{
-		set_var_from_var(var1, result);
-		result->sign = NUMERIC_POS;
-		result->dscale = res_dscale;
-		return;
-	}
-
-	init_var(&tmp_arg);
-	init_var(&mod);
-
-	/* Use the Euclidean algorithm to find the GCD */
-	set_var_from_var(var1, &tmp_arg);
-	set_var_from_var(var2, result);
-
-	for (;;)
-	{
-		/* this loop can take a while, so allow it to be interrupted */
-		CHECK_FOR_INTERRUPTS();
-
-		mod_var(&tmp_arg, result, &mod);
-		if (mod.ndigits == 0)
-			break;
-		set_var_from_var(result, &tmp_arg);
-		set_var_from_var(&mod, result);
-	}
-	result->sign = NUMERIC_POS;
-	result->dscale = res_dscale;
-
-	free_var(&tmp_arg);
-	free_var(&mod);
-}
-
-
-/*
  * sqrt_var() -
  *
- *	Compute the square root of x using the Karatsuba Square Root algorithm.
- *	NOTE: we allow rscale < 0 here, implying rounding before the decimal
- *	point.
+ *	Compute the square root of x using Newton's algorithm
  */
 static void
 sqrt_var(const NumericVar *arg, NumericVar *result, int rscale)
 {
+	NumericVar	tmp_arg;
+	NumericVar	tmp_val;
+	NumericVar	last_val;
+	int			local_rscale;
 	int			stat;
-	int			res_weight;
-	int			res_ndigits;
-	int			src_ndigits;
-	int			step;
-	int			ndigits[32];
-	int			blen;
-	int64		arg_int64;
-	int			src_idx;
-	int64		s_int64;
-	int64		r_int64;
-	NumericVar	s_var;
-	NumericVar	r_var;
-	NumericVar	a0_var;
-	NumericVar	a1_var;
-	NumericVar	q_var;
-	NumericVar	u_var;
+
+	local_rscale = rscale + 8;
 
 	stat = cmp_var(arg, &const_zero);
 	if (stat == 0)
@@ -8328,440 +7801,43 @@ sqrt_var(const NumericVar *arg, NumericVar *result, int rscale)
 				(errcode(ERRCODE_INVALID_ARGUMENT_FOR_POWER_FUNCTION),
 				 errmsg("cannot take square root of a negative number")));
 
-	init_var(&s_var);
-	init_var(&r_var);
-	init_var(&a0_var);
-	init_var(&a1_var);
-	init_var(&q_var);
-	init_var(&u_var);
+	init_var(&tmp_arg);
+	init_var(&tmp_val);
+	init_var(&last_val);
+
+	/* Copy arg in case it is the same var as result */
+	set_var_from_var(arg, &tmp_arg);
 
 	/*
-	 * The result weight is half the input weight, rounded towards minus
-	 * infinity --- res_weight = floor(arg->weight / 2).
+	 * Initialize the result to the first guess
 	 */
-	if (arg->weight >= 0)
-		res_weight = arg->weight / 2;
-	else
-		res_weight = -((-arg->weight - 1) / 2 + 1);
-
-	/*
-	 * Number of NBASE digits to compute.  To ensure correct rounding, compute
-	 * at least 1 extra decimal digit.  We explicitly allow rscale to be
-	 * negative here, but must always compute at least 1 NBASE digit.  Thus
-	 * res_ndigits = res_weight + 1 + ceil((rscale + 1) / DEC_DIGITS) or 1.
-	 */
-	if (rscale + 1 >= 0)
-		res_ndigits = res_weight + 1 + (rscale + DEC_DIGITS) / DEC_DIGITS;
-	else
-		res_ndigits = res_weight + 1 - (-rscale - 1) / DEC_DIGITS;
-	res_ndigits = Max(res_ndigits, 1);
-
-	/*
-	 * Number of source NBASE digits logically required to produce a result
-	 * with this precision --- every digit before the decimal point, plus 2
-	 * for each result digit after the decimal point (or minus 2 for each
-	 * result digit we round before the decimal point).
-	 */
-	src_ndigits = arg->weight + 1 + (res_ndigits - res_weight - 1) * 2;
-	src_ndigits = Max(src_ndigits, 1);
-
-	/* ----------
-	 * From this point on, we treat the input and the result as integers and
-	 * compute the integer square root and remainder using the Karatsuba
-	 * Square Root algorithm, which may be written recursively as follows:
-	 *
-	 *	SqrtRem(n = a3*b^3 + a2*b^2 + a1*b + a0):
-	 *		[ for some base b, and coefficients a0,a1,a2,a3 chosen so that
-	 *		  0 <= a0,a1,a2 < b and a3 >= b/4 ]
-	 *		Let (s,r) = SqrtRem(a3*b + a2)
-	 *		Let (q,u) = DivRem(r*b + a1, 2*s)
-	 *		Let s = s*b + q
-	 *		Let r = u*b + a0 - q^2
-	 *		If r < 0 Then
-	 *			Let r = r + s
-	 *			Let s = s - 1
-	 *			Let r = r + s
-	 *		Return (s,r)
-	 *
-	 * See "Karatsuba Square Root", Paul Zimmermann, INRIA Research Report
-	 * RR-3805, November 1999.  At the time of writing this was available
-	 * on the net at <https://hal.inria.fr/inria-00072854>.
-	 *
-	 * The way to read the assumption "n = a3*b^3 + a2*b^2 + a1*b + a0" is
-	 * "choose a base b such that n requires at least four base-b digits to
-	 * express; then those digits are a3,a2,a1,a0, with a3 possibly larger
-	 * than b".  For optimal performance, b should have approximately a
-	 * quarter the number of digits in the input, so that the outer square
-	 * root computes roughly twice as many digits as the inner one.  For
-	 * simplicity, we choose b = NBASE^blen, an integer power of NBASE.
-	 *
-	 * We implement the algorithm iteratively rather than recursively, to
-	 * allow the working variables to be reused.  With this approach, each
-	 * digit of the input is read precisely once --- src_idx tracks the number
-	 * of input digits used so far.
-	 *
-	 * The array ndigits[] holds the number of NBASE digits of the input that
-	 * will have been used at the end of each iteration, which roughly doubles
-	 * each time.  Note that the array elements are stored in reverse order,
-	 * so if the final iteration requires src_ndigits = 37 input digits, the
-	 * array will contain [37,19,11,7,5,3], and we would start by computing
-	 * the square root of the 3 most significant NBASE digits.
-	 *
-	 * In each iteration, we choose blen to be the largest integer for which
-	 * the input number has a3 >= b/4, when written in the form above.  In
-	 * general, this means blen = src_ndigits / 4 (truncated), but if
-	 * src_ndigits is a multiple of 4, that might lead to the coefficient a3
-	 * being less than b/4 (if the first input digit is less than NBASE/4), in
-	 * which case we choose blen = src_ndigits / 4 - 1.  The number of digits
-	 * in the inner square root is then src_ndigits - 2*blen.  So, for
-	 * example, if we have src_ndigits = 26 initially, the array ndigits[]
-	 * will be either [26,14,8,4] or [26,14,8,6,4], depending on the size of
-	 * the first input digit.
-	 *
-	 * Additionally, we can put an upper bound on the number of steps required
-	 * as follows --- suppose that the number of source digits is an n-bit
-	 * number in the range [2^(n-1), 2^n-1], then blen will be in the range
-	 * [2^(n-3)-1, 2^(n-2)-1] and the number of digits in the inner square
-	 * root will be in the range [2^(n-2), 2^(n-1)+1].  In the next step, blen
-	 * will be in the range [2^(n-4)-1, 2^(n-3)] and the number of digits in
-	 * the next inner square root will be in the range [2^(n-3), 2^(n-2)+1].
-	 * This pattern repeats, and in the worst case the array ndigits[] will
-	 * contain [2^n-1, 2^(n-1)+1, 2^(n-2)+1, ... 9, 5, 3], and the computation
-	 * will require n steps.  Therefore, since all digit array sizes are
-	 * signed 32-bit integers, the number of steps required is guaranteed to
-	 * be less than 32.
-	 * ----------
-	 */
-	step = 0;
-	while ((ndigits[step] = src_ndigits) > 4)
-	{
-		/* Choose b so that a3 >= b/4, as described above */
-		blen = src_ndigits / 4;
-		if (blen * 4 == src_ndigits && arg->digits[0] < NBASE / 4)
-			blen--;
-
-		/* Number of digits in the next step (inner square root) */
-		src_ndigits -= 2 * blen;
-		step++;
-	}
-
-	/*
-	 * First iteration (innermost square root and remainder):
-	 *
-	 * Here src_ndigits <= 4, and the input fits in an int64.  Its square root
-	 * has at most 9 decimal digits, so estimate it using double precision
-	 * arithmetic, which will in fact almost certainly return the correct
-	 * result with no further correction required.
-	 */
-	arg_int64 = arg->digits[0];
-	for (src_idx = 1; src_idx < src_ndigits; src_idx++)
-	{
-		arg_int64 *= NBASE;
-		if (src_idx < arg->ndigits)
-			arg_int64 += arg->digits[src_idx];
-	}
-
-	s_int64 = (int64) sqrt((double) arg_int64);
-	r_int64 = arg_int64 - s_int64 * s_int64;
-
-	/*
-	 * Use Newton's method to correct the result, if necessary.
-	 *
-	 * This uses integer division with truncation to compute the truncated
-	 * integer square root by iterating using the formula x -> (x + n/x) / 2.
-	 * This is known to converge to isqrt(n), unless n+1 is a perfect square.
-	 * If n+1 is a perfect square, the sequence will oscillate between the two
-	 * values isqrt(n) and isqrt(n)+1, so we can be assured of convergence by
-	 * checking the remainder.
-	 */
-	while (r_int64 < 0 || r_int64 > 2 * s_int64)
-	{
-		s_int64 = (s_int64 + arg_int64 / s_int64) / 2;
-		r_int64 = arg_int64 - s_int64 * s_int64;
-	}
-
-	/*
-	 * Iterations with src_ndigits <= 8:
-	 *
-	 * The next 1 or 2 iterations compute larger (outer) square roots with
-	 * src_ndigits <= 8, so the result still fits in an int64 (even though the
-	 * input no longer does) and we can continue to compute using int64
-	 * variables to avoid more expensive numeric computations.
-	 *
-	 * It is fairly easy to see that there is no risk of the intermediate
-	 * values below overflowing 64-bit integers.  In the worst case, the
-	 * previous iteration will have computed a 3-digit square root (of a
-	 * 6-digit input less than NBASE^6 / 4), so at the start of this
-	 * iteration, s will be less than NBASE^3 / 2 = 10^12 / 2, and r will be
-	 * less than 10^12.  In this case, blen will be 1, so numer will be less
-	 * than 10^17, and denom will be less than 10^12 (and hence u will also be
-	 * less than 10^12).  Finally, since q^2 = u*b + a0 - r, we can also be
-	 * sure that q^2 < 10^17.  Therefore all these quantities fit comfortably
-	 * in 64-bit integers.
-	 */
-	step--;
-	while (step >= 0 && (src_ndigits = ndigits[step]) <= 8)
-	{
-		int			b;
-		int			a0;
-		int			a1;
-		int			i;
-		int64		numer;
-		int64		denom;
-		int64		q;
-		int64		u;
-
-		blen = (src_ndigits - src_idx) / 2;
-
-		/* Extract a1 and a0, and compute b */
-		a0 = 0;
-		a1 = 0;
-		b = 1;
-
-		for (i = 0; i < blen; i++, src_idx++)
-		{
-			b *= NBASE;
-			a1 *= NBASE;
-			if (src_idx < arg->ndigits)
-				a1 += arg->digits[src_idx];
-		}
-
-		for (i = 0; i < blen; i++, src_idx++)
-		{
-			a0 *= NBASE;
-			if (src_idx < arg->ndigits)
-				a0 += arg->digits[src_idx];
-		}
-
-		/* Compute (q,u) = DivRem(r*b + a1, 2*s) */
-		numer = r_int64 * b + a1;
-		denom = 2 * s_int64;
-		q = numer / denom;
-		u = numer - q * denom;
-
-		/* Compute s = s*b + q and r = u*b + a0 - q^2 */
-		s_int64 = s_int64 * b + q;
-		r_int64 = u * b + a0 - q * q;
-
-		if (r_int64 < 0)
-		{
-			/* s is too large by 1; set r += s, s--, r += s */
-			r_int64 += s_int64;
-			s_int64--;
-			r_int64 += s_int64;
-		}
-
-		Assert(src_idx == src_ndigits); /* All input digits consumed */
-		step--;
-	}
-
-	/*
-	 * On platforms with 128-bit integer support, we can further delay the
-	 * need to use numeric variables.
-	 */
-#ifdef HAVE_INT128
-	if (step >= 0)
-	{
-		int128		s_int128;
-		int128		r_int128;
-
-		s_int128 = s_int64;
-		r_int128 = r_int64;
-
-		/*
-		 * Iterations with src_ndigits <= 16:
-		 *
-		 * The result fits in an int128 (even though the input doesn't) so we
-		 * use int128 variables to avoid more expensive numeric computations.
-		 */
-		while (step >= 0 && (src_ndigits = ndigits[step]) <= 16)
-		{
-			int64		b;
-			int64		a0;
-			int64		a1;
-			int64		i;
-			int128		numer;
-			int128		denom;
-			int128		q;
-			int128		u;
-
-			blen = (src_ndigits - src_idx) / 2;
-
-			/* Extract a1 and a0, and compute b */
-			a0 = 0;
-			a1 = 0;
-			b = 1;
-
-			for (i = 0; i < blen; i++, src_idx++)
-			{
-				b *= NBASE;
-				a1 *= NBASE;
-				if (src_idx < arg->ndigits)
-					a1 += arg->digits[src_idx];
-			}
-
-			for (i = 0; i < blen; i++, src_idx++)
-			{
-				a0 *= NBASE;
-				if (src_idx < arg->ndigits)
-					a0 += arg->digits[src_idx];
-			}
-
-			/* Compute (q,u) = DivRem(r*b + a1, 2*s) */
-			numer = r_int128 * b + a1;
-			denom = 2 * s_int128;
-			q = numer / denom;
-			u = numer - q * denom;
-
-			/* Compute s = s*b + q and r = u*b + a0 - q^2 */
-			s_int128 = s_int128 * b + q;
-			r_int128 = u * b + a0 - q * q;
-
-			if (r_int128 < 0)
-			{
-				/* s is too large by 1; set r += s, s--, r += s */
-				r_int128 += s_int128;
-				s_int128--;
-				r_int128 += s_int128;
-			}
-
-			Assert(src_idx == src_ndigits); /* All input digits consumed */
-			step--;
-		}
-
-		/*
-		 * All remaining iterations require numeric variables.  Convert the
-		 * integer values to NumericVar and continue.  Note that in the final
-		 * iteration we don't need the remainder, so we can save a few cycles
-		 * there by not fully computing it.
-		 */
-		int128_to_numericvar(s_int128, &s_var);
-		if (step >= 0)
-			int128_to_numericvar(r_int128, &r_var);
-	}
-	else
-	{
-		int64_to_numericvar(s_int64, &s_var);
-		/* step < 0, so we certainly don't need r */
-	}
-#else							/* !HAVE_INT128 */
-	int64_to_numericvar(s_int64, &s_var);
-	if (step >= 0)
-		int64_to_numericvar(r_int64, &r_var);
-#endif							/* HAVE_INT128 */
-
-	/*
-	 * The remaining iterations with src_ndigits > 8 (or 16, if have int128)
-	 * use numeric variables.
-	 */
-	while (step >= 0)
-	{
-		int			tmp_len;
-
-		src_ndigits = ndigits[step];
-		blen = (src_ndigits - src_idx) / 2;
-
-		/* Extract a1 and a0 */
-		if (src_idx < arg->ndigits)
-		{
-			tmp_len = Min(blen, arg->ndigits - src_idx);
-			alloc_var(&a1_var, tmp_len);
-			memcpy(a1_var.digits, arg->digits + src_idx,
-				   tmp_len * sizeof(NumericDigit));
-			a1_var.weight = blen - 1;
-			a1_var.sign = NUMERIC_POS;
-			a1_var.dscale = 0;
-			strip_var(&a1_var);
-		}
-		else
-		{
-			zero_var(&a1_var);
-			a1_var.dscale = 0;
-		}
-		src_idx += blen;
-
-		if (src_idx < arg->ndigits)
-		{
-			tmp_len = Min(blen, arg->ndigits - src_idx);
-			alloc_var(&a0_var, tmp_len);
-			memcpy(a0_var.digits, arg->digits + src_idx,
-				   tmp_len * sizeof(NumericDigit));
-			a0_var.weight = blen - 1;
-			a0_var.sign = NUMERIC_POS;
-			a0_var.dscale = 0;
-			strip_var(&a0_var);
-		}
-		else
-		{
-			zero_var(&a0_var);
-			a0_var.dscale = 0;
-		}
-		src_idx += blen;
-
-		/* Compute (q,u) = DivRem(r*b + a1, 2*s) */
-		set_var_from_var(&r_var, &q_var);
-		q_var.weight += blen;
-		add_var(&q_var, &a1_var, &q_var);
-		add_var(&s_var, &s_var, &u_var);
-		div_mod_var(&q_var, &u_var, &q_var, &u_var);
-
-		/* Compute s = s*b + q */
-		s_var.weight += blen;
-		add_var(&s_var, &q_var, &s_var);
-
-		/*
-		 * Compute r = u*b + a0 - q^2.
-		 *
-		 * In the final iteration, we don't actually need r; we just need to
-		 * know whether it is negative, so that we know whether to adjust s.
-		 * So instead of the final subtraction we can just compare.
-		 */
-		u_var.weight += blen;
-		add_var(&u_var, &a0_var, &u_var);
-		mul_var(&q_var, &q_var, &q_var, 0);
-
-		if (step > 0)
-		{
-			/* Need r for later iterations */
-			sub_var(&u_var, &q_var, &r_var);
-			if (r_var.sign == NUMERIC_NEG)
-			{
-				/* s is too large by 1; set r += s, s--, r += s */
-				add_var(&r_var, &s_var, &r_var);
-				sub_var(&s_var, &const_one, &s_var);
-				add_var(&r_var, &s_var, &r_var);
-			}
-		}
-		else
-		{
-			/* Don't need r anymore, except to test if s is too large by 1 */
-			if (cmp_var(&u_var, &q_var) < 0)
-				sub_var(&s_var, &const_one, &s_var);
-		}
-
-		Assert(src_idx == src_ndigits); /* All input digits consumed */
-		step--;
-	}
-
-	/*
-	 * Construct the final result, rounding it to the requested precision.
-	 */
-	set_var_from_var(&s_var, result);
-	result->weight = res_weight;
+	alloc_var(result, 1);
+	result->digits[0] = tmp_arg.digits[0] / 2;
+	if (result->digits[0] == 0)
+		result->digits[0] = 1;
+	result->weight = tmp_arg.weight / 2;
 	result->sign = NUMERIC_POS;
 
-	/* Round to target rscale (and set result->dscale) */
+	set_var_from_var(result, &last_val);
+
+	for (;;)
+	{
+		div_var_fast(&tmp_arg, result, &tmp_val, local_rscale, true);
+
+		add_var(result, &tmp_val, result);
+		mul_var(result, &const_zero_point_five, result, local_rscale);
+
+		if (cmp_var(&last_val, result) == 0)
+			break;
+		set_var_from_var(result, &last_val);
+	}
+
+	free_var(&last_val);
+	free_var(&tmp_val);
+	free_var(&tmp_arg);
+
+	/* Round to requested precision */
 	round_var(result, rscale);
-
-	/* Strip leading and trailing zeroes */
-	strip_var(result);
-
-	free_var(&s_var);
-	free_var(&r_var);
-	free_var(&a0_var);
-	free_var(&a1_var);
-	free_var(&q_var);
-	free_var(&u_var);
 }
 
 
@@ -8982,7 +8058,6 @@ ln_var(const NumericVar *arg, NumericVar *result, int rscale)
 	NumericVar	ni;
 	NumericVar	elem;
 	NumericVar	fact;
-	int			nsqrt;
 	int			local_rscale;
 	int			cmp;
 
@@ -9012,28 +8087,20 @@ ln_var(const NumericVar *arg, NumericVar *result, int rscale)
 	 * Each sqrt() will roughly halve the weight of x, so adjust the local
 	 * rscale as we work so that we keep this many significant digits at each
 	 * step (plus a few more for good measure).
-	 *
-	 * Note that we allow local_rscale < 0 during this input reduction
-	 * process, which implies rounding before the decimal point.  sqrt_var()
-	 * explicitly supports this, and it significantly reduces the work
-	 * required to reduce very large inputs to the required range.  Once the
-	 * input reduction is complete, x.weight will be 0 and its display scale
-	 * will be non-negative again.
 	 */
-	nsqrt = 0;
 	while (cmp_var(&x, &const_zero_point_nine) <= 0)
 	{
 		local_rscale = rscale - x.weight * DEC_DIGITS / 2 + 8;
+		local_rscale = Max(local_rscale, NUMERIC_MIN_DISPLAY_SCALE);
 		sqrt_var(&x, &x, local_rscale);
 		mul_var(&fact, &const_two, &fact, 0);
-		nsqrt++;
 	}
 	while (cmp_var(&x, &const_one_point_one) >= 0)
 	{
 		local_rscale = rscale - x.weight * DEC_DIGITS / 2 + 8;
+		local_rscale = Max(local_rscale, NUMERIC_MIN_DISPLAY_SCALE);
 		sqrt_var(&x, &x, local_rscale);
 		mul_var(&fact, &const_two, &fact, 0);
-		nsqrt++;
 	}
 
 	/*
@@ -9046,12 +8113,8 @@ ln_var(const NumericVar *arg, NumericVar *result, int rscale)
 	 *
 	 * The convergence of this is not as fast as one would like, but is
 	 * tolerable given that z is small.
-	 *
-	 * The Taylor series result will be multiplied by 2^(nsqrt+1), which has a
-	 * decimal weight of (nsqrt+1) * log10(2), so work with this many extra
-	 * digits of precision (plus a few more for good measure).
 	 */
-	local_rscale = rscale + (int) ((nsqrt + 1) * 0.301029995663981) + 8;
+	local_rscale = rscale + 8;
 
 	sub_var(&x, &const_one, result);
 	add_var(&x, &const_one, &elem);
@@ -9370,7 +8433,7 @@ power_var_int(const NumericVar *base, int exp, NumericVar *result, int rscale)
 	 * to around log10(abs(exp)) digits, so work with this many extra digits
 	 * of precision (plus a few more for good measure).
 	 */
-	sig_digits += (int) log(fabs((double) exp)) + 8;
+	sig_digits += (int) log(Abs(exp)) + 8;
 
 	/*
 	 * Now we can proceed with the multiplications.

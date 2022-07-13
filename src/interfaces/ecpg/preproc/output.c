@@ -2,7 +2,7 @@
 
 #include "postgres_fe.h"
 
-#include "preproc_extern.h"
+#include "extern.h"
 
 static void output_escaped_str(char *cmd, bool quoted);
 
@@ -16,11 +16,9 @@ output_line_number(void)
 }
 
 void
-output_simple_statement(char *stmt, int whenever_mode)
+output_simple_statement(char *stmt)
 {
 	output_escaped_str(stmt, false);
-	if (whenever_mode)
-		whenever_action(whenever_mode);
 	output_line_number();
 	free(stmt);
 }
@@ -127,30 +125,24 @@ static char *ecpg_statement_type_name[] = {
 	"ECPGst_normal",
 	"ECPGst_execute",
 	"ECPGst_exec_immediate",
-	"ECPGst_prepnormal",
-	"ECPGst_prepare",
-	"ECPGst_exec_with_exprlist"
+	"ECPGst_prepnormal"
 };
 
 void
 output_statement(char *stmt, int whenever_mode, enum ECPG_statement_type st)
 {
 	fprintf(base_yyout, "{ ECPGdo(__LINE__, %d, %d, %s, %d, ", compat, force_indicator, connection ? connection : "NULL", questionmarks);
-
-	if (st == ECPGst_prepnormal && !auto_prepare)
-		st = ECPGst_normal;
-
-	/*
-	 * In following cases, stmt is CSTRING or char_variable. They must be
-	 * output directly. - prepared_name of EXECUTE without exprlist -
-	 * execstring of EXECUTE IMMEDIATE
-	 */
-	fprintf(base_yyout, "%s, ", ecpg_statement_type_name[st]);
 	if (st == ECPGst_execute || st == ECPGst_exec_immediate)
-		fprintf(base_yyout, "%s, ", stmt);
+	{
+		fprintf(base_yyout, "%s, %s, ", ecpg_statement_type_name[st], stmt);
+	}
 	else
 	{
-		fputs("\"", base_yyout);
+		if (st == ECPGst_prepnormal && auto_prepare)
+			fputs("ECPGst_prepnormal, \"", base_yyout);
+		else
+			fputs("ECPGst_normal, \"", base_yyout);
+
 		output_escaped_str(stmt, false);
 		fputs("\", ", base_yyout);
 	}

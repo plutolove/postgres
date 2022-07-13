@@ -11,7 +11,7 @@
  *		as this notice is not removed.
  *
  *	The author is not responsible for loss or damages that may
- *	result from its use.
+ *	result from it's use.
  *
  *
  * IDENTIFICATION
@@ -57,20 +57,6 @@ typedef enum _teSection
 	SECTION_DATA,				/* TABLE DATA, BLOBS, BLOB COMMENTS */
 	SECTION_POST_DATA			/* stuff to be processed after data */
 } teSection;
-
-/* Parameters needed by ConnectDatabase; same for dump and restore */
-typedef struct _connParams
-{
-	/* These fields record the actual command line parameters */
-	char	   *dbname;			/* this may be a connstring! */
-	char	   *pgport;
-	char	   *pghost;
-	char	   *username;
-	trivalue	promptPassword;
-	/* If not NULL, this overrides the dbname obtained from command line */
-	/* (but *only* the DB name, not anything else in the connstring) */
-	char	   *override_dbname;
-} ConnParams;
 
 typedef struct _restoreOptions
 {
@@ -121,9 +107,12 @@ typedef struct _restoreOptions
 	SimpleStringList tableNames;
 
 	int			useDB;
-	ConnParams	cparams;		/* parameters to use if useDB */
-
+	char	   *dbname;			/* subject to expand_dbname */
+	char	   *pgport;
+	char	   *pghost;
+	char	   *username;
 	int			noDataForFailedTables;
+	trivalue	promptPassword;
 	int			exit_on_error;
 	int			compression;
 	int			suppressDumpWarnings;	/* Suppress output of WARNING entries
@@ -138,7 +127,11 @@ typedef struct _restoreOptions
 
 typedef struct _dumpOptions
 {
-	ConnParams	cparams;
+	const char *dbname;			/* subject to expand_dbname */
+	const char *pghost;
+	const char *pgport;
+	const char *username;
+	bool		oids;
 
 	int			binary_upgrade;
 
@@ -148,10 +141,10 @@ typedef struct _dumpOptions
 	int			dumpSections;	/* bitmask of chosen sections */
 	bool		aclsSkip;
 	const char *lockWaitTimeout;
-	int			dump_inserts;	/* 0 = COPY, otherwise rows per INSERT */
 
 	/* flags for various command-line long options */
 	int			disable_dollar_quoting;
+	int			dump_inserts;
 	int			column_inserts;
 	int			if_exists;
 	int			no_comments;
@@ -161,6 +154,7 @@ typedef struct _dumpOptions
 	int			no_synchronized_snapshots;
 	int			no_unlogged_table_data;
 	int			serializable_deferrable;
+	int			quote_all_identifiers;
 	int			disable_triggers;
 	int			outputNoTablespaces;
 	int			use_setsessauth;
@@ -178,7 +172,6 @@ typedef struct _dumpOptions
 	char	   *outputSuperuser;
 
 	int			sequence_data;	/* dump sequence data even in schema-only mode */
-	int			do_nothing;
 } DumpOptions;
 
 /*
@@ -241,12 +234,6 @@ typedef struct
 
 typedef int DumpId;
 
-#define InvalidDumpId 0
-
-/*
- * Function pointer prototypes for assorted callback methods.
- */
-
 typedef int (*DataDumperPtr) (Archive *AH, void *userArg);
 
 typedef void (*SetupWorkerPtrType) (Archive *AH);
@@ -255,11 +242,26 @@ typedef void (*SetupWorkerPtrType) (Archive *AH);
  * Main archiver interface.
  */
 
-extern void ConnectDatabase(Archive *AHX,
-							const ConnParams *cparams,
-							bool isReconnect);
+extern void ConnectDatabase(Archive *AH,
+				const char *dbname,
+				const char *pghost,
+				const char *pgport,
+				const char *username,
+				trivalue prompt_password);
 extern void DisconnectDatabase(Archive *AHX);
 extern PGconn *GetConnection(Archive *AHX);
+
+/* Called to add a TOC entry */
+extern void ArchiveEntry(Archive *AHX,
+			 CatalogId catalogId, DumpId dumpId,
+			 const char *tag,
+			 const char *namespace, const char *tablespace,
+			 const char *owner, bool withOids,
+			 const char *desc, teSection section,
+			 const char *defn,
+			 const char *dropStmt, const char *copyStmt,
+			 const DumpId *deps, int nDeps,
+			 DataDumperPtr dumpFn, void *dumpArg);
 
 /* Called to write *data* to the archive */
 extern void WriteData(Archive *AH, const void *data, size_t dLen);
@@ -280,8 +282,8 @@ extern Archive *OpenArchive(const char *FileSpec, const ArchiveFormat fmt);
 
 /* Create a new archive */
 extern Archive *CreateArchive(const char *FileSpec, const ArchiveFormat fmt,
-							  const int compression, bool dosync, ArchiveMode mode,
-							  SetupWorkerPtrType setupDumpWorker);
+			  const int compression, bool dosync, ArchiveMode mode,
+			  SetupWorkerPtrType setupDumpWorker);
 
 /* The --list option */
 extern void PrintTOCSummary(Archive *AH);

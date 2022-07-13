@@ -1,7 +1,6 @@
 /* src/interfaces/ecpg/pgtypeslib/interval.c */
 
 #include "postgres_fe.h"
-
 #include <time.h>
 #include <math.h>
 #include <limits.h>
@@ -11,13 +10,14 @@
 #endif
 
 #include "common/string.h"
+
+#include "extern.h"
 #include "dt.h"
 #include "pgtypes_error.h"
 #include "pgtypes_interval.h"
-#include "pgtypeslib_extern.h"
 
 /* copy&pasted from .../src/backend/utils/adt/datetime.c
- * and changed struct pg_tm to struct tm
+ * and changesd struct pg_tm to struct tm
  */
 static void
 AdjustFractSeconds(double frac, struct /* pg_ */ tm *tm, fsec_t *fsec, int scale)
@@ -35,7 +35,7 @@ AdjustFractSeconds(double frac, struct /* pg_ */ tm *tm, fsec_t *fsec, int scale
 
 
 /* copy&pasted from .../src/backend/utils/adt/datetime.c
- * and changed struct pg_tm to struct tm
+ * and changesd struct pg_tm to struct tm
  */
 static void
 AdjustFractDays(double frac, struct /* pg_ */ tm *tm, fsec_t *fsec, int scale)
@@ -88,7 +88,7 @@ ISO8601IntegerWidth(const char *fieldstart)
 
 
 /* copy&pasted from .../src/backend/utils/adt/datetime.c
- * and changed struct pg_tm to struct tm
+ * and changesd struct pg_tm to struct tm
  */
 static inline void
 ClearPgTm(struct /* pg_ */ tm *tm, fsec_t *fsec)
@@ -104,7 +104,7 @@ ClearPgTm(struct /* pg_ */ tm *tm, fsec_t *fsec)
 
 /* copy&pasted from .../src/backend/utils/adt/datetime.c
  *
- * * changed struct pg_tm to struct tm
+ * * changesd struct pg_tm to struct tm
  *
  * * Made the function static
  */
@@ -155,7 +155,7 @@ DecodeISO8601Interval(char *str,
 			{
 				case 'Y':
 					tm->tm_year += val;
-					tm->tm_mon += (fval * MONTHS_PER_YEAR);
+					tm->tm_mon += (fval * 12);
 					break;
 				case 'M':
 					tm->tm_mon += val;
@@ -191,7 +191,7 @@ DecodeISO8601Interval(char *str,
 						return DTERR_BAD_FORMAT;
 
 					tm->tm_year += val;
-					tm->tm_mon += (fval * MONTHS_PER_YEAR);
+					tm->tm_mon += (fval * 12);
 					if (unit == '\0')
 						return 0;
 					if (unit == 'T')
@@ -311,7 +311,7 @@ DecodeISO8601Interval(char *str,
 /* copy&pasted from .../src/backend/utils/adt/datetime.c
  * with 3 exceptions
  *
- *	* changed struct pg_tm to struct tm
+ *	* changesd struct pg_tm to struct tm
  *
  *	* ECPG code called this without a 'range' parameter
  *	  removed 'int range' from the argument list and

@@ -7,14 +7,15 @@
 #include "postgres_fe.h"
 
 #include "catalog/pg_type_d.h"
+
 #include "ecpg-pthread-win32.h"
-#include "ecpgerrno.h"
-#include "ecpglib.h"
-#include "ecpglib_extern.h"
 #include "ecpgtype.h"
-#include "sql3types.h"
+#include "ecpglib.h"
+#include "ecpgerrno.h"
+#include "extern.h"
 #include "sqlca.h"
 #include "sqlda.h"
+#include "sql3types.h"
 
 static void descriptor_free(struct descriptor *desc);
 
@@ -134,12 +135,14 @@ get_int_item(int lineno, void *var, enum ECPGttype vartype, int value)
 		case ECPGt_unsigned_long:
 			*(unsigned long *) var = (unsigned long) value;
 			break;
+#ifdef HAVE_LONG_LONG_INT
 		case ECPGt_long_long:
 			*(long long int *) var = (long long int) value;
 			break;
 		case ECPGt_unsigned_long_long:
 			*(unsigned long long int *) var = (unsigned long long int) value;
 			break;
+#endif							/* HAVE_LONG_LONG_INT */
 		case ECPGt_float:
 			*(float *) var = (float) value;
 			break;
@@ -177,12 +180,14 @@ set_int_item(int lineno, int *target, const void *var, enum ECPGttype vartype)
 		case ECPGt_unsigned_long:
 			*target = *(const unsigned long *) var;
 			break;
+#ifdef HAVE_LONG_LONG_INT
 		case ECPGt_long_long:
 			*target = *(const long long int *) var;
 			break;
 		case ECPGt_unsigned_long_long:
 			*target = *(const unsigned long long int *) var;
 			break;
+#endif							/* HAVE_LONG_LONG_INT */
 		case ECPGt_float:
 			*target = *(const float *) var;
 			break;
@@ -478,45 +483,22 @@ ECPGget_desc(int lineno, const char *desc_name, int index,...)
 	if (data_var.type != ECPGt_EORT)
 	{
 		struct statement stmt;
-
-		memset(&stmt, 0, sizeof stmt);
-		stmt.lineno = lineno;
+		char	   *oldlocale;
 
 		/* Make sure we do NOT honor the locale for numeric input */
 		/* since the database gives the standard decimal point */
-		/* (see comments in execute.c) */
-#ifdef HAVE_USELOCALE
-		stmt.clocale = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
-		if (stmt.clocale != (locale_t) 0)
-			stmt.oldlocale = uselocale(stmt.clocale);
-#else
-#ifdef HAVE__CONFIGTHREADLOCALE
-		stmt.oldthreadlocale = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
-#endif
-		stmt.oldlocale = ecpg_strdup(setlocale(LC_NUMERIC, NULL), lineno);
+		oldlocale = ecpg_strdup(setlocale(LC_NUMERIC, NULL), lineno);
 		setlocale(LC_NUMERIC, "C");
-#endif
+
+		memset(&stmt, 0, sizeof stmt);
+		stmt.lineno = lineno;
 
 		/* desperate try to guess something sensible */
 		stmt.connection = ecpg_get_connection(NULL);
 		ecpg_store_result(ECPGresult, index, &stmt, &data_var);
 
-#ifdef HAVE_USELOCALE
-		if (stmt.oldlocale != (locale_t) 0)
-			uselocale(stmt.oldlocale);
-		if (stmt.clocale)
-			freelocale(stmt.clocale);
-#else
-		if (stmt.oldlocale)
-		{
-			setlocale(LC_NUMERIC, stmt.oldlocale);
-			ecpg_free(stmt.oldlocale);
-		}
-#ifdef HAVE__CONFIGTHREADLOCALE
-		if (stmt.oldthreadlocale != -1)
-			(void) _configthreadlocale(stmt.oldthreadlocale);
-#endif
-#endif
+		setlocale(LC_NUMERIC, oldlocale);
+		ecpg_free(oldlocale);
 	}
 	else if (data_var.ind_type != ECPGt_NO_INDICATOR && data_var.ind_pointer != NULL)
 
@@ -581,27 +563,6 @@ ECPGset_desc_header(int lineno, const char *desc_name, int count)
 	desc->count = count;
 	return true;
 }
-
-static void
-set_desc_attr(struct descriptor_item *desc_item, struct variable *var,
-			  char *tobeinserted)
-{
-	if (var->type != ECPGt_bytea)
-		desc_item->is_binary = false;
-
-	else
-	{
-		struct ECPGgeneric_bytea *variable =
-		(struct ECPGgeneric_bytea *) (var->value);
-
-		desc_item->is_binary = true;
-		desc_item->data_len = variable->len;
-	}
-
-	ecpg_free(desc_item->data); /* free() takes care of a potential NULL value */
-	desc_item->data = (char *) tobeinserted;
-}
-
 
 bool
 ECPGset_desc(int lineno, const char *desc_name, int index,...)
@@ -682,7 +643,9 @@ ECPGset_desc(int lineno, const char *desc_name, int index,...)
 						return false;
 					}
 
-					set_desc_attr(desc_item, var, tobeinserted);
+					ecpg_free(desc_item->data); /* free() takes care of a
+												 * potential NULL value */
+					desc_item->data = (char *) tobeinserted;
 					tobeinserted = NULL;
 					break;
 				}

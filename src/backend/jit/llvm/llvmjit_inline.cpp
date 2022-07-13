@@ -9,12 +9,12 @@
  * for an external function is found - not guaranteed! - the index will then
  * be used to judge their instruction count / inline worthiness. After doing
  * so for all external functions, all the referenced functions (and
- * prerequisites) will be imported.
+ * prerequisites) will be imorted.
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *	  src/backend/lib/llvmjit/llvmjit_inline.cpp
+ *	  src/backend/lib/llvmjit/llvmjit_inline.c
  *
  *-------------------------------------------------------------------------
  */
@@ -42,9 +42,6 @@ extern "C"
 #include <llvm-c/Core.h>
 #include <llvm-c/BitReader.h>
 
-/* Avoid macro clash with LLVM's C++ headers */
-#undef Min
-
 #include <llvm/ADT/SetVector.h>
 #include <llvm/ADT/StringSet.h>
 #include <llvm/ADT/StringMap.h>
@@ -56,6 +53,7 @@ extern "C"
 #include <llvm/Support/Error.h>
 #endif
 #include <llvm/IR/Attributes.h>
+#include <llvm/IR/CallSite.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/IRBuilder.h>
@@ -173,7 +171,7 @@ llvm_inline(LLVMModuleRef M)
 static std::unique_ptr<ImportMapTy>
 llvm_build_inline_plan(llvm::Module *mod)
 {
-	std::unique_ptr<ImportMapTy> globalsToInline(new ImportMapTy());
+	std::unique_ptr<ImportMapTy> globalsToInline = llvm::make_unique<ImportMapTy>();
 	FunctionInlineStates functionStates;
 	InlineWorkList worklist;
 
@@ -310,7 +308,7 @@ llvm_build_inline_plan(llvm::Module *mod)
 				 * Check whether function and all its dependencies are too
 				 * big. Dependencies already counted for other functions that
 				 * will get inlined are not counted again. While this make
-				 * things somewhat order dependent, I can't quite see a point
+				 * things somewhat order dependant, I can't quite see a point
 				 * in a different behaviour.
 				 */
 				if (running_instcount > inlineState.costLimit)

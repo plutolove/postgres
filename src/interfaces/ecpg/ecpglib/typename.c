@@ -4,11 +4,12 @@
 #include "postgres_fe.h"
 
 #include "catalog/pg_type_d.h"
-#include "ecpglib.h"
-#include "ecpglib_extern.h"
+
 #include "ecpgtype.h"
-#include "sql3types.h"
+#include "ecpglib.h"
+#include "extern.h"
 #include "sqltypes.h"
+#include "sql3types.h"
 
 /*
  * This function is used to generate the correct type names.
@@ -47,8 +48,6 @@ ecpg_type_name(enum ECPGttype typ)
 			return "bool";
 		case ECPGt_varchar:
 			return "varchar";
-		case ECPGt_bytea:
-			return "bytea";
 		case ECPGt_char_variable:
 			return "char";
 		case ECPGt_decimal:

@@ -4,12 +4,13 @@
  *	 EXEC_BACKEND case; it might be extended to do so, but it would be
  *	 considerably more complex.
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/postmaster/fork_process.c
  */
 #include "postgres.h"
+#include "postmaster/fork_process.h"
 
 #include <fcntl.h>
 #include <time.h>
@@ -19,8 +20,6 @@
 #ifdef USE_OPENSSL
 #include <openssl/rand.h>
 #endif
-
-#include "postmaster/fork_process.h"
 
 #ifndef WIN32
 /*

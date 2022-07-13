@@ -4,7 +4,7 @@
  *		Internal definitions for parser
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/parser/parse_node.h
@@ -18,11 +18,6 @@
 #include "utils/queryenvironment.h"
 #include "utils/relcache.h"
 
-
-/* Forward references for some structs declared below */
-typedef struct ParseState ParseState;
-typedef struct ParseNamespaceItem ParseNamespaceItem;
-typedef struct ParseNamespaceColumn ParseNamespaceColumn;
 
 /*
  * Expression kinds distinguished by transformExpr().  Many of these are not
@@ -73,17 +68,16 @@ typedef enum ParseExprKind
 	EXPR_KIND_EXECUTE_PARAMETER,	/* parameter value in EXECUTE */
 	EXPR_KIND_TRIGGER_WHEN,		/* WHEN condition in CREATE TRIGGER */
 	EXPR_KIND_POLICY,			/* USING or WITH CHECK expr in policy */
-	EXPR_KIND_PARTITION_BOUND,	/* partition bound expression */
 	EXPR_KIND_PARTITION_EXPRESSION, /* PARTITION BY expression */
-	EXPR_KIND_CALL_ARGUMENT,	/* procedure argument in CALL */
-	EXPR_KIND_COPY_WHERE,		/* WHERE condition in COPY FROM */
-	EXPR_KIND_GENERATED_COLUMN, /* generation expression for a column */
+	EXPR_KIND_CALL_ARGUMENT		/* procedure argument in CALL */
 } ParseExprKind;
 
 
 /*
  * Function signatures for parser hooks
  */
+typedef struct ParseState ParseState;
+
 typedef Node *(*PreParseColumnRefHook) (ParseState *pstate, ColumnRef *cref);
 typedef Node *(*PostParseColumnRefHook) (ParseState *pstate, ColumnRef *cref, Node *var);
 typedef Node *(*ParseParamRefHook) (ParseState *pstate, ParamRef *pref);
@@ -135,7 +129,7 @@ typedef Node *(*CoerceParamHook) (ParseState *pstate, Param *param,
  *
  * p_target_relation: target relation, if query is INSERT, UPDATE, or DELETE.
  *
- * p_target_nsitem: target relation's ParseNamespaceItem.
+ * p_target_rangetblentry: target relation's entry in the rtable list.
  *
  * p_is_insert: true to process assignment expressions like INSERT, false
  * to process them like UPDATE.  (Note this can change intra-statement, for
@@ -175,7 +169,7 @@ typedef Node *(*CoerceParamHook) (ParseState *pstate, Param *param,
  */
 struct ParseState
 {
-	ParseState *parentParseState;	/* stack link */
+	struct ParseState *parentParseState;	/* stack link */
 	const char *p_sourcetext;	/* source text, or NULL if not available */
 	List	   *p_rtable;		/* range table so far */
 	List	   *p_joinexprs;	/* JoinExprs for RTE_JOIN p_rtable entries */
@@ -188,7 +182,7 @@ struct ParseState
 	List	   *p_future_ctes;	/* common table exprs not yet in namespace */
 	CommonTableExpr *p_parent_cte;	/* this query's containing CTE */
 	Relation	p_target_relation;	/* INSERT/UPDATE/DELETE target rel */
-	ParseNamespaceItem *p_target_nsitem;	/* target rel's NSItem, or NULL */
+	RangeTblEntry *p_target_rangetblentry;	/* target rel's RTE */
 	bool		p_is_insert;	/* process assignment like INSERT not UPDATE */
 	List	   *p_windowdefs;	/* raw representations of window clauses */
 	ParseExprKind p_expr_kind;	/* what kind of expression we're parsing */
@@ -225,9 +219,6 @@ struct ParseState
 /*
  * An element of a namespace list.
  *
- * The p_nscolumns array contains info showing how to construct Vars
- * referencing corresponding elements of the RTE's colnames list.
- *
  * Namespace items with p_rel_visible set define which RTEs are accessible by
  * qualified names, while those with p_cols_visible set define which RTEs are
  * accessible by unqualified names.  These sets are different because a JOIN
@@ -252,49 +243,14 @@ struct ParseState
  * are more complicated than "must have different alias names", so in practice
  * code searching a namespace list has to check for ambiguous references.
  */
-struct ParseNamespaceItem
+typedef struct ParseNamespaceItem
 {
 	RangeTblEntry *p_rte;		/* The relation's rangetable entry */
-	int			p_rtindex;		/* The relation's index in the rangetable */
-	/* array of same length as p_rte->eref->colnames: */
-	ParseNamespaceColumn *p_nscolumns;	/* per-column data */
 	bool		p_rel_visible;	/* Relation name is visible? */
 	bool		p_cols_visible; /* Column names visible as unqualified refs? */
 	bool		p_lateral_only; /* Is only visible to LATERAL expressions? */
 	bool		p_lateral_ok;	/* If so, does join type allow use? */
-};
-
-/*
- * Data about one column of a ParseNamespaceItem.
- *
- * We track the info needed to construct a Var referencing the column
- * (but only for user-defined columns; system column references and
- * whole-row references are handled separately).
- *
- * p_varno and p_varattno identify the semantic referent, which is a
- * base-relation column unless the reference is to a join USING column that
- * isn't semantically equivalent to either join input column (because it is a
- * FULL join or the input column requires a type coercion).  In those cases
- * p_varno and p_varattno refer to the JOIN RTE.
- *
- * p_varnosyn and p_varattnosyn are either identical to p_varno/p_varattno,
- * or they specify the column's position in an aliased JOIN RTE that hides
- * the semantic referent RTE's refname.  (That could be either the JOIN RTE
- * in which this ParseNamespaceColumn entry exists, or some lower join level.)
- *
- * If an RTE contains a dropped column, its ParseNamespaceColumn struct
- * is all-zeroes.  (Conventionally, test for p_varno == 0 to detect this.)
- */
-struct ParseNamespaceColumn
-{
-	Index		p_varno;		/* rangetable index */
-	AttrNumber	p_varattno;		/* attribute number of the column */
-	Oid			p_vartype;		/* pg_type OID */
-	int32		p_vartypmod;	/* type modifier value */
-	Oid			p_varcollid;	/* OID of collation, or InvalidOid */
-	Index		p_varnosyn;		/* rangetable index of syntactic referent */
-	AttrNumber	p_varattnosyn;	/* attribute number of syntactic referent */
-};
+} ParseNamespaceItem;
 
 /* Support for parser_errposition_callback function */
 typedef struct ParseCallbackState
@@ -310,18 +266,19 @@ extern void free_parsestate(ParseState *pstate);
 extern int	parser_errposition(ParseState *pstate, int location);
 
 extern void setup_parser_errposition_callback(ParseCallbackState *pcbstate,
-											  ParseState *pstate, int location);
+								  ParseState *pstate, int location);
 extern void cancel_parser_errposition_callback(ParseCallbackState *pcbstate);
 
-extern Oid	transformContainerType(Oid *containerType, int32 *containerTypmod);
-
-extern SubscriptingRef *transformContainerSubscripts(ParseState *pstate,
-													 Node *containerBase,
-													 Oid containerType,
-													 Oid elementType,
-													 int32 containerTypMod,
-													 List *indirection,
-													 Node *assignFrom);
+extern Var *make_var(ParseState *pstate, RangeTblEntry *rte, int attrno,
+		 int location);
+extern Oid	transformArrayType(Oid *arrayType, int32 *arrayTypmod);
+extern ArrayRef *transformArraySubscripts(ParseState *pstate,
+						 Node *arrayBase,
+						 Oid arrayType,
+						 Oid elementType,
+						 int32 arrayTypMod,
+						 List *indirection,
+						 Node *assignFrom);
 extern Const *make_const(ParseState *pstate, Value *value, int location);
 
 #endif							/* PARSE_NODE_H */

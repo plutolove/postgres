@@ -6,7 +6,7 @@
  *	  message integrity and endpoint authentication.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -27,6 +27,10 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
+
+#include "libpq-fe.h"
+#include "fe-auth.h"
+#include "libpq-int.h"
 
 #ifdef WIN32
 #include "win32.h"
@@ -50,10 +54,6 @@
 #include <pthread.h>
 #endif
 #endif
-
-#include "fe-auth.h"
-#include "libpq-fe.h"
-#include "libpq-int.h"
 
 /*
  * Macros to handle disabling and then restoring the state of SIGPIPE handling.
@@ -221,13 +221,6 @@ pqsecure_read(PGconn *conn, void *ptr, size_t len)
 	}
 	else
 #endif
-#ifdef ENABLE_GSS
-	if (conn->gssenc)
-	{
-		n = pg_GSS_read(conn, ptr, len);
-	}
-	else
-#endif
 	{
 		n = pqsecure_raw_read(conn, ptr, len);
 	}
@@ -240,7 +233,7 @@ pqsecure_raw_read(PGconn *conn, void *ptr, size_t len)
 {
 	ssize_t		n;
 	int			result_errno = 0;
-	char		sebuf[PG_STRERROR_R_BUFLEN];
+	char		sebuf[256];
 
 	n = recv(conn->sock, ptr, len, 0);
 
@@ -264,7 +257,8 @@ pqsecure_raw_read(PGconn *conn, void *ptr, size_t len)
 #ifdef ECONNRESET
 			case ECONNRESET:
 				printfPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext("server closed the connection unexpectedly\n"
+								  libpq_gettext(
+												"server closed the connection unexpectedly\n"
 												"\tThis probably means the server terminated abnormally\n"
 												"\tbefore or while processing the request.\n"));
 				break;
@@ -304,13 +298,6 @@ pqsecure_write(PGconn *conn, const void *ptr, size_t len)
 	}
 	else
 #endif
-#ifdef ENABLE_GSS
-	if (conn->gssenc)
-	{
-		n = pg_GSS_write(conn, ptr, len);
-	}
-	else
-#endif
 	{
 		n = pqsecure_raw_write(conn, ptr, len);
 	}
@@ -324,7 +311,7 @@ pqsecure_raw_write(PGconn *conn, const void *ptr, size_t len)
 	ssize_t		n;
 	int			flags = 0;
 	int			result_errno = 0;
-	char		sebuf[PG_STRERROR_R_BUFLEN];
+	char		sebuf[256];
 
 	DECLARE_SIGPIPE_INFO(spinfo);
 
@@ -380,7 +367,8 @@ retry_masked:
 			case ECONNRESET:
 #endif
 				printfPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext("server closed the connection unexpectedly\n"
+								  libpq_gettext(
+												"server closed the connection unexpectedly\n"
 												"\tThis probably means the server terminated abnormally\n"
 												"\tbefore or while processing the request.\n"));
 				break;
@@ -430,42 +418,7 @@ PQsslAttributeNames(PGconn *conn)
 
 	return result;
 }
-
-PQsslKeyPassHook_OpenSSL_type
-PQgetSSLKeyPassHook_OpenSSL(void)
-{
-	return NULL;
-}
-
-void
-PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook)
-{
-	return;
-}
-
-int
-PQdefaultSSLKeyPassHook_OpenSSL(char *buf, int size, PGconn *conn)
-{
-	return 0;
-}
 #endif							/* USE_SSL */
-
-/* Dummy version of GSSAPI information functions, when built without GSS support */
-#ifndef ENABLE_GSS
-
-void *
-PQgetgssctx(PGconn *conn)
-{
-	return NULL;
-}
-
-int
-PQgssEncInUse(PGconn *conn)
-{
-	return 0;
-}
-
-#endif							/* ENABLE_GSS */
 
 
 #if defined(ENABLE_THREAD_SAFETY) && !defined(WIN32)

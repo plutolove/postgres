@@ -3,7 +3,7 @@
  * nodeGather.c
  *	  Support routines for scanning a plan via multiple workers.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * A Gather executor launches parallel workers to run multiple copies of a
@@ -38,7 +38,7 @@
 #include "executor/nodeSubplan.h"
 #include "executor/tqueue.h"
 #include "miscadmin.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/planmain.h"
 #include "pgstat.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -92,35 +92,15 @@ ExecInitGather(Gather *node, EState *estate, int eflags)
 	tupDesc = ExecGetResultType(outerPlanState(gatherstate));
 
 	/*
-	 * Leader may access ExecProcNode result directly (if
-	 * need_to_scan_locally), or from workers via tuple queue.  So we can't
-	 * trivially rely on the slot type being fixed for expressions evaluated
-	 * within this node.
+	 * Initialize result slot, type and projection.
 	 */
-	gatherstate->ps.outeropsset = true;
-	gatherstate->ps.outeropsfixed = false;
-
-	/*
-	 * Initialize result type and projection.
-	 */
-	ExecInitResultTypeTL(&gatherstate->ps);
+	ExecInitResultTupleSlotTL(estate, &gatherstate->ps);
 	ExecConditionalAssignProjectionInfo(&gatherstate->ps, tupDesc, OUTER_VAR);
-
-	/*
-	 * Without projections result slot type is not trivially known, see
-	 * comment above.
-	 */
-	if (gatherstate->ps.ps_ProjInfo == NULL)
-	{
-		gatherstate->ps.resultopsset = true;
-		gatherstate->ps.resultopsfixed = false;
-	}
 
 	/*
 	 * Initialize funnel slot to same tuple descriptor as outer plan.
 	 */
-	gatherstate->funnel_slot = ExecInitExtraTupleSlot(estate, tupDesc,
-													  &TTSOpsHeapTuple);
+	gatherstate->funnel_slot = ExecInitExtraTupleSlot(estate, tupDesc);
 
 	/*
 	 * Gather doesn't support checking a qual (it's always more efficient to
@@ -251,8 +231,7 @@ ExecEndGather(GatherState *node)
 	ExecEndNode(outerPlanState(node));	/* let children clean up first */
 	ExecShutdownGather(node);
 	ExecFreeExprContext(&node->ps);
-	if (node->ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ps.ps_ResultTupleSlot);
 }
 
 /*
@@ -278,9 +257,11 @@ gather_getnext(GatherState *gatherstate)
 
 			if (HeapTupleIsValid(tup))
 			{
-				ExecStoreHeapTuple(tup, /* tuple to store */
-								   fslot,	/* slot to store the tuple */
-								   true);	/* pfree tuple when done with it */
+				ExecStoreTuple(tup, /* tuple to store */
+							   fslot,	/* slot in which to store the tuple */
+							   InvalidBuffer,	/* buffer associated with this
+												 * tuple */
+							   true);	/* pfree tuple when done with it */
 				return fslot;
 			}
 		}
@@ -383,8 +364,7 @@ gather_readnext(GatherState *gatherstate)
 				return NULL;
 
 			/* Nothing to do except wait for developments. */
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
-							 WAIT_EVENT_EXECUTE_GATHER);
+			WaitLatch(MyLatch, WL_LATCH_SET, 0, WAIT_EVENT_EXECUTE_GATHER);
 			ResetLatch(MyLatch);
 			nvisited = 0;
 		}

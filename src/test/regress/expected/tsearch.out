@@ -116,90 +116,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
    508
 (1 row)
 
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
-(1 row)
-
 create index wowidx on test_tsvector using gist (a);
 SET enable_seqscan=OFF;
 SET enable_indexscan=ON;
@@ -272,90 +188,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
    508
 (1 row)
 
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
-(1 row)
-
 SET enable_indexscan=OFF;
 SET enable_bitmapscan=ON;
 explain (costs off) SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
@@ -426,434 +258,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
  count 
 -------
    508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
-(1 row)
-
--- Test siglen parameter of GiST tsvector_ops
-CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(foo=1));
-ERROR:  unrecognized parameter "foo"
-CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(siglen=0));
-ERROR:  value 0 out of bounds for option "siglen"
-DETAIL:  Valid values are between "1" and "2024".
-CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(siglen=2048));
-ERROR:  value 2048 out of bounds for option "siglen"
-DETAIL:  Valid values are between "1" and "2024".
-CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(siglen=100,foo='bar'));
-ERROR:  unrecognized parameter "foo"
-CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(siglen=100, siglen = 200));
-ERROR:  parameter "siglen" specified more than once
-CREATE INDEX wowidx2 ON test_tsvector USING gist (a tsvector_ops(siglen=1));
-\d test_tsvector
-            Table "public.test_tsvector"
- Column |   Type   | Collation | Nullable | Default 
---------+----------+-----------+----------+---------
- t      | text     |           |          | 
- a      | tsvector |           |          | 
-Indexes:
-    "wowidx" gist (a)
-    "wowidx2" gist (a tsvector_ops (siglen='1'))
-
-DROP INDEX wowidx;
-EXPLAIN (costs off) SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
-                         QUERY PLAN                          
--------------------------------------------------------------
- Aggregate
-   ->  Bitmap Heap Scan on test_tsvector
-         Recheck Cond: (a @@ '''wr'' | ''qh'''::tsquery)
-         ->  Bitmap Index Scan on wowidx2
-               Index Cond: (a @@ '''wr'' | ''qh'''::tsquery)
-(5 rows)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
- count 
--------
-   158
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr&qh';
- count 
--------
-    17
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'eq&yt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'eq|yt';
- count 
--------
-    98
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '(eq&yt)|(wr&qh)';
- count 
--------
-    23
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '(eq|yt)&(wr|qh)';
- count 
--------
-    39
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'w:*|q:*';
- count 
--------
-   494
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ any ('{wr,qh}');
- count 
--------
-   158
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'no_such_lexeme';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
-(1 row)
-
-DROP INDEX wowidx2;
-CREATE INDEX wowidx ON test_tsvector USING gist (a tsvector_ops(siglen=484));
-\d test_tsvector
-            Table "public.test_tsvector"
- Column |   Type   | Collation | Nullable | Default 
---------+----------+-----------+----------+---------
- t      | text     |           |          | 
- a      | tsvector |           |          | 
-Indexes:
-    "wowidx" gist (a tsvector_ops (siglen='484'))
-
-EXPLAIN (costs off) SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
-                         QUERY PLAN                          
--------------------------------------------------------------
- Aggregate
-   ->  Bitmap Heap Scan on test_tsvector
-         Recheck Cond: (a @@ '''wr'' | ''qh'''::tsquery)
-         ->  Bitmap Index Scan on wowidx
-               Index Cond: (a @@ '''wr'' | ''qh'''::tsquery)
-(5 rows)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr|qh';
- count 
--------
-   158
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr&qh';
- count 
--------
-    17
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'eq&yt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'eq|yt';
- count 
--------
-    98
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '(eq&yt)|(wr&qh)';
- count 
--------
-    23
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '(eq|yt)&(wr|qh)';
- count 
--------
-    39
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'w:*|q:*';
- count 
--------
-   494
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ any ('{wr,qh}');
- count 
--------
-   158
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'no_such_lexeme';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
 (1 row)
 
 RESET enable_seqscan;
@@ -933,125 +337,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
    508
 (1 row)
 
-SELECT count(*) FROM test_tsvector WHERE a @@ 'pl <-> yh';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'yh <-> pl';
- count 
--------
-     0
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'qe <2> qt';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> yh';
- count 
--------
-     3
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!pl <-> !yh';
- count 
--------
-   432
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!yh <-> pl';
- count 
--------
-     1
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
- count 
--------
-     6
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
- count 
--------
-   508
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
- count 
--------
-   507
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
- count 
--------
-    56
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
- count 
--------
-    58
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
- count 
--------
-   452
-(1 row)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
- count 
--------
-   450
-(1 row)
-
--- Test optimization of non-empty GIN_SEARCH_MODE_ALL queries
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qh';
-                     QUERY PLAN                      
------------------------------------------------------
- Aggregate
-   ->  Bitmap Heap Scan on test_tsvector
-         Recheck Cond: (a @@ '!''qh'''::tsquery)
-         ->  Bitmap Index Scan on wowidx
-               Index Cond: (a @@ '!''qh'''::tsquery)
-(5 rows)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qh';
- count 
--------
-   410
-(1 row)
-
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr' AND a @@ '!qh';
-                                     QUERY PLAN                                     
-------------------------------------------------------------------------------------
- Aggregate
-   ->  Bitmap Heap Scan on test_tsvector
-         Recheck Cond: ((a @@ '''wr'''::tsquery) AND (a @@ '!''qh'''::tsquery))
-         ->  Bitmap Index Scan on wowidx
-               Index Cond: ((a @@ '''wr'''::tsquery) AND (a @@ '!''qh'''::tsquery))
-(5 rows)
-
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr' AND a @@ '!qh';
- count 
--------
-    60
-(1 row)
-
 RESET enable_seqscan;
 INSERT INTO test_tsvector VALUES ('???', 'DFG:1A,2B,6C,10 FGH');
 SELECT * FROM ts_stat('SELECT a FROM test_tsvector') ORDER BY ndoc DESC, nentry DESC, word LIMIT 10;
@@ -1059,14 +344,14 @@ SELECT * FROM ts_stat('SELECT a FROM test_tsvector') ORDER BY ndoc DESC, nentry 
 ------+------+--------
  qq   |  108 |    108
  qt   |  102 |    102
- qe   |  100 |    101
- qh   |   98 |     99
+ qe   |  100 |    100
+ qh   |   98 |     98
  qw   |   98 |     98
  qa   |   97 |     97
  ql   |   94 |     94
  qs   |   94 |     94
- qr   |   92 |     93
  qi   |   92 |     92
+ qr   |   92 |     92
 (10 rows)
 
 SELECT * FROM ts_stat('SELECT a FROM test_tsvector', 'AB') ORDER BY ndoc DESC, nentry DESC, word;
@@ -1685,9 +970,9 @@ Water, water, every where,
   Nor any drop to drink.
 S. T. Coleridge (1772-1834)
 '), to_tsquery('english', 'breath&motion&water'));
- ts_rank_cd  
--------------
- 0.008333334
+ ts_rank_cd 
+------------
+ 0.00833333
 (1 row)
 
 SELECT ts_rank_cd(to_tsvector('english', '
@@ -1805,12 +1090,12 @@ Water, water, every where,
   Nor any drop to drink.
 S. T. Coleridge (1772-1834)
 ', phraseto_tsquery('english', 'painted Ocean'));
-              ts_headline              
----------------------------------------
- <b>painted</b> Ship                  +
-   Upon a <b>painted</b> <b>Ocean</b>.+
- Water, water, every where            +
-   And all the boards did shrink
+           ts_headline            
+----------------------------------
+ <b>painted</b> <b>Ocean</b>.    +
+ Water, water, every where       +
+   And all the boards did shrink;+
+ Water, water, every
 (1 row)
 
 SELECT ts_headline('english', '
@@ -1830,15 +1115,6 @@ S. T. Coleridge (1772-1834)
    Upon a <b>painted</b> Ocean.             +
  Water, water, every where                  +
    And all the boards
-(1 row)
-
-SELECT ts_headline('english',
-'Lorem ipsum urna.  Nullam nullam ullamcorper urna.',
-to_tsquery('english','Lorem') && phraseto_tsquery('english','ullamcorper urna'),
-'MaxWords=100, MinWords=1');
-                                  ts_headline                                  
--------------------------------------------------------------------------------
- <b>Lorem</b> ipsum <b>urna</b>.  Nullam nullam <b>ullamcorper</b> <b>urna</b>
 (1 row)
 
 SELECT ts_headline('english', '
@@ -1877,15 +1153,15 @@ SELECT ts_headline('simple', '1 2 3 1 3'::text, '1 <-> 3', 'MaxWords=2, MinWords
 (1 row)
 
 SELECT ts_headline('simple', '1 2 3 1 3'::text, '1 & 3', 'MaxWords=4, MinWords=1');
-     ts_headline     
----------------------
- <b>1</b> 2 <b>3</b>
+         ts_headline          
+------------------------------
+ <b>1</b> 2 <b>3</b> <b>1</b>
 (1 row)
 
 SELECT ts_headline('simple', '1 2 3 1 3'::text, '1 <-> 3', 'MaxWords=4, MinWords=1');
-        ts_headline         
-----------------------------
- <b>3</b> <b>1</b> <b>3</b>
+    ts_headline    
+-------------------
+ <b>1</b> <b>3</b>
 (1 row)
 
 --Check if headline fragments work
@@ -1978,16 +1254,6 @@ S. T. Coleridge (1772-1834)
    And all the boards did shrink;          +
  Water, water, every where***drop to drink.+
  S. T. <b>Coleridge</b>
-(1 row)
-
---Fragments with phrase search
-SELECT ts_headline('english',
-'Lorem ipsum urna.  Nullam nullam ullamcorper urna.',
-to_tsquery('english','Lorem') && phraseto_tsquery('english','ullamcorper urna'),
-'MaxFragments=100, MaxWords=100, MinWords=1');
-                                  ts_headline                                  
--------------------------------------------------------------------------------
- <b>Lorem</b> ipsum <b>urna</b>.  Nullam nullam <b>ullamcorper</b> <b>urna</b>
 (1 row)
 
 --Rewrite sub system
@@ -2358,28 +1624,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
 -------
      1
 (1 row)
-
--- Test inlining of immutable constant functions
--- to_tsquery(text) is not immutable, so it won't be inlined
-explain (costs off)
-select * from test_tsquery, to_tsquery('new') q where txtsample @@ q;
-                   QUERY PLAN                   
-------------------------------------------------
- Nested Loop
-   Join Filter: (test_tsquery.txtsample @@ q.q)
-   ->  Function Scan on to_tsquery q
-   ->  Seq Scan on test_tsquery
-(4 rows)
-
--- to_tsquery(regconfig, text) is an immutable function.
--- That allows us to get rid of using function scan and join at all.
-explain (costs off)
-select * from test_tsquery, to_tsquery('english', 'new') q where txtsample @@ q;
-                 QUERY PLAN                  
----------------------------------------------
- Seq Scan on test_tsquery
-   Filter: (txtsample @@ '''new'''::tsquery)
-(2 rows)
 
 -- test finding items in GIN's pending list
 create temp table pendtest (ts tsvector);

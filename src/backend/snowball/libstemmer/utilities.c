@@ -1,5 +1,7 @@
 #include "header.h"
 
+#define unless(C) if(!(C))
+
 #define CREATE_SIZE 1
 
 extern symbol * create_s(void) {
@@ -8,7 +10,7 @@ extern symbol * create_s(void) {
     if (mem == NULL) return NULL;
     p = (symbol *) (HEAD + (char *) mem);
     CAPACITY(p) = CREATE_SIZE;
-    SET_SIZE(p, 0);
+    SET_SIZE(p, CREATE_SIZE);
     return p;
 }
 
@@ -20,7 +22,7 @@ extern void lose_s(symbol * p) {
 /*
    new_p = skip_utf8(p, c, lb, l, n); skips n characters forwards from p + c
    if n +ve, or n characters backwards from p + c - 1 if n -ve. new_p is the new
-   position, or -1 on failure.
+   position, or 0 on failure.
 
    -- used to implement hop and next in the utf8 case.
 */
@@ -59,56 +61,38 @@ extern int skip_utf8(const symbol * p, int c, int lb, int l, int n) {
 /* Code for character groupings: utf8 cases */
 
 static int get_utf8(const symbol * p, int c, int l, int * slot) {
-    int b0, b1, b2;
+    int b0, b1;
     if (c >= l) return 0;
     b0 = p[c++];
     if (b0 < 0xC0 || c == l) {   /* 1100 0000 */
-        *slot = b0;
-        return 1;
+        * slot = b0; return 1;
     }
-    b1 = p[c++] & 0x3F;
+    b1 = p[c++];
     if (b0 < 0xE0 || c == l) {   /* 1110 0000 */
-        *slot = (b0 & 0x1F) << 6 | b1;
-        return 2;
+        * slot = (b0 & 0x1F) << 6 | (b1 & 0x3F); return 2;
     }
-    b2 = p[c++] & 0x3F;
-    if (b0 < 0xF0 || c == l) {   /* 1111 0000 */
-        *slot = (b0 & 0xF) << 12 | b1 << 6 | b2;
-        return 3;
-    }
-    *slot = (b0 & 0xE) << 18 | b1 << 12 | b2 << 6 | (p[c] & 0x3F);
-    return 4;
+    * slot = (b0 & 0xF) << 12 | (b1 & 0x3F) << 6 | (p[c] & 0x3F); return 3;
 }
 
 static int get_b_utf8(const symbol * p, int c, int lb, int * slot) {
-    int a, b;
+    int b0, b1;
     if (c <= lb) return 0;
-    b = p[--c];
-    if (b < 0x80 || c == lb) {   /* 1000 0000 */
-        *slot = b;
-        return 1;
+    b0 = p[--c];
+    if (b0 < 0x80 || c == lb) {   /* 1000 0000 */
+        * slot = b0; return 1;
     }
-    a = b & 0x3F;
-    b = p[--c];
-    if (b >= 0xC0 || c == lb) {   /* 1100 0000 */
-        *slot = (b & 0x1F) << 6 | a;
-        return 2;
+    b1 = p[--c];
+    if (b1 >= 0xC0 || c == lb) {   /* 1100 0000 */
+        * slot = (b1 & 0x1F) << 6 | (b0 & 0x3F); return 2;
     }
-    a |= (b & 0x3F) << 6;
-    b = p[--c];
-    if (b >= 0xE0 || c == lb) {   /* 1110 0000 */
-        *slot = (b & 0xF) << 12 | a;
-        return 3;
-    }
-    *slot = (p[--c] & 0xE) << 18 | (b & 0x3F) << 12 | a;
-    return 4;
+    * slot = (p[c] & 0xF) << 12 | (b1 & 0x3F) << 6 | (b0 & 0x3F); return 3;
 }
 
 extern int in_grouping_U(struct SN_env * z, const unsigned char * s, int min, int max, int repeat) {
     do {
 	int ch;
 	int w = get_utf8(z->p, z->c, z->l, & ch);
-	if (!w) return -1;
+	unless (w) return -1;
 	if (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return w;
 	z->c += w;
@@ -120,7 +104,7 @@ extern int in_grouping_b_U(struct SN_env * z, const unsigned char * s, int min, 
     do {
 	int ch;
 	int w = get_b_utf8(z->p, z->c, z->lb, & ch);
-	if (!w) return -1;
+	unless (w) return -1;
 	if (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return w;
 	z->c -= w;
@@ -132,8 +116,8 @@ extern int out_grouping_U(struct SN_env * z, const unsigned char * s, int min, i
     do {
 	int ch;
 	int w = get_utf8(z->p, z->c, z->l, & ch);
-	if (!w) return -1;
-	if (!(ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0))
+	unless (w) return -1;
+	unless (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return w;
 	z->c += w;
     } while (repeat);
@@ -144,8 +128,8 @@ extern int out_grouping_b_U(struct SN_env * z, const unsigned char * s, int min,
     do {
 	int ch;
 	int w = get_b_utf8(z->p, z->c, z->lb, & ch);
-	if (!w) return -1;
-	if (!(ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0))
+	unless (w) return -1;
+	unless (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return w;
 	z->c -= w;
     } while (repeat);
@@ -183,7 +167,7 @@ extern int out_grouping(struct SN_env * z, const unsigned char * s, int min, int
 	int ch;
 	if (z->c >= z->l) return -1;
 	ch = z->p[z->c];
-	if (!(ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0))
+	unless (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return 1;
 	z->c++;
     } while (repeat);
@@ -195,7 +179,7 @@ extern int out_grouping_b(struct SN_env * z, const unsigned char * s, int min, i
 	int ch;
 	if (z->c <= z->lb) return -1;
 	ch = z->p[z->c - 1];
-	if (!(ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0))
+	unless (ch > max || (ch -= min) < 0 || (s[ch >> 3] & (0X1 << (ch & 0X7))) == 0)
 	    return 1;
 	z->c--;
     } while (repeat);
@@ -248,13 +232,8 @@ extern int find_among(struct SN_env * z, const struct among * v, int v_size) {
                 common++;
             }
         }
-        if (diff < 0) {
-            j = k;
-            common_j = common;
-        } else {
-            i = k;
-            common_i = common;
-        }
+        if (diff < 0) { j = k; common_j = common; }
+                 else { i = k; common_i = common; }
         if (j - i <= 1) {
             if (i > 0) break; /* v->s has been inspected */
             if (j == i) break; /* only one item in v */
@@ -383,10 +362,11 @@ extern int replace_s(struct SN_env * z, int c_bra, int c_ket, int s_size, const 
         z->l += adjustment;
         if (z->c >= c_ket)
             z->c += adjustment;
-        else if (z->c > c_bra)
-            z->c = c_bra;
+        else
+            if (z->c > c_bra)
+                z->c = c_bra;
     }
-    if (s_size) memmove(z->p + c_bra, s, s_size * sizeof(symbol));
+    unless (s_size == 0) memmove(z->p + c_bra, s, s_size * sizeof(symbol));
     if (adjptr != NULL)
         *adjptr = adjustment;
     return 0;
@@ -432,7 +412,12 @@ extern int insert_s(struct SN_env * z, int bra, int ket, int s_size, const symbo
 }
 
 extern int insert_v(struct SN_env * z, int bra, int ket, const symbol * p) {
-    return insert_s(z, bra, ket, SIZE(p), p);
+    int adjustment;
+    if (replace_s(z, bra, ket, SIZE(p), p, &adjustment))
+        return -1;
+    if (bra <= z->bra) z->bra += adjustment;
+    if (bra <= z->ket) z->ket += adjustment;
+    return 0;
 }
 
 extern symbol * slice_to(struct SN_env * z, symbol * p) {
@@ -463,16 +448,6 @@ extern symbol * assign_to(struct SN_env * z, symbol * p) {
     memmove(p, z->p, len * sizeof(symbol));
     SET_SIZE(p, len);
     return p;
-}
-
-extern int len_utf8(const symbol * p) {
-    int size = SIZE(p);
-    int len = 0;
-    while (size--) {
-        symbol b = *p++;
-        if (b >= 0xC0 || b < 0x80) ++len;
-    }
-    return len;
 }
 
 #if 0

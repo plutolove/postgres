@@ -10,9 +10,6 @@ BEGIN
 END
 $$ language plpgsql;
 
--- should fail, can't call it as a plain function
-SELECT test_event_trigger();
-
 -- should fail, event triggers cannot have declared arguments
 create function test_event_trigger_arg(name text)
 returns event_trigger as $$ BEGIN RETURN 1; END $$ language plpgsql;
@@ -109,28 +106,9 @@ create table event_trigger_fire4 (a int);
 reset session_replication_role;
 -- fires all three
 create table event_trigger_fire5 (a int);
--- non-top-level command
-create function f1() returns int
-language plpgsql
-as $$
-begin
-  create table event_trigger_fire6 (a int);
-  return 0;
-end $$;
-select f1();
--- non-top-level command
-create procedure p1()
-language plpgsql
-as $$
-begin
-  create table event_trigger_fire7 (a int);
-end $$;
-call p1();
-
 -- clean up
 alter event trigger regress_event_trigger disable;
-drop table event_trigger_fire2, event_trigger_fire3, event_trigger_fire4, event_trigger_fire5, event_trigger_fire6, event_trigger_fire7;
-drop routine f1(), p1();
+drop table event_trigger_fire2, event_trigger_fire3, event_trigger_fire4, event_trigger_fire5;
 
 -- regress_event_trigger_end should fire on these commands
 grant all on table event_trigger_fire1 to public;
@@ -332,7 +310,7 @@ $$;
 create event trigger no_rewrite_allowed on table_rewrite
   execute procedure test_evtrig_no_rewrite();
 
-create table rewriteme (id serial primary key, foo float, bar timestamptz);
+create table rewriteme (id serial primary key, foo float);
 insert into rewriteme
      select x * 1.001 from generate_series(1, 500) as t(x);
 alter table rewriteme alter column foo type numeric;
@@ -355,14 +333,6 @@ alter table rewriteme
 
 -- shouldn't trigger a table_rewrite event
 alter table rewriteme alter column foo type numeric(12,4);
-begin;
-set timezone to 'UTC';
-alter table rewriteme alter column bar type timestamp;
-set timezone to '0';
-alter table rewriteme alter column bar type timestamptz;
-set timezone to 'Europe/London';
-alter table rewriteme alter column bar type timestamp; -- does rewrite
-rollback;
 
 -- typed tables are rewritten when their type changes.  Don't emit table
 -- name, because firing order is not stable.
@@ -425,17 +395,6 @@ CREATE POLICY p1 ON event_trigger_test USING (FALSE);
 ALTER POLICY p1 ON event_trigger_test USING (TRUE);
 ALTER POLICY p1 ON event_trigger_test RENAME TO p2;
 DROP POLICY p2 ON event_trigger_test;
-
--- Check the object addresses of all the event triggers.
-SELECT
-    e.evtname,
-    pg_describe_object('pg_event_trigger'::regclass, e.oid, 0) as descr,
-    b.type, b.object_names, b.object_args,
-    pg_identify_object(a.classid, a.objid, a.objsubid) as ident
-  FROM pg_event_trigger as e,
-    LATERAL pg_identify_object_as_address('pg_event_trigger'::regclass, e.oid, 0) as b,
-    LATERAL pg_get_object_address(b.type, b.object_names, b.object_args) as a
-  ORDER BY e.evtname;
 
 DROP EVENT TRIGGER start_rls_command;
 DROP EVENT TRIGGER end_rls_command;

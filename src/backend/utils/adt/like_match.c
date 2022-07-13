@@ -16,7 +16,7 @@
  * do_like_escape - name of function if wanted - needs CHAREQ and CopyAdvChar
  * MATCH_LOWER - define for case (4) to specify case folding for 1-byte chars
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/like_match.c
@@ -27,8 +27,7 @@
 /*
  *	Originally written by Rich $alz, mirror!rs, Wed Nov 26 19:03:17 EST 1986.
  *	Rich $alz is now <rsalz@bbn.com>.
- *	Special thanks to Lars Mathiesen <thorinn@diku.dk> for the
- *	LIKE_ABORT code.
+ *	Special thanks to Lars Mathiesen <thorinn@diku.dk> for the LABORT code.
  *
  *	This code was shamelessly stolen from the "pql" code by myself and
  *	slightly modified :)
@@ -77,7 +76,7 @@
 #endif
 
 static int
-MatchText(const char *t, int tlen, const char *p, int plen,
+MatchText(char *t, int tlen, char *p, int plen,
 		  pg_locale_t locale, bool locale_is_c)
 {
 	/* Fast path for match-everything pattern */

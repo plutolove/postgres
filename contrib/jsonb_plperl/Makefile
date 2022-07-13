@@ -1,9 +1,7 @@
 # contrib/jsonb_plperl/Makefile
 
 MODULE_big = jsonb_plperl
-OBJS = \
-	$(WIN32RES) \
-	jsonb_plperl.o
+OBJS = jsonb_plperl.o $(WIN32RES)
 PGFILEDESC = "jsonb_plperl - jsonb transform for plperl"
 
 PG_CPPFLAGS = -I$(top_srcdir)/src/pl/plperl
@@ -37,5 +35,8 @@ rpathdir = $(perl_archlibexp)/CORE
 SHLIB_LINK += $(perl_embed_ldflags)
 endif
 
-# As with plperl we need to include the perl_includespec directory last.
-override CPPFLAGS := $(CPPFLAGS) $(perl_embed_ccflags) $(perl_includespec)
+# As with plperl we need to make sure that the CORE directory is included
+# last, probably because it sometimes contains some header files with names
+# that clash with some of ours, or with some that we include, notably on
+# Windows.
+override CPPFLAGS := $(CPPFLAGS) $(perl_embed_ccflags) -I$(perl_includedir)/CORE

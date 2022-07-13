@@ -6,7 +6,7 @@ use File::Basename qw(basename dirname);
 use File::Path qw(rmtree);
 use PostgresNode;
 use TestLib;
-use Test::More tests => 109;
+use Test::More tests => 106;
 
 program_help_ok('pg_basebackup');
 program_version_ok('pg_basebackup');
@@ -44,7 +44,7 @@ $node->command_fails(
 
 ok(!-d "$tempdir/backup", 'backup directory was cleaned up');
 
-# Create a backup directory that is not empty so the next command will fail
+# Create a backup directory that is not empty so the next commnd will fail
 # but leave the data directory behind
 mkdir("$tempdir/backup")
   or BAIL_OUT("unable to create $tempdir/backup");
@@ -65,8 +65,8 @@ $node->restart;
 
 # Write some files to test that they are not copied.
 foreach my $filename (
-	qw(backup_label tablespace_map postgresql.auto.conf.tmp
-	current_logfiles.tmp global/pg_internal.init.123))
+	qw(backup_label tablespace_map postgresql.auto.conf.tmp current_logfiles.tmp)
+  )
 {
 	open my $file, '>>', "$pgdata/$filename";
 	print $file "DONOTCOPY";
@@ -103,8 +103,7 @@ foreach my $filename (@tempRelationFiles)
 # Run base backup.
 $node->command_ok([ 'pg_basebackup', '-D', "$tempdir/backup", '-X', 'none' ],
 	'pg_basebackup runs');
-ok(-f "$tempdir/backup/PG_VERSION",      'backup was created');
-ok(-f "$tempdir/backup/backup_manifest", 'backup manifest included');
+ok(-f "$tempdir/backup/PG_VERSION", 'backup was created');
 
 # Permissions on backup should be default
 SKIP:
@@ -136,7 +135,7 @@ foreach my $dirname (
 # These files should not be copied.
 foreach my $filename (
 	qw(postgresql.auto.conf.tmp postmaster.opts postmaster.pid tablespace_map current_logfiles.tmp
-	global/pg_internal.init global/pg_internal.init.123))
+	global/pg_internal.init))
 {
 	ok(!-f "$tempdir/backup/$filename", "$filename not copied");
 }
@@ -161,14 +160,12 @@ rmtree("$tempdir/backup");
 
 $node->command_ok(
 	[
-		'pg_basebackup',    '-D',
-		"$tempdir/backup2", '--no-manifest',
-		'--waldir',         "$tempdir/xlog2"
+		'pg_basebackup', '-D', "$tempdir/backup2", '--waldir',
+		"$tempdir/xlog2"
 	],
 	'separate xlog directory');
-ok(-f "$tempdir/backup2/PG_VERSION",       'backup was created');
-ok(!-f "$tempdir/backup2/backup_manifest", 'manifest was suppressed');
-ok(-d "$tempdir/xlog2/",                   'xlog directory was created');
+ok(-f "$tempdir/backup2/PG_VERSION", 'backup was created');
+ok(-d "$tempdir/xlog2/",             'xlog directory was created');
 rmtree("$tempdir/backup2");
 rmtree("$tempdir/xlog2");
 
@@ -361,16 +358,19 @@ SKIP:
 
 $node->command_ok([ 'pg_basebackup', '-D', "$tempdir/backupR", '-R' ],
 	'pg_basebackup -R runs');
-ok(-f "$tempdir/backupR/postgresql.auto.conf", 'postgresql.auto.conf exists');
-ok(-f "$tempdir/backupR/standby.signal",       'standby.signal was created');
-my $recovery_conf = slurp_file "$tempdir/backupR/postgresql.auto.conf";
+ok(-f "$tempdir/backupR/recovery.conf", 'recovery.conf was created');
+my $recovery_conf = slurp_file "$tempdir/backupR/recovery.conf";
 rmtree("$tempdir/backupR");
 
 my $port = $node->port;
 like(
 	$recovery_conf,
+	qr/^standby_mode = 'on'\n/m,
+	'recovery.conf sets standby_mode');
+like(
+	$recovery_conf,
 	qr/^primary_conninfo = '.*port=$port.*'\n/m,
-	'postgresql.auto.conf sets primary_conninfo');
+	'recovery.conf sets primary_conninfo');
 
 $node->command_ok(
 	[ 'pg_basebackup', '-D', "$tempdir/backupxd" ],
@@ -478,9 +478,9 @@ $node->command_ok(
 	],
 	'pg_basebackup with replication slot and -R runs');
 like(
-	slurp_file("$tempdir/backupxs_sl_R/postgresql.auto.conf"),
+	slurp_file("$tempdir/backupxs_sl_R/recovery.conf"),
 	qr/^primary_slot_name = 'slot1'\n/m,
-	'recovery conf file sets primary_slot_name');
+	'recovery.conf sets primary_slot_name');
 
 my $checksum = $node->safe_psql('postgres', 'SHOW data_checksums;');
 is($checksum, 'on', 'checksums are enabled');
@@ -502,7 +502,7 @@ my $block_size = $node->safe_psql('postgres', 'SHOW block_size;');
 system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
 open $file, '+<', "$pgdata/$file_corrupt1";
 seek($file, $pageheader_size, 0);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
+syswrite($file, '\0\0\0\0\0\0\0\0\0');
 close $file;
 system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
 
@@ -521,7 +521,7 @@ for my $i (1 .. 5)
 {
 	my $offset = $pageheader_size + $i * $block_size;
 	seek($file, $offset, 0);
-	syswrite($file, "\0\0\0\0\0\0\0\0\0");
+	syswrite($file, '\0\0\0\0\0\0\0\0\0');
 }
 close $file;
 system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
@@ -537,8 +537,8 @@ rmtree("$tempdir/backup_corrupt2");
 # induce corruption in a second file
 system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
 open $file, '+<', "$pgdata/$file_corrupt2";
-seek($file, $pageheader_size, 0);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
+seek($file, 4000, 0);
+syswrite($file, '\0\0\0\0\0\0\0\0\0');
 close $file;
 system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
 

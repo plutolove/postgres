@@ -9,7 +9,7 @@
  * data even if the underlying table is dropped.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -20,7 +20,7 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/tuptoaster.h"
 #include "executor/tstoreReceiver.h"
 
 
@@ -133,7 +133,7 @@ tstoreReceiveSlot_detoast(TupleTableSlot *slot, DestReceiver *self)
 		{
 			if (VARATT_IS_EXTERNAL(DatumGetPointer(val)))
 			{
-				val = PointerGetDatum(detoast_external_attr((struct varlena *)
+				val = PointerGetDatum(heap_tuple_fetch_attr((struct varlena *)
 															DatumGetPointer(val)));
 				myState->tofree[nfree++] = val;
 			}

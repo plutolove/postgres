@@ -2,12 +2,12 @@
  *
  * kwlist.h
  *
- * The keyword lists are kept in their own source files for use by
+ * The keyword list is kept in its own source file for possible use by
  * automatic tools.  The exact representation of a keyword is determined
  * by the PG_KEYWORD macro, which is not defined in this file; it can
  * be defined by the caller for special purposes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -21,7 +21,8 @@
 /*
  * List of keyword (name, token-value, category) entries.
  *
- * Note: gen_keywordlist.pl requires the entries to appear in ASCII order.
+ * !!WARNING!!: This list must be sorted by ASCII name, because binary
+ *		 search is used to locate entries.
  */
 
 /* name, value, category */
@@ -155,7 +156,6 @@ PG_KEYWORD("exclusive", EXCLUSIVE, UNRESERVED_KEYWORD)
 PG_KEYWORD("execute", EXECUTE, UNRESERVED_KEYWORD)
 PG_KEYWORD("exists", EXISTS, COL_NAME_KEYWORD)
 PG_KEYWORD("explain", EXPLAIN, UNRESERVED_KEYWORD)
-PG_KEYWORD("expression", EXPRESSION, UNRESERVED_KEYWORD)
 PG_KEYWORD("extension", EXTENSION, UNRESERVED_KEYWORD)
 PG_KEYWORD("external", EXTERNAL, UNRESERVED_KEYWORD)
 PG_KEYWORD("extract", EXTRACT, COL_NAME_KEYWORD)
@@ -260,14 +260,8 @@ PG_KEYWORD("natural", NATURAL, TYPE_FUNC_NAME_KEYWORD)
 PG_KEYWORD("nchar", NCHAR, COL_NAME_KEYWORD)
 PG_KEYWORD("new", NEW, UNRESERVED_KEYWORD)
 PG_KEYWORD("next", NEXT, UNRESERVED_KEYWORD)
-PG_KEYWORD("nfc", NFC, UNRESERVED_KEYWORD)
-PG_KEYWORD("nfd", NFD, UNRESERVED_KEYWORD)
-PG_KEYWORD("nfkc", NFKC, UNRESERVED_KEYWORD)
-PG_KEYWORD("nfkd", NFKD, UNRESERVED_KEYWORD)
 PG_KEYWORD("no", NO, UNRESERVED_KEYWORD)
 PG_KEYWORD("none", NONE, COL_NAME_KEYWORD)
-PG_KEYWORD("normalize", NORMALIZE, COL_NAME_KEYWORD)
-PG_KEYWORD("normalized", NORMALIZED, UNRESERVED_KEYWORD)
 PG_KEYWORD("not", NOT, RESERVED_KEYWORD)
 PG_KEYWORD("nothing", NOTHING, UNRESERVED_KEYWORD)
 PG_KEYWORD("notify", NOTIFY, UNRESERVED_KEYWORD)
@@ -390,12 +384,10 @@ PG_KEYWORD("statistics", STATISTICS, UNRESERVED_KEYWORD)
 PG_KEYWORD("stdin", STDIN, UNRESERVED_KEYWORD)
 PG_KEYWORD("stdout", STDOUT, UNRESERVED_KEYWORD)
 PG_KEYWORD("storage", STORAGE, UNRESERVED_KEYWORD)
-PG_KEYWORD("stored", STORED, UNRESERVED_KEYWORD)
 PG_KEYWORD("strict", STRICT_P, UNRESERVED_KEYWORD)
 PG_KEYWORD("strip", STRIP_P, UNRESERVED_KEYWORD)
 PG_KEYWORD("subscription", SUBSCRIPTION, UNRESERVED_KEYWORD)
 PG_KEYWORD("substring", SUBSTRING, COL_NAME_KEYWORD)
-PG_KEYWORD("support", SUPPORT, UNRESERVED_KEYWORD)
 PG_KEYWORD("symmetric", SYMMETRIC, RESERVED_KEYWORD)
 PG_KEYWORD("sysid", SYSID, UNRESERVED_KEYWORD)
 PG_KEYWORD("system", SYSTEM_P, UNRESERVED_KEYWORD)
@@ -423,7 +415,6 @@ PG_KEYWORD("truncate", TRUNCATE, UNRESERVED_KEYWORD)
 PG_KEYWORD("trusted", TRUSTED, UNRESERVED_KEYWORD)
 PG_KEYWORD("type", TYPE_P, UNRESERVED_KEYWORD)
 PG_KEYWORD("types", TYPES_P, UNRESERVED_KEYWORD)
-PG_KEYWORD("uescape", UESCAPE, UNRESERVED_KEYWORD)
 PG_KEYWORD("unbounded", UNBOUNDED, UNRESERVED_KEYWORD)
 PG_KEYWORD("uncommitted", UNCOMMITTED, UNRESERVED_KEYWORD)
 PG_KEYWORD("unencrypted", UNENCRYPTED, UNRESERVED_KEYWORD)

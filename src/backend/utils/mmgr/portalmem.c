@@ -8,7 +8,7 @@
  * doesn't actually run the executor for them.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -281,7 +281,7 @@ void
 PortalDefineQuery(Portal portal,
 				  const char *prepStmtName,
 				  const char *sourceText,
-				  CommandTag commandTag,
+				  const char *commandTag,
 				  List *stmts,
 				  CachedPlan *cplan)
 {
@@ -289,12 +289,10 @@ PortalDefineQuery(Portal portal,
 	AssertState(portal->status == PORTAL_NEW);
 
 	AssertArg(sourceText != NULL);
-	AssertArg(commandTag != CMDTAG_UNKNOWN || stmts == NIL);
+	AssertArg(commandTag != NULL || stmts == NIL);
 
 	portal->prepStmtName = prepStmtName;
 	portal->sourceText = sourceText;
-	portal->qc.commandTag = commandTag;
-	portal->qc.nprocessed = 0;
 	portal->commandTag = commandTag;
 	portal->stmts = stmts;
 	portal->cplan = cplan;
@@ -1137,7 +1135,8 @@ pg_cursor(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not allowed in this context")));
+				 errmsg("materialize mode required, but it is not " \
+						"allowed in this context")));
 
 	/* need to build tuplestore in query context */
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
@@ -1147,7 +1146,7 @@ pg_cursor(PG_FUNCTION_ARGS)
 	 * build tupdesc for result tuples. This must match the definition of the
 	 * pg_cursors view in system_views.sql
 	 */
-	tupdesc = CreateTemplateTupleDesc(6);
+	tupdesc = CreateTemplateTupleDesc(6, false);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "name",
 					   TEXTOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "statement",
@@ -1227,19 +1226,13 @@ ThereAreNoReadyPortals(void)
 /*
  * Hold all pinned portals.
  *
- * When initiating a COMMIT or ROLLBACK inside a procedure, this must be
- * called to protect internally-generated cursors from being dropped during
- * the transaction shutdown.  Currently, SPI calls this automatically; PLs
- * that initiate COMMIT or ROLLBACK some other way are on the hook to do it
- * themselves.  (Note that we couldn't do this in, say, AtAbort_Portals
- * because we need to run user-defined code while persisting a portal.
- * It's too late to do that once transaction abort has started.)
- *
- * We protect such portals by converting them to held cursors.  We mark them
- * as "auto-held" so that exception exit knows to clean them up.  (In normal,
- * non-exception code paths, the PL needs to clean such portals itself, since
- * transaction end won't do it anymore; but that should be normal practice
- * anyway.)
+ * A procedural language implementation that uses pinned portals for its
+ * internally generated cursors can call this in its COMMIT command to convert
+ * those cursors to held cursors, so that they survive the transaction end.
+ * We mark those portals as "auto-held" so that exception exit knows to clean
+ * them up.  (In normal, non-exception code paths, the PL needs to clean those
+ * portals itself, since transaction end won't do it anymore, but that should
+ * be normal practice anyway.)
  */
 void
 HoldPinnedPortals(void)
@@ -1269,12 +1262,8 @@ HoldPinnedPortals(void)
 						(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 						 errmsg("cannot perform transaction commands inside a cursor loop that is not read-only")));
 
-			/* Verify it's in a suitable state to be held */
-			if (portal->status != PORTAL_READY)
-				elog(ERROR, "pinned portal is not ready to be auto-held");
-
-			HoldPortal(portal);
 			portal->autoHeld = true;
+			HoldPortal(portal);
 		}
 	}
 }

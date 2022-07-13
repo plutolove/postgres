@@ -3,11 +3,10 @@
  */
 #include "postgres.h"
 
-#include <limits.h>
+#include "catalog/pg_type.h"
 
 #include "_int.h"
-#include "catalog/pg_type.h"
-#include "lib/qunique.h"
+
 
 /* arguments are assumed sorted & unique-ified */
 bool
@@ -226,7 +225,6 @@ new_intArrayType(int num)
 	/* if no elements, return a zero-dimensional array */
 	if (num <= 0)
 	{
-		Assert(num == 0);
 		r = construct_empty_array(INT4OID);
 		return r;
 	}
@@ -254,8 +252,7 @@ resize_intArrayType(ArrayType *a, int num)
 	/* if no elements, return a zero-dimensional array */
 	if (num <= 0)
 	{
-		Assert(num == 0);
-		a = construct_empty_array(INT4OID);
+		ARR_NDIM(a) = 0;
 		return a;
 	}
 
@@ -291,42 +288,50 @@ copy_intArrayType(ArrayType *a)
 int
 internal_size(int *a, int len)
 {
-	int			i;
-	int64		size = 0;
+	int			i,
+				size = 0;
 
 	for (i = 0; i < len; i += 2)
 	{
 		if (!i || a[i] != a[i - 1]) /* do not count repeated range */
-			size += (int64) (a[i + 1]) - (int64) (a[i]) + 1;
+			size += a[i + 1] - a[i] + 1;
 	}
 
-	if (size > (int64) INT_MAX || size < (int64) INT_MIN)
-		return -1;				/* overflow */
-	return (int) size;
+	return size;
 }
 
 /* unique-ify elements of r in-place ... r must be sorted already */
 ArrayType *
 _int_unique(ArrayType *r)
 {
+	int		   *tmp,
+			   *dr,
+			   *data;
 	int			num = ARRNELEMS(r);
-	bool		duplicates_found;	/* not used */
 
-	num = qunique_arg(ARRPTR(r), num, sizeof(int), isort_cmp,
-					  &duplicates_found);
+	if (num < 2)
+		return r;
 
-	return resize_intArrayType(r, num);
+	data = tmp = dr = ARRPTR(r);
+	while (tmp - data < num)
+	{
+		if (*tmp != *dr)
+			*(++dr) = *tmp++;
+		else
+			tmp++;
+	}
+	return resize_intArrayType(r, dr + 1 - ARRPTR(r));
 }
 
 void
-gensign(BITVECP sign, int *a, int len, int siglen)
+gensign(BITVEC sign, int *a, int len)
 {
 	int			i;
 
 	/* we assume that the sign vector is previously zeroed */
 	for (i = 0; i < len; i++)
 	{
-		HASH(sign, *a, siglen);
+		HASH(sign, *a);
 		a++;
 	}
 }

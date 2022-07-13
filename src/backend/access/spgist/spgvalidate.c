@@ -3,7 +3,7 @@
  * spgvalidate.c
  *	  Opclass validator for SP-GiST.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -159,9 +159,6 @@ spgvalidate(Oid opclassoid)
 												configOut.leafType, true,
 												1, 1, procform->amproclefttype);
 				break;
-			case SPGIST_OPTIONS_PROC:
-				ok = check_amoptsproc_signature(procform->amproc);
-				break;
 			default:
 				ereport(INFO,
 						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -190,7 +187,6 @@ spgvalidate(Oid opclassoid)
 	{
 		HeapTuple	oprtup = &oprlist->members[i]->tuple;
 		Form_pg_amop oprform = (Form_pg_amop) GETSTRUCT(oprtup);
-		Oid			op_rettype;
 
 		/* TODO: Check that only allowed strategy numbers exist */
 		if (oprform->amopstrategy < 1 || oprform->amopstrategy > 63)
@@ -204,26 +200,20 @@ spgvalidate(Oid opclassoid)
 			result = false;
 		}
 
-		/* spgist supports ORDER BY operators */
-		if (oprform->amoppurpose != AMOP_SEARCH)
+		/* spgist doesn't support ORDER BY operators */
+		if (oprform->amoppurpose != AMOP_SEARCH ||
+			OidIsValid(oprform->amopsortfamily))
 		{
-			/* ... and operator result must match the claimed btree opfamily */
-			op_rettype = get_op_rettype(oprform->amopopr);
-			if (!opfamily_can_sort_type(oprform->amopsortfamily, op_rettype))
-			{
-				ereport(INFO,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("operator family \"%s\" of access method %s contains invalid ORDER BY specification for operator %s",
-								opfamilyname, "spgist",
-								format_operator(oprform->amopopr))));
-				result = false;
-			}
+			ereport(INFO,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("operator family \"%s\" of access method %s contains invalid ORDER BY specification for operator %s",
+							opfamilyname, "spgist",
+							format_operator(oprform->amopopr))));
+			result = false;
 		}
-		else
-			op_rettype = BOOLOID;
 
 		/* Check operator signature --- same for all spgist strategies */
-		if (!check_amop_signature(oprform->amopopr, op_rettype,
+		if (!check_amop_signature(oprform->amopopr, BOOLOID,
 								  oprform->amoplefttype,
 								  oprform->amoprighttype))
 		{
@@ -274,8 +264,6 @@ spgvalidate(Oid opclassoid)
 		{
 			if ((thisgroup->functionset & (((uint64) 1) << i)) != 0)
 				continue;		/* got it */
-			if (i == SPGIST_OPTIONS_PROC)
-				continue;		/* optional method */
 			ereport(INFO,
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 					 errmsg("operator family \"%s\" of access method %s is missing support function %d for type %s",

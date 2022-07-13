@@ -10,11 +10,11 @@
  * scan where each backend reads an arbitrary subset of the tuples that were
  * written.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
- *	  src/backend/utils/sort/sharedtuplestore.c
+ *	  src/backend/util/sort/sharedtuplestore.c
  *
  *-------------------------------------------------------------------------
  */
@@ -28,6 +28,8 @@
 #include "storage/lwlock.h"
 #include "storage/sharedfileset.h"
 #include "utils/sharedtuplestore.h"
+
+#include <limits.h>
 
 /*
  * The size of chunks, in pages.  This is somewhat arbitrarily set to match
@@ -95,7 +97,7 @@ struct SharedTuplestoreAccessor
 };
 
 static void sts_filename(char *name, SharedTuplestoreAccessor *accessor,
-						 int participant);
+			 int participant);
 
 /*
  * Return the amount of shared memory required to hold SharedTuplestore for a
@@ -171,7 +173,7 @@ sts_initialize(SharedTuplestore *sts, int participants,
 }
 
 /*
- * Attach to a SharedTuplestore that has been initialized by another backend,
+ * Attach to a SharedTupleStore that has been initialized by another backend,
  * so that this backend can read and write tuples.
  */
 SharedTuplestoreAccessor *
@@ -196,9 +198,14 @@ static void
 sts_flush_chunk(SharedTuplestoreAccessor *accessor)
 {
 	size_t		size;
+	size_t		written;
 
 	size = STS_CHUNK_PAGES * BLCKSZ;
-	BufFileWrite(accessor->write_file, accessor->write_chunk, size);
+	written = BufFileWrite(accessor->write_file, accessor->write_chunk, size);
+	if (written != size)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not write to temporary file: %m")));
 	memset(accessor->write_chunk, 0, size);
 	accessor->write_pointer = &accessor->write_chunk->data[0];
 	accessor->sts->participants[accessor->participant].npages +=
@@ -550,7 +557,6 @@ sts_parallel_scan_next(SharedTuplestoreAccessor *accessor, void *meta_data)
 		if (!eof)
 		{
 			SharedTuplestoreChunk chunk_header;
-			size_t		nread;
 
 			/* Make sure we have the file open. */
 			if (accessor->read_file == NULL)
@@ -566,15 +572,14 @@ sts_parallel_scan_next(SharedTuplestoreAccessor *accessor, void *meta_data)
 			if (BufFileSeekBlock(accessor->read_file, read_page) != 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not seek to block %u in shared tuplestore temporary file",
-								read_page)));
-			nread = BufFileRead(accessor->read_file, &chunk_header,
-								STS_CHUNK_HEADER_SIZE);
-			if (nread != STS_CHUNK_HEADER_SIZE)
+						 errmsg("could not read from shared tuplestore temporary file"),
+						 errdetail_internal("Could not seek to next block.")));
+			if (BufFileRead(accessor->read_file, &chunk_header,
+							STS_CHUNK_HEADER_SIZE) != STS_CHUNK_HEADER_SIZE)
 				ereport(ERROR,
 						(errcode_for_file_access(),
-						 errmsg("could not read from shared tuplestore temporary file: read only %zu of %zu bytes",
-								nread, STS_CHUNK_HEADER_SIZE)));
+						 errmsg("could not read from shared tuplestore temporary file"),
+						 errdetail_internal("Short read while reading chunk header.")));
 
 			/*
 			 * If this is an overflow chunk, we skip it and any following

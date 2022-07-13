@@ -17,9 +17,8 @@ teardown
 }
 
 session "s0"
-setup { SET synchronous_commit=on; }
 step "s0_begin" { BEGIN; }
-step "s0_getxid" { SELECT pg_current_xact_id() IS NULL; }
+step "s0_getxid" { SELECT txid_current() IS NULL; }
 step "s0_alter" { ALTER TYPE basket DROP ATTRIBUTE mangos; }
 step "s0_commit" { COMMIT; }
 step "s0_checkpoint" { CHECKPOINT; }
@@ -27,7 +26,6 @@ step "s0_vacuum" { VACUUM pg_attribute; }
 step "s0_get_changes" { SELECT data FROM pg_logical_slot_get_changes('isolation_slot', NULL, NULL, 'include-xids', '0', 'skip-empty-xacts', '1'); }
 
 session "s1"
-setup { SET synchronous_commit=on; }
 step "s1_begin" { BEGIN; }
 step "s1_insert" { INSERT INTO harvest VALUES ((1, 2, 3)); }
 step "s1_commit" { COMMIT; }

@@ -19,11 +19,11 @@
 #
 # Meta configuration
 
-standard_targets = all install installdirs uninstall distprep clean distclean maintainer-clean coverage check checkprep installcheck init-po update-po
+standard_targets = all install installdirs uninstall distprep clean distclean maintainer-clean coverage check installcheck init-po update-po
 # these targets should recurse even into subdirectories not being built:
 standard_always_targets = distprep clean distclean maintainer-clean
 
-.PHONY: $(standard_targets) install-strip html man installcheck-parallel update-unicode
+.PHONY: $(standard_targets) install-strip html man installcheck-parallel maintainer-check
 
 # make `all' the default target
 all:
@@ -39,8 +39,6 @@ all:
 VERSION = @PACKAGE_VERSION@
 MAJORVERSION = @PG_MAJORVERSION@
 VERSION_NUM = @PG_VERSION_NUM@
-
-PACKAGE_URL = @PACKAGE_URL@
 
 # Set top_srcdir, srcdir, and VPATH.
 ifdef PGXS
@@ -75,6 +73,9 @@ endif
 endif # not PGXS
 
 vpathsearch = `for f in $(addsuffix /$(1),$(subst :, ,. $(VPATH))); do test -r $$f && echo $$f && break; done`
+
+# Saved arguments from configure
+configure_args = @configure_args@
 
 
 ##########################################################################
@@ -184,7 +185,6 @@ with_perl	= @with_perl@
 with_python	= @with_python@
 with_tcl	= @with_tcl@
 with_openssl	= @with_openssl@
-with_readline	= @with_readline@
 with_selinux	= @with_selinux@
 with_systemd	= @with_systemd@
 with_gssapi	= @with_gssapi@
@@ -203,6 +203,7 @@ enable_dtrace	= @enable_dtrace@
 enable_coverage	= @enable_coverage@
 enable_tap_tests	= @enable_tap_tests@
 enable_thread_safety	= @enable_thread_safety@
+enable_strong_random	= @enable_strong_random@
 
 python_includespec	= @python_includespec@
 python_libdir		= @python_libdir@
@@ -240,7 +241,6 @@ BITCODE_CXXFLAGS = @BITCODE_CXXFLAGS@
 
 CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
-PG_SYSROOT = @PG_SYSROOT@
 
 override CPPFLAGS := $(ICU_CFLAGS) $(CPPFLAGS)
 
@@ -258,11 +258,9 @@ GCC = @GCC@
 SUN_STUDIO_CC = @SUN_STUDIO_CC@
 CXX = @CXX@
 CFLAGS = @CFLAGS@
-CFLAGS_SL = @CFLAGS_SL@
 CFLAGS_VECTOR = @CFLAGS_VECTOR@
 CFLAGS_SSE42 = @CFLAGS_SSE42@
 CFLAGS_ARMV8_CRC32C = @CFLAGS_ARMV8_CRC32C@
-PERMIT_DECLARATION_AFTER_STATEMENT = @PERMIT_DECLARATION_AFTER_STATEMENT@
 CXXFLAGS = @CXXFLAGS@
 
 LLVM_CPPFLAGS = @LLVM_CPPFLAGS@
@@ -333,7 +331,7 @@ else
 endif
 perl_archlibexp		= @perl_archlibexp@
 perl_privlibexp		= @perl_privlibexp@
-perl_includespec	= @perl_includespec@
+perl_includedir		= @perl_includedir@
 perl_embed_ccflags	= @perl_embed_ccflags@
 perl_embed_ldflags	= @perl_embed_ldflags@
 
@@ -350,22 +348,6 @@ XGETTEXT = @XGETTEXT@
 
 GZIP	= gzip
 BZIP2	= bzip2
-
-DOWNLOAD = wget -O $@ --no-use-server-timestamps
-#DOWNLOAD = curl -o $@
-
-
-# Unicode data information
-
-# Before each major release, update these and run make update-unicode.
-
-# Pick a release from here: <https://www.unicode.org/Public/>.  Note
-# that the most recent release listed there is often a pre-release;
-# don't pick that one, except for testing.
-UNICODE_VERSION = 13.0.0
-
-# Pick a release from here: <http://cldr.unicode.org/index/downloads>
-CLDR_VERSION = 37
 
 
 # Tree-wide build support
@@ -407,16 +389,10 @@ ifeq ($(MAKELEVEL),0)
 	rm -rf '$(abs_top_builddir)'/tmp_install
 	$(MKDIR_P) '$(abs_top_builddir)'/tmp_install/log
 	$(MAKE) -C '$(top_builddir)' DESTDIR='$(abs_top_builddir)'/tmp_install install >'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
-	$(MAKE) -j1 $(if $(CHECKPREP_TOP),-C $(CHECKPREP_TOP),) checkprep >>'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
+endif
+	$(if $(EXTRA_INSTALL),for extra in $(EXTRA_INSTALL); do $(MAKE) -C '$(top_builddir)'/$$extra DESTDIR='$(abs_top_builddir)'/tmp_install install >>'$(abs_top_builddir)'/tmp_install/log/install.log || exit; done)
 endif
 endif
-endif
-
-# Tasks to run serially at the end of temp-install.  Some EXTRA_INSTALL
-# entries appear more than once in the tree, and parallel installs of the same
-# file can fail with EEXIST.
-checkprep:
-	$(if $(EXTRA_INSTALL),for extra in $(EXTRA_INSTALL); do $(MAKE) -C '$(top_builddir)'/$$extra DESTDIR='$(abs_top_builddir)'/tmp_install install || exit; done)
 
 PROVE = @PROVE@
 # There are common routines in src/test/perl, and some test suites have
@@ -431,29 +407,26 @@ $(1)="$(if $($(1)),$(2):$$$(1),$(2))"
 endef
 
 # platform-specific environment variable to set shared library path
-# individual ports can override this later, this is the default name
-ld_library_path_var = LD_LIBRARY_PATH
+define ld_library_path_var
+$(if $(filter $(PORTNAME),darwin),DYLD_LIBRARY_PATH,$(if $(filter $(PORTNAME),aix),LIBPATH,$(if $(filter $(PORTNAME),hpux),SHLIB_PATH,LD_LIBRARY_PATH)))
+endef
 
-# with_temp_install_extra is for individual ports to define if they
-# need something more here. If not defined then the expansion does
-# nothing.
-with_temp_install = \
-	PATH="$(abs_top_builddir)/tmp_install$(bindir):$$PATH" \
-	$(call add_to_path,$(strip $(ld_library_path_var)),$(abs_top_builddir)/tmp_install$(libdir)) \
-	$(with_temp_install_extra)
+define with_temp_install
+PATH="$(abs_top_builddir)/tmp_install$(bindir):$$PATH" $(call add_to_path,$(ld_library_path_var),$(abs_top_builddir)/tmp_install$(libdir))
+endef
 
 ifeq ($(enable_tap_tests),yes)
 
 define prove_installcheck
 rm -rf '$(CURDIR)'/tmp_check
 $(MKDIR_P) '$(CURDIR)'/tmp_check
-cd $(srcdir) && TESTDIR='$(CURDIR)' PATH="$(bindir):$$PATH" PGPORT='6$(DEF_PGPORT)' top_builddir='$(CURDIR)/$(top_builddir)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' REGRESS_SHLIB='$(abs_top_builddir)/src/test/regress/regress$(DLSUFFIX)' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
+cd $(srcdir) && TESTDIR='$(CURDIR)' PATH="$(bindir):$$PATH" PGPORT='6$(DEF_PGPORT)' top_builddir='$(CURDIR)/$(top_builddir)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
 endef
 
 define prove_check
 rm -rf '$(CURDIR)'/tmp_check
 $(MKDIR_P) '$(CURDIR)'/tmp_check
-cd $(srcdir) && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' REGRESS_SHLIB='$(abs_top_builddir)/src/test/regress/regress$(DLSUFFIX)' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
+cd $(srcdir) && TESTDIR='$(CURDIR)' $(with_temp_install) PGPORT='6$(DEF_PGPORT)' PG_REGRESS='$(CURDIR)/$(top_builddir)/src/test/regress/pg_regress' $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
 endef
 
 else
@@ -498,6 +471,11 @@ GCOV = @GCOV@
 LCOV = @LCOV@
 GENHTML = @GENHTML@
 
+ifeq ($(enable_coverage),yes)
+# ccache loses .gcno files
+export CCACHE_DISABLE = 1
+endif
+
 # Feature settings
 
 DEF_PGPORT = @default_port@
@@ -518,6 +496,13 @@ host_tuple = @host@
 host_os = @host_os@
 host_cpu = @host_cpu@
 
+# Make HAVE_IPV6 available for initdb script creation
+HAVE_IPV6= @HAVE_IPV6@
+
+# This is mainly for use on FreeBSD, where we have both a.out and elf
+# systems now.  May be applicable to other systems to?
+ELF_SYSTEM= @ELF_SYS@
+
 # Backend stack size limit has to be hard-wired on Windows (it's in bytes)
 WIN32_STACK_RLIMIT=4194304
 
@@ -535,11 +520,6 @@ ifeq ($(enable_rpath), yes)
 LDFLAGS += $(rpath)
 endif
 
-# Show the DLSUFFIX to build scripts (e.g. buildfarm)
-.PHONY: show_dl_suffix
-show_dl_suffix:
-	@echo $(DLSUFFIX)
-
 
 ##########################################################################
 #
@@ -554,26 +534,21 @@ libpq_srcdir = $(top_srcdir)/src/interfaces/libpq
 libpq_builddir = $(top_builddir)/src/interfaces/libpq
 endif
 
-# How to link to libpq.  (This macro may be used as-is by backend extensions.
-# Client-side code should go through libpq_pgport or libpq_pgport_shlib,
-# instead.)
+# This macro is for use by libraries linking to libpq.  (Because libpgport
+# isn't created with the same link flags as libpq, it can't be used.)
 libpq = -L$(libpq_builddir) -lpq
 
-# libpq_pgport is for use by client executables (not libraries) that use libpq.
+# This macro is for use by client executables (not libraries) that use libpq.
 # We force clients to pull symbols from the non-shared libraries libpgport
 # and libpgcommon rather than pulling some libpgport symbols from libpq just
 # because libpq uses those functions too.  This makes applications less
-# dependent on changes in libpq's usage of pgport (on platforms where we
-# don't have symbol export control for libpq).  To do this we link to
+# dependent on changes in libpq's usage of pgport.  To do this we link to
 # pgport before libpq.  This does cause duplicate -lpgport's to appear
-# on client link lines, since that also appears in $(LIBS).
-# libpq_pgport_shlib is the same idea, but for use in client shared libraries.
+# on client link lines.
 ifdef PGXS
 libpq_pgport = -L$(libdir) -lpgcommon -lpgport $(libpq)
-libpq_pgport_shlib = -L$(libdir) -lpgcommon_shlib -lpgport_shlib $(libpq)
 else
 libpq_pgport = -L$(top_builddir)/src/common -lpgcommon -L$(top_builddir)/src/port -lpgport $(libpq)
-libpq_pgport_shlib = -L$(top_builddir)/src/common -lpgcommon_shlib -L$(top_builddir)/src/port -lpgport_shlib $(libpq)
 endif
 
 # Cygwin seems to need ldap libraries to be mentioned here, too
@@ -605,25 +580,16 @@ submake-libpgfeutils: | submake-generated-headers
 #
 # Testing support
 
-ifneq ($(USE_MODULE_DB),)
-  PL_TESTDB = pl_regression_$(NAME)
-  # Replace this with $(or ...) if we ever require GNU make 3.81.
-  ifneq ($(MODULE_big),)
-    CONTRIB_TESTDB=contrib_regression_$(MODULE_big)
-    ISOLATION_TESTDB=isolation_regression_$(MODULE_big)
-  else
-    ifneq ($(MODULES),)
-      CONTRIB_TESTDB=contrib_regression_$(word 1,$(MODULES))
-      ISOLATION_TESTDB=isolation_regression_$(word 1,$(MODULES))
-    else
-      CONTRIB_TESTDB=contrib_regression_$(word 1,$(REGRESS))
-      ISOLATION_TESTDB=isolation_regression_$(word 1,$(ISOLATION))
-    endif
-  endif
+PL_TESTDB = pl_regression
+CONTRIB_TESTDB = contrib_regression
+ifneq ($(MODULE_big),)
+  CONTRIB_TESTDB_MODULE = contrib_regression_$(MODULE_big)
 else
-  PL_TESTDB = pl_regression
-  CONTRIB_TESTDB = contrib_regression
-  ISOLATION_TESTDB = isolation_regression
+  ifneq ($(MODULES),)
+    CONTRIB_TESTDB_MODULE = contrib_regression_$(MODULES)
+  else
+    CONTRIB_TESTDB_MODULE = contrib_regression
+  endif
 endif
 
 ifdef NO_LOCALE
@@ -767,13 +733,6 @@ endif
 # foo.c -> foo.o -> foo steps.  This also ensures that dependency
 # tracking (see below) is used.
 %: %.c
-
-# Replace gmake's default rule for linking a single .o file to produce an
-# executable.  The main point here is to put LDFLAGS after the .o file,
-# since we put -l switches into LDFLAGS and those are order-sensitive.
-# In addition, include CFLAGS and LDFLAGS_EX per project conventions.
-%: %.o
-	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
 
 ifndef PGXS
 

@@ -892,22 +892,6 @@ SELECT * FROM
    FROM empsalary) emp
 WHERE depname = 'sales';
 
--- Test Sort node collapsing
-EXPLAIN (COSTS OFF)
-SELECT * FROM
-  (SELECT depname,
-          sum(salary) OVER (PARTITION BY depname order by empno) depsalary,
-          min(salary) OVER (PARTITION BY depname, empno order by enroll_date) depminsalary
-   FROM empsalary) emp
-WHERE depname = 'sales';
-
--- Test Sort node reordering
-EXPLAIN (COSTS OFF)
-SELECT
-  lead(1) OVER (PARTITION BY depname ORDER BY salary, enroll_date),
-  lag(1) OVER (PARTITION BY depname ORDER BY salary,enroll_date,empno)
-FROM empsalary;
-
 -- cleanup
 DROP TABLE empsalary;
 
@@ -1257,22 +1241,3 @@ SELECT to_char(SUM(n::float8) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND 1 FO
 SELECT i, b, bool_and(b) OVER w, bool_or(b) OVER w
   FROM (VALUES (1,true), (2,true), (3,false), (4,false), (5,true)) v(i,b)
   WINDOW w AS (ORDER BY i ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING);
-
--- Tests for problems with failure to walk or mutate expressions
--- within window frame clauses.
-
--- test walker (fails with collation error if expressions are not walked)
-SELECT array_agg(i) OVER w
-  FROM generate_series(1,5) i
-WINDOW w AS (ORDER BY i ROWS BETWEEN (('foo' < 'foobar')::integer) PRECEDING AND CURRENT ROW);
-
--- test mutator (fails when inlined if expressions are not mutated)
-CREATE FUNCTION pg_temp.f(group_size BIGINT) RETURNS SETOF integer[]
-AS $$
-    SELECT array_agg(s) OVER w
-      FROM generate_series(1,5) s
-    WINDOW w AS (ORDER BY s ROWS BETWEEN CURRENT ROW AND GROUP_SIZE FOLLOWING)
-$$ LANGUAGE SQL STABLE;
-
-EXPLAIN (costs off) SELECT * FROM pg_temp.f(2);
-SELECT * FROM pg_temp.f(2);

@@ -4,7 +4,7 @@
  *	  Display type names "nicely".
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -20,11 +20,13 @@
 #include "access/htup_details.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
-#include "mb/pg_wchar.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/syscache.h"
+#include "mb/pg_wchar.h"
+
+#define MAX_INT32_LEN 11
 
 static char *printTypmod(const char *typname, int32 typmod, Oid typmodout);
 
@@ -136,8 +138,7 @@ format_type_extended(Oid type_oid, int32 typemod, bits16 flags)
 	 */
 	array_base_type = typeform->typelem;
 
-	if (array_base_type != InvalidOid &&
-		typeform->typstorage != TYPSTORAGE_PLAIN)
+	if (array_base_type != InvalidOid && typeform->typstorage != 'p')
 	{
 		/* Switch our attention to the array element type */
 		ReleaseSysCache(tuple);

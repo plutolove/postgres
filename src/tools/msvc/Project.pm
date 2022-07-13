@@ -22,7 +22,7 @@ sub _new
 	my $self = {
 		name                  => $name,
 		type                  => $type,
-		guid                  => $^O eq "MSWin32" ? Win32::GuidGen() : 'FAKE',
+		guid                  => Win32::GuidGen(),
 		files                 => {},
 		references            => [],
 		libraries             => [],
@@ -132,8 +132,7 @@ sub AddLibrary
 {
 	my ($self, $lib, $dbgsuffix) = @_;
 
-	# quote lib name if it has spaces and isn't already quoted
-	if ($lib =~ m/\s/ && $lib !~ m/^[&]quot;/)
+	if ($lib =~ m/\s/)
 	{
 		$lib = '&quot;' . $lib . "&quot;";
 	}
@@ -231,7 +230,8 @@ sub AddDir
 				if ($filter eq "LIBOBJS")
 				{
 					no warnings qw(once);
-					if (grep(/$p/, @main::pgportfiles) == 1)
+					if (grep(/$p/, @main::pgportfiles, @main::pgcommonfiles)
+						== 1)
 					{
 						$p =~ s/\.c/\.o/;
 						$matches .= $p . " ";
@@ -338,14 +338,6 @@ sub AddResourceFile
 			if ($self->{type} eq "dll")
 			{
 				s/VFT_APP/VFT_DLL/gm;
-				my $name = $self->{name};
-				s/_INTERNAL_NAME_/"$name"/;
-				s/_ORIGINAL_NAME_/"$name.dll"/;
-			}
-			else
-			{
-				/_INTERNAL_NAME_/ && next;
-				/_ORIGINAL_NAME_/ && next;
 			}
 			print $o $_;
 		}
@@ -420,10 +412,13 @@ sub read_file
 {
 	my $filename = shift;
 	my $F;
-	local $/ = undef;
+	my $t = $/;
+
+	undef $/;
 	open($F, '<', $filename) || croak "Could not open file $filename\n";
 	my $txt = <$F>;
 	close($F);
+	$/ = $t;
 
 	return $txt;
 }
@@ -432,12 +427,15 @@ sub read_makefile
 {
 	my $reldir = shift;
 	my $F;
-	local $/ = undef;
+	my $t = $/;
+
+	undef $/;
 	open($F, '<', "$reldir/GNUmakefile")
 	  || open($F, '<', "$reldir/Makefile")
 	  || confess "Could not open $reldir/Makefile\n";
 	my $txt = <$F>;
 	close($F);
+	$/ = $t;
 
 	return $txt;
 }

@@ -4,7 +4,7 @@
  *	  routines to manage scans on GiST index relations
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,7 +17,6 @@
 #include "access/gist_private.h"
 #include "access/gistscan.h"
 #include "access/relscan.h"
-#include "utils/float.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -37,23 +36,8 @@ pairingheap_GISTSearchItem_cmp(const pairingheap_node *a, const pairingheap_node
 	/* Order according to distance comparison */
 	for (i = 0; i < scan->numberOfOrderBys; i++)
 	{
-		if (sa->distances[i].isnull)
-		{
-			if (!sb->distances[i].isnull)
-				return -1;
-		}
-		else if (sb->distances[i].isnull)
-		{
-			return 1;
-		}
-		else
-		{
-			int			cmp = -float8_cmp_internal(sa->distances[i].value,
-												   sb->distances[i].value);
-
-			if (cmp != 0)
-				return cmp;
-		}
+		if (sa->distances[i] != sb->distances[i])
+			return (sa->distances[i] < sb->distances[i]) ? 1 : -1;
 	}
 
 	/* Heap items go before inner pages, to ensure a depth-first search */
@@ -97,7 +81,7 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	so->queueCxt = giststate->scanCxt;	/* see gistrescan */
 
 	/* workspaces with size dependent on numberOfOrderBys: */
-	so->distances = palloc(sizeof(so->distances[0]) * scan->numberOfOrderBys);
+	so->distances = palloc(sizeof(double) * scan->numberOfOrderBys);
 	so->qual_ok = true;			/* in case there are zero keys */
 	if (scan->numberOfOrderBys > 0)
 	{
@@ -174,7 +158,6 @@ gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 	if (scan->xs_want_itup && !scan->xs_hitupdesc)
 	{
 		int			natts;
-		int			nkeyatts;
 		int			attno;
 
 		/*
@@ -184,21 +167,11 @@ gistrescan(IndexScanDesc scan, ScanKey key, int nkeys,
 		 * types.
 		 */
 		natts = RelationGetNumberOfAttributes(scan->indexRelation);
-		nkeyatts = IndexRelationGetNumberOfKeyAttributes(scan->indexRelation);
-		so->giststate->fetchTupdesc = CreateTemplateTupleDesc(natts);
-		for (attno = 1; attno <= nkeyatts; attno++)
+		so->giststate->fetchTupdesc = CreateTemplateTupleDesc(natts, false);
+		for (attno = 1; attno <= natts; attno++)
 		{
 			TupleDescInitEntry(so->giststate->fetchTupdesc, attno, NULL,
 							   scan->indexRelation->rd_opcintype[attno - 1],
-							   -1, 0);
-		}
-
-		for (; attno <= natts; attno++)
-		{
-			/* taking opcintype from giststate->tupdesc */
-			TupleDescInitEntry(so->giststate->fetchTupdesc, attno, NULL,
-							   TupleDescAttr(so->giststate->leafTupdesc,
-											 attno - 1)->atttypid,
 							   -1, 0);
 		}
 		scan->xs_hitupdesc = so->giststate->fetchTupdesc;

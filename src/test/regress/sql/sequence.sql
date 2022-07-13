@@ -272,6 +272,8 @@ DROP SEQUENCE seq2;
 -- should fail
 SELECT lastval();
 
+CREATE USER regress_seq_user;
+
 -- Test sequences in read-only transactions
 CREATE TEMPORARY SEQUENCE sequence_test_temp1;
 START TRANSACTION READ ONLY;
@@ -284,8 +286,6 @@ SELECT setval('sequence_test2', 1);  -- error
 ROLLBACK;
 
 -- privileges tests
-
-CREATE USER regress_seq_user;
 
 -- nextval
 BEGIN;

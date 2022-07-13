@@ -3,7 +3,7 @@
  * hashinsert.c
  *	  Item insertion in hash tables for Postgres.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,14 +17,15 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/heapam.h"
 #include "miscadmin.h"
-#include "storage/buf_internals.h"
-#include "storage/lwlock.h"
-#include "storage/predicate.h"
 #include "utils/rel.h"
+#include "storage/lwlock.h"
+#include "storage/buf_internals.h"
+#include "storage/predicate.h"
 
-static void _hash_vacuum_one_page(Relation rel, Relation hrel,
-								  Buffer metabuf, Buffer buf);
+static void _hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
+					  RelFileNode hnode);
 
 /*
  *	_hash_doinsert() -- Handle insertion of a single index tuple.
@@ -88,7 +89,7 @@ restart_insert:
 										  &usedmetap);
 	Assert(usedmetap != NULL);
 
-	CheckForSerializableConflictIn(rel, NULL, BufferGetBlockNumber(buf));
+	CheckForSerializableConflictIn(rel, NULL, buf);
 
 	/* remember the primary bucket buffer to release the pin on it at end. */
 	bucket_buf = buf;
@@ -137,7 +138,7 @@ restart_insert:
 
 			if (IsBufferCleanupOK(buf))
 			{
-				_hash_vacuum_one_page(rel, heapRel, metabuf, buf);
+				_hash_vacuum_one_page(rel, metabuf, buf, heapRel->rd_node);
 
 				if (PageGetFreeSpace(page) >= itemsz)
 					break;		/* OK, now we have enough space */
@@ -257,8 +258,8 @@ restart_insert:
  *	_hash_pgaddtup() -- add a tuple to a particular page in the index.
  *
  * This routine adds the tuple to the page as requested; it does not write out
- * the page.  It is an error to call this function without pin and write lock
- * on the target buffer.
+ * the page.  It is an error to call pgaddtup() without pin and write lock on
+ * the target buffer.
  *
  * Returns the offset number at which the tuple was inserted.  This function
  * is responsible for preserving the condition that tuples in a hash index
@@ -335,7 +336,8 @@ _hash_pgaddmultitup(Relation rel, Buffer buf, IndexTuple *itups,
  */
 
 static void
-_hash_vacuum_one_page(Relation rel, Relation hrel, Buffer metabuf, Buffer buf)
+_hash_vacuum_one_page(Relation rel, Buffer metabuf, Buffer buf,
+					  RelFileNode hnode)
 {
 	OffsetNumber deletable[MaxOffsetNumber];
 	int			ndeletable = 0;
@@ -359,12 +361,6 @@ _hash_vacuum_one_page(Relation rel, Relation hrel, Buffer metabuf, Buffer buf)
 
 	if (ndeletable > 0)
 	{
-		TransactionId latestRemovedXid;
-
-		latestRemovedXid =
-			index_compute_xid_horizon_for_tuples(rel, hrel, buf,
-												 deletable, ndeletable);
-
 		/*
 		 * Write-lock the meta page so that we can decrement tuple count.
 		 */
@@ -398,7 +394,7 @@ _hash_vacuum_one_page(Relation rel, Relation hrel, Buffer metabuf, Buffer buf)
 			xl_hash_vacuum_one_page xlrec;
 			XLogRecPtr	recptr;
 
-			xlrec.latestRemovedXid = latestRemovedXid;
+			xlrec.hnode = hnode;
 			xlrec.ntuples = ndeletable;
 
 			XLogBeginInsert();

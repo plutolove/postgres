@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_receivewal.c
@@ -19,13 +19,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "access/xlog_internal.h"
 #include "common/file_perm.h"
-#include "common/logging.h"
-#include "getopt_long.h"
 #include "libpq-fe.h"
+#include "access/xlog_internal.h"
+#include "getopt_long.h"
+
 #include "receivelog.h"
 #include "streamutil.h"
+
 
 /* Time to sleep between reconnection attempts */
 #define RECONNECT_SLEEP_TIME 5
@@ -52,14 +53,13 @@ static void close_destination_dir(DIR *dest_dir, char *dest_folder);
 static XLogRecPtr FindStreamingStart(uint32 *tli);
 static void StreamLog(void);
 static bool stop_streaming(XLogRecPtr segendpos, uint32 timeline,
-						   bool segment_finished);
+			   bool segment_finished);
 
-static void
-disconnect_atexit(void)
-{
-	if (conn != NULL)
-		PQfinish(conn);
-}
+#define disconnect_and_exit(code)				\
+	{											\
+	if (conn != NULL) PQfinish(conn);			\
+	exit(code);									\
+	}
 
 /* Routines to evaluate segment file format */
 #define IsCompressXLogFileName(fname)	 \
@@ -102,8 +102,7 @@ usage(void)
 	printf(_("\nOptional actions:\n"));
 	printf(_("      --create-slot      create a new replication slot (for the slot's name see --slot)\n"));
 	printf(_("      --drop-slot        drop the replication slot (for the slot's name see --slot)\n"));
-	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
-	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
+	printf(_("\nReport bugs to <pgsql-bugs@postgresql.org>.\n"));
 }
 
 static bool
@@ -114,16 +113,16 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 
 	/* we assume that we get called once at the end of each segment */
 	if (verbose && segment_finished)
-		pg_log_info("finished segment at %X/%X (timeline %u)",
-					(uint32) (xlogpos >> 32), (uint32) xlogpos,
-					timeline);
+		fprintf(stderr, _("%s: finished segment at %X/%X (timeline %u)\n"),
+				progname, (uint32) (xlogpos >> 32), (uint32) xlogpos,
+				timeline);
 
 	if (!XLogRecPtrIsInvalid(endpos) && endpos < xlogpos)
 	{
 		if (verbose)
-			pg_log_info("stopped log streaming at %X/%X (timeline %u)",
-						(uint32) (xlogpos >> 32), (uint32) xlogpos,
-						timeline);
+			fprintf(stderr, _("%s: stopped log streaming at %X/%X (timeline %u)\n"),
+					progname, (uint32) (xlogpos >> 32), (uint32) xlogpos,
+					timeline);
 		time_to_stop = true;
 		return true;
 	}
@@ -137,9 +136,9 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	 * timeline, but it's close enough for reporting purposes.
 	 */
 	if (verbose && prevtimeline != 0 && prevtimeline != timeline)
-		pg_log_info("switched to timeline %u at %X/%X",
-					timeline,
-					(uint32) (prevpos >> 32), (uint32) prevpos);
+		fprintf(stderr, _("%s: switched to timeline %u at %X/%X\n"),
+				progname, timeline,
+				(uint32) (prevpos >> 32), (uint32) prevpos);
 
 	prevtimeline = timeline;
 	prevpos = xlogpos;
@@ -147,7 +146,8 @@ stop_streaming(XLogRecPtr xlogpos, uint32 timeline, bool segment_finished)
 	if (time_to_stop)
 	{
 		if (verbose)
-			pg_log_info("received interrupt signal, exiting");
+			fprintf(stderr, _("%s: received interrupt signal, exiting\n"),
+					progname);
 		return true;
 	}
 	return false;
@@ -166,8 +166,9 @@ get_destination_dir(char *dest_folder)
 	dir = opendir(dest_folder);
 	if (dir == NULL)
 	{
-		pg_log_error("could not open directory \"%s\": %m", basedir);
-		exit(1);
+		fprintf(stderr, _("%s: could not open directory \"%s\": %s\n"),
+				progname, basedir, strerror(errno));
+		disconnect_and_exit(1);
 	}
 
 	return dir;
@@ -183,8 +184,9 @@ close_destination_dir(DIR *dest_dir, char *dest_folder)
 	Assert(dest_dir != NULL && dest_folder != NULL);
 	if (closedir(dest_dir))
 	{
-		pg_log_error("could not close directory \"%s\": %m", dest_folder);
-		exit(1);
+		fprintf(stderr, _("%s: could not close directory \"%s\": %s\n"),
+				progname, dest_folder, strerror(errno));
+		disconnect_and_exit(1);
 	}
 }
 
@@ -263,14 +265,16 @@ FindStreamingStart(uint32 *tli)
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", basedir, dirent->d_name);
 			if (stat(fullpath, &statbuf) != 0)
 			{
-				pg_log_error("could not stat file \"%s\": %m", fullpath);
-				exit(1);
+				fprintf(stderr, _("%s: could not stat file \"%s\": %s\n"),
+						progname, fullpath, strerror(errno));
+				disconnect_and_exit(1);
 			}
 
 			if (statbuf.st_size != WalSegSz)
 			{
-				pg_log_warning("segment file \"%s\" has incorrect size %d, skipping",
-							   dirent->d_name, (int) statbuf.st_size);
+				fprintf(stderr,
+						_("%s: segment file \"%s\" has incorrect size %d, skipping\n"),
+						progname, dirent->d_name, (int) statbuf.st_size);
 				continue;
 			}
 		}
@@ -280,33 +284,27 @@ FindStreamingStart(uint32 *tli)
 			char		buf[4];
 			int			bytes_out;
 			char		fullpath[MAXPGPATH * 2];
-			int			r;
 
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", basedir, dirent->d_name);
 
-			fd = open(fullpath, O_RDONLY | PG_BINARY, 0);
+			fd = open(fullpath, O_RDONLY | PG_BINARY);
 			if (fd < 0)
 			{
-				pg_log_error("could not open compressed file \"%s\": %m",
-							 fullpath);
-				exit(1);
+				fprintf(stderr, _("%s: could not open compressed file \"%s\": %s\n"),
+						progname, fullpath, strerror(errno));
+				disconnect_and_exit(1);
 			}
 			if (lseek(fd, (off_t) (-4), SEEK_END) < 0)
 			{
-				pg_log_error("could not seek in compressed file \"%s\": %m",
-							 fullpath);
-				exit(1);
+				fprintf(stderr, _("%s: could not seek in compressed file \"%s\": %s\n"),
+						progname, fullpath, strerror(errno));
+				disconnect_and_exit(1);
 			}
-			r = read(fd, (char *) buf, sizeof(buf));
-			if (r != sizeof(buf))
+			if (read(fd, (char *) buf, sizeof(buf)) != sizeof(buf))
 			{
-				if (r < 0)
-					pg_log_error("could not read compressed file \"%s\": %m",
-								 fullpath);
-				else
-					pg_log_error("could not read compressed file \"%s\": read %d of %zu",
-								 fullpath, r, sizeof(buf));
-				exit(1);
+				fprintf(stderr, _("%s: could not read compressed file \"%s\": %s\n"),
+						progname, fullpath, strerror(errno));
+				disconnect_and_exit(1);
 			}
 
 			close(fd);
@@ -315,8 +313,9 @@ FindStreamingStart(uint32 *tli)
 
 			if (bytes_out != WalSegSz)
 			{
-				pg_log_warning("compressed segment file \"%s\" has incorrect uncompressed size %d, skipping",
-							   dirent->d_name, bytes_out);
+				fprintf(stderr,
+						_("%s: compressed segment file \"%s\" has incorrect uncompressed size %d, skipping\n"),
+						progname, dirent->d_name, bytes_out);
 				continue;
 			}
 		}
@@ -334,8 +333,9 @@ FindStreamingStart(uint32 *tli)
 
 	if (errno)
 	{
-		pg_log_error("could not read directory \"%s\": %m", basedir);
-		exit(1);
+		fprintf(stderr, _("%s: could not read directory \"%s\": %s\n"),
+				progname, basedir, strerror(errno));
+		disconnect_and_exit(1);
 	}
 
 	close_destination_dir(dir, basedir);
@@ -389,7 +389,7 @@ StreamLog(void)
 		 * There's no hope of recovering from a version mismatch, so don't
 		 * retry.
 		 */
-		exit(1);
+		disconnect_and_exit(1);
 	}
 
 	/*
@@ -398,7 +398,7 @@ StreamLog(void)
 	 * existing output directory.
 	 */
 	if (!RunIdentifySystem(conn, NULL, &servertli, &serverpos, NULL))
-		exit(1);
+		disconnect_and_exit(1);
 
 	/*
 	 * Figure out where to start streaming.
@@ -419,9 +419,10 @@ StreamLog(void)
 	 * Start the replication
 	 */
 	if (verbose)
-		pg_log_info("starting log streaming at %X/%X (timeline %u)",
-					(uint32) (stream.startpos >> 32), (uint32) stream.startpos,
-					stream.timeline);
+		fprintf(stderr,
+				_("%s: starting log streaming at %X/%X (timeline %u)\n"),
+				progname, (uint32) (stream.startpos >> 32), (uint32) stream.startpos,
+				stream.timeline);
 
 	stream.stream_stop = stop_streaming;
 	stream.stop_socket = PGINVALID_SOCKET;
@@ -438,12 +439,13 @@ StreamLog(void)
 
 	if (!stream.walmethod->finish())
 	{
-		pg_log_info("could not finish writing WAL files: %m");
+		fprintf(stderr,
+				_("%s: could not finish writing WAL files: %s\n"),
+				progname, strerror(errno));
 		return;
 	}
 
 	PQfinish(conn);
-	conn = NULL;
 
 	FreeWalDirectoryMethod();
 	pg_free(stream.walmethod);
@@ -498,7 +500,6 @@ main(int argc, char **argv)
 	uint32		hi,
 				lo;
 
-	pg_logging_init(argv[0]);
 	progname = get_progname(argv[0]);
 	set_pglocale_pgservice(argv[0], PG_TEXTDOMAIN("pg_basebackup"));
 
@@ -534,7 +535,8 @@ main(int argc, char **argv)
 			case 'p':
 				if (atoi(optarg) <= 0)
 				{
-					pg_log_error("invalid port number \"%s\"", optarg);
+					fprintf(stderr, _("%s: invalid port number \"%s\"\n"),
+							progname, optarg);
 					exit(1);
 				}
 				dbport = pg_strdup(optarg);
@@ -552,7 +554,8 @@ main(int argc, char **argv)
 				standby_message_timeout = atoi(optarg) * 1000;
 				if (standby_message_timeout < 0)
 				{
-					pg_log_error("invalid status interval \"%s\"", optarg);
+					fprintf(stderr, _("%s: invalid status interval \"%s\"\n"),
+							progname, optarg);
 					exit(1);
 				}
 				break;
@@ -562,7 +565,9 @@ main(int argc, char **argv)
 			case 'E':
 				if (sscanf(optarg, "%X/%X", &hi, &lo) != 2)
 				{
-					pg_log_error("could not parse end position \"%s\"", optarg);
+					fprintf(stderr,
+							_("%s: could not parse end position \"%s\"\n"),
+							progname, optarg);
 					exit(1);
 				}
 				endpos = ((uint64) hi) << 32 | lo;
@@ -577,7 +582,8 @@ main(int argc, char **argv)
 				compresslevel = atoi(optarg);
 				if (compresslevel < 0 || compresslevel > 9)
 				{
-					pg_log_error("invalid compression level \"%s\"", optarg);
+					fprintf(stderr, _("%s: invalid compression level \"%s\"\n"),
+							progname, optarg);
 					exit(1);
 				}
 				break;
@@ -613,8 +619,9 @@ main(int argc, char **argv)
 	 */
 	if (optind < argc)
 	{
-		pg_log_error("too many command-line arguments (first is \"%s\")",
-					 argv[optind]);
+		fprintf(stderr,
+				_("%s: too many command-line arguments (first is \"%s\")\n"),
+				progname, argv[optind]);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -622,7 +629,7 @@ main(int argc, char **argv)
 
 	if (do_drop_slot && do_create_slot)
 	{
-		pg_log_error("cannot use --create-slot together with --drop-slot");
+		fprintf(stderr, _("%s: cannot use --create-slot together with --drop-slot\n"), progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -631,8 +638,8 @@ main(int argc, char **argv)
 	if (replication_slot == NULL && (do_drop_slot || do_create_slot))
 	{
 		/* translator: second %s is an option name */
-		pg_log_error("%s needs a slot to be specified using --slot",
-					 do_drop_slot ? "--drop-slot" : "--create-slot");
+		fprintf(stderr, _("%s: %s needs a slot to be specified using --slot\n"), progname,
+				do_drop_slot ? "--drop-slot" : "--create-slot");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -640,7 +647,7 @@ main(int argc, char **argv)
 
 	if (synchronous && !do_sync)
 	{
-		pg_log_error("cannot use --synchronous together with --no-sync");
+		fprintf(stderr, _("%s: cannot use --synchronous together with --no-sync\n"), progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -651,7 +658,7 @@ main(int argc, char **argv)
 	 */
 	if (basedir == NULL && !do_drop_slot && !do_create_slot)
 	{
-		pg_log_error("no target directory specified");
+		fprintf(stderr, _("%s: no target directory specified\n"), progname);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -660,7 +667,9 @@ main(int argc, char **argv)
 #ifndef HAVE_LIBZ
 	if (compresslevel != 0)
 	{
-		pg_log_error("this build does not support compression");
+		fprintf(stderr,
+				_("%s: this build does not support compression\n"),
+				progname);
 		exit(1);
 	}
 #endif
@@ -686,7 +695,6 @@ main(int argc, char **argv)
 	if (!conn)
 		/* error message already written in GetConnection() */
 		exit(1);
-	atexit(disconnect_atexit);
 
 	/*
 	 * Run IDENTIFY_SYSTEM to make sure we've successfully have established a
@@ -694,7 +702,7 @@ main(int argc, char **argv)
 	 * connection.
 	 */
 	if (!RunIdentifySystem(conn, NULL, NULL, NULL, &db_name))
-		exit(1);
+		disconnect_and_exit(1);
 
 	/*
 	 * Set umask so that directories/files are created with the same
@@ -708,7 +716,7 @@ main(int argc, char **argv)
 
 	/* determine remote server's xlog segment size */
 	if (!RetrieveWalSegSize(conn))
-		exit(1);
+		disconnect_and_exit(1);
 
 	/*
 	 * Check that there is a database associated with connection, none should
@@ -716,9 +724,10 @@ main(int argc, char **argv)
 	 */
 	if (db_name)
 	{
-		pg_log_error("replication connection using slot \"%s\" is unexpectedly database specific",
-					 replication_slot);
-		exit(1);
+		fprintf(stderr,
+				_("%s: replication connection using slot \"%s\" is unexpectedly database specific\n"),
+				progname, replication_slot);
+		disconnect_and_exit(1);
 	}
 
 	/*
@@ -727,23 +736,27 @@ main(int argc, char **argv)
 	if (do_drop_slot)
 	{
 		if (verbose)
-			pg_log_info("dropping replication slot \"%s\"", replication_slot);
+			fprintf(stderr,
+					_("%s: dropping replication slot \"%s\"\n"),
+					progname, replication_slot);
 
 		if (!DropReplicationSlot(conn, replication_slot))
-			exit(1);
-		exit(0);
+			disconnect_and_exit(1);
+		disconnect_and_exit(0);
 	}
 
 	/* Create a replication slot */
 	if (do_create_slot)
 	{
 		if (verbose)
-			pg_log_info("creating replication slot \"%s\"", replication_slot);
+			fprintf(stderr,
+					_("%s: creating replication slot \"%s\"\n"),
+					progname, replication_slot);
 
 		if (!CreateReplicationSlot(conn, replication_slot, NULL, false, true, false,
 								   slot_exists_ok))
-			exit(1);
-		exit(0);
+			disconnect_and_exit(1);
+		disconnect_and_exit(0);
 	}
 
 	/*
@@ -764,14 +777,15 @@ main(int argc, char **argv)
 		}
 		else if (noloop)
 		{
-			pg_log_error("disconnected");
+			fprintf(stderr, _("%s: disconnected\n"), progname);
 			exit(1);
 		}
 		else
 		{
+			fprintf(stderr,
 			/* translator: check source for value for %d */
-			pg_log_info("disconnected; waiting %d seconds to try again",
-						RECONNECT_SLEEP_TIME);
+					_("%s: disconnected; waiting %d seconds to try again\n"),
+					progname, RECONNECT_SLEEP_TIME);
 			pg_usleep(RECONNECT_SLEEP_TIME * 1000000);
 		}
 	}

@@ -4,7 +4,7 @@
  *	   This file contains index tuple accessor and mutator routines,
  *	   as well as various tuple utilities.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,17 +16,10 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
-#include "access/heaptoast.h"
-#include "access/htup_details.h"
+#include "access/heapam.h"
 #include "access/itup.h"
-#include "access/toast_internals.h"
+#include "access/tuptoaster.h"
 
-/*
- * This enables de-toasting of index entries.  Needed until VACUUM is
- * smart enough to rebuild indexes from scratch.
- */
-#define TOAST_INDEX_HACK
 
 /* ----------------------------------------------------------------
  *				  index_ tuple interface routines
@@ -89,7 +82,7 @@ index_form_tuple(TupleDesc tupleDescriptor,
 		if (VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
 		{
 			untoasted_values[i] =
-				PointerGetDatum(detoast_external_attr((struct varlena *)
+				PointerGetDatum(heap_tuple_fetch_attr((struct varlena *)
 													  DatumGetPointer(values[i])));
 			untoasted_free[i] = true;
 		}
@@ -100,8 +93,7 @@ index_form_tuple(TupleDesc tupleDescriptor,
 		 */
 		if (!VARATT_IS_EXTENDED(DatumGetPointer(untoasted_values[i])) &&
 			VARSIZE(DatumGetPointer(untoasted_values[i])) > TOAST_INDEX_TARGET &&
-			(att->attstorage == TYPSTORAGE_EXTENDED ||
-			 att->attstorage == TYPSTORAGE_MAIN))
+			(att->attstorage == 'x' || att->attstorage == 'm'))
 		{
 			Datum		cvalue = toast_compress_datum(untoasted_values[i]);
 
@@ -426,80 +418,19 @@ nocache_index_getattr(IndexTuple tup,
  *
  * The caller must allocate sufficient storage for the output arrays.
  * (INDEX_MAX_KEYS entries should be enough.)
- *
- * This is nearly the same as heap_deform_tuple(), but for IndexTuples.
- * One difference is that the tuple should never have any missing columns.
  */
 void
 index_deform_tuple(IndexTuple tup, TupleDesc tupleDescriptor,
 				   Datum *values, bool *isnull)
 {
-	int			hasnulls = IndexTupleHasNulls(tup);
-	int			natts = tupleDescriptor->natts; /* number of atts to extract */
-	int			attnum;
-	char	   *tp;				/* ptr to tuple data */
-	int			off;			/* offset in tuple data */
-	bits8	   *bp;				/* ptr to null bitmap in tuple */
-	bool		slow = false;	/* can we use/set attcacheoff? */
+	int			i;
 
 	/* Assert to protect callers who allocate fixed-size arrays */
-	Assert(natts <= INDEX_MAX_KEYS);
+	Assert(tupleDescriptor->natts <= INDEX_MAX_KEYS);
 
-	/* XXX "knows" t_bits are just after fixed tuple header! */
-	bp = (bits8 *) ((char *) tup + sizeof(IndexTupleData));
-
-	tp = (char *) tup + IndexInfoFindDataOffset(tup->t_info);
-	off = 0;
-
-	for (attnum = 0; attnum < natts; attnum++)
+	for (i = 0; i < tupleDescriptor->natts; i++)
 	{
-		Form_pg_attribute thisatt = TupleDescAttr(tupleDescriptor, attnum);
-
-		if (hasnulls && att_isnull(attnum, bp))
-		{
-			values[attnum] = (Datum) 0;
-			isnull[attnum] = true;
-			slow = true;		/* can't use attcacheoff anymore */
-			continue;
-		}
-
-		isnull[attnum] = false;
-
-		if (!slow && thisatt->attcacheoff >= 0)
-			off = thisatt->attcacheoff;
-		else if (thisatt->attlen == -1)
-		{
-			/*
-			 * We can only cache the offset for a varlena attribute if the
-			 * offset is already suitably aligned, so that there would be no
-			 * pad bytes in any case: then the offset will be valid for either
-			 * an aligned or unaligned value.
-			 */
-			if (!slow &&
-				off == att_align_nominal(off, thisatt->attalign))
-				thisatt->attcacheoff = off;
-			else
-			{
-				off = att_align_pointer(off, thisatt->attalign, -1,
-										tp + off);
-				slow = true;
-			}
-		}
-		else
-		{
-			/* not varlena, so safe to use att_align_nominal */
-			off = att_align_nominal(off, thisatt->attalign);
-
-			if (!slow)
-				thisatt->attcacheoff = off;
-		}
-
-		values[attnum] = fetchatt(thisatt, tp + off);
-
-		off = att_addlength_pointer(off, thisatt->attlen, tp + off);
-
-		if (thisatt->attlen <= 0)
-			slow = true;		/* can't use attcacheoff anymore */
+		values[i] = index_getattr(tup, i + 1, tupleDescriptor, &isnull[i]);
 	}
 }
 
@@ -544,11 +475,7 @@ index_truncate_tuple(TupleDesc sourceDescriptor, IndexTuple source,
 	bool		isnull[INDEX_MAX_KEYS];
 	IndexTuple	truncated;
 
-	Assert(leavenatts <= sourceDescriptor->natts);
-
-	/* Easy case: no truncation actually required */
-	if (leavenatts == sourceDescriptor->natts)
-		return CopyIndexTuple(source);
+	Assert(leavenatts < sourceDescriptor->natts);
 
 	/* Create temporary descriptor to scribble on */
 	truncdesc = palloc(TupleDescSize(sourceDescriptor));

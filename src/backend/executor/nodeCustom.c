@@ -3,7 +3,7 @@
  * nodeCustom.c
  *		Routines to handle execution of custom scan node
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * ------------------------------------------------------------------------
@@ -13,14 +13,14 @@
 #include "access/parallel.h"
 #include "executor/executor.h"
 #include "executor/nodeCustom.h"
-#include "miscadmin.h"
 #include "nodes/execnodes.h"
-#include "nodes/extensible.h"
 #include "nodes/plannodes.h"
+#include "miscadmin.h"
 #include "parser/parsetree.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
 
 static TupleTableSlot *ExecCustomScan(PlanState *pstate);
 
@@ -55,7 +55,7 @@ ExecInitCustomScan(CustomScan *cscan, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &css->ss.ps);
 
 	/*
-	 * open the scan relation, if any
+	 * open the base relation, if any, and acquire an appropriate lock on it
 	 */
 	if (scanrelid > 0)
 	{
@@ -72,15 +72,14 @@ ExecInitCustomScan(CustomScan *cscan, EState *estate, int eflags)
 	{
 		TupleDesc	scan_tupdesc;
 
-		scan_tupdesc = ExecTypeFromTL(cscan->custom_scan_tlist);
-		ExecInitScanTupleSlot(estate, &css->ss, scan_tupdesc, &TTSOpsVirtual);
+		scan_tupdesc = ExecTypeFromTL(cscan->custom_scan_tlist, false);
+		ExecInitScanTupleSlot(estate, &css->ss, scan_tupdesc);
 		/* Node's targetlist will contain Vars with varno = INDEX_VAR */
 		tlistvarno = INDEX_VAR;
 	}
 	else
 	{
-		ExecInitScanTupleSlot(estate, &css->ss, RelationGetDescr(scan_rel),
-							  &TTSOpsVirtual);
+		ExecInitScanTupleSlot(estate, &css->ss, RelationGetDescr(scan_rel));
 		/* Node's targetlist will contain Vars with varno = scanrelid */
 		tlistvarno = scanrelid;
 	}
@@ -88,7 +87,7 @@ ExecInitCustomScan(CustomScan *cscan, EState *estate, int eflags)
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(&css->ss.ps, &TTSOpsVirtual);
+	ExecInitResultTupleSlotTL(estate, &css->ss.ps);
 	ExecAssignScanProjectionInfoWithVarno(&css->ss, tlistvarno);
 
 	/* initialize child expressions */
@@ -127,6 +126,10 @@ ExecEndCustomScan(CustomScanState *node)
 	/* Clean out the tuple table */
 	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	/* Close the heap relation */
+	if (node->ss.ss_currentRelation)
+		ExecCloseScanRelation(node->ss.ss_currentRelation);
 }
 
 void

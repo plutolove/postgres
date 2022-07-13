@@ -14,11 +14,12 @@ $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
 my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
+my $appname           = 'replication_test';
 
 $node_publisher->safe_psql('postgres',
 	"CREATE PUBLICATION mypub FOR ALL TABLES;");
 $node_subscriber->safe_psql('postgres',
-	"CREATE SUBSCRIPTION mysub CONNECTION '$publisher_connstr' PUBLICATION mypub;"
+	"CREATE SUBSCRIPTION mysub CONNECTION '$publisher_connstr application_name=$appname' PUBLICATION mypub;"
 );
 
 $node_publisher->safe_psql('postgres',
@@ -29,7 +30,7 @@ $node_publisher->safe_psql('postgres',
 $node_subscriber->safe_psql('postgres',
 	q{CREATE TABLE test1 (a int PRIMARY KEY, b text);});
 
-$node_publisher->wait_for_catchup('mysub');
+$node_publisher->wait_for_catchup($appname);
 
 # Materialized views are not supported by logical replication, but
 # logical decoding does produce change information for them, so we
@@ -38,7 +39,7 @@ $node_publisher->wait_for_catchup('mysub');
 # create a MV with some data
 $node_publisher->safe_psql('postgres',
 	q{CREATE MATERIALIZED VIEW testmv1 AS SELECT * FROM test1;});
-$node_publisher->wait_for_catchup('mysub');
+$node_publisher->wait_for_catchup($appname);
 
 # There is no equivalent relation on the subscriber, but MV data is
 # not replicated, so this does not hang.

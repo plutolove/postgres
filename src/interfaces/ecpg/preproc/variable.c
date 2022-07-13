@@ -2,7 +2,7 @@
 
 #include "postgres_fe.h"
 
-#include "preproc_extern.h"
+#include "extern.h"
 
 static struct variable *allvariables = NULL;
 
@@ -560,7 +560,6 @@ adjust_array(enum ECPGttype type_enum, char **dimension, char **length, char *ty
 
 			break;
 		case ECPGt_varchar:
-		case ECPGt_bytea:
 			/* pointer has to get dimension 0 */
 			if (pointer_len)
 				*dimension = mm_strdup("0");

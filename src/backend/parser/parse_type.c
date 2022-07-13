@@ -3,7 +3,7 @@
  * parse_type.c
  *		handle type operations for parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,31 +19,20 @@
 #include "catalog/pg_type.h"
 #include "lib/stringinfo.h"
 #include "nodes/makefuncs.h"
-#include "parser/parse_type.h"
 #include "parser/parser.h"
+#include "parser/parse_type.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
+
 static int32 typenameTypeMod(ParseState *pstate, const TypeName *typeName,
-							 Type typ);
+				Type typ);
 
 
 /*
  * LookupTypeName
- *		Wrapper for typical case.
- */
-Type
-LookupTypeName(ParseState *pstate, const TypeName *typeName,
-			   int32 *typmod_p, bool missing_ok)
-{
-	return LookupTypeNameExtended(pstate,
-								  typeName, typmod_p, true, missing_ok);
-}
-
-/*
- * LookupTypeNameExtended
  *		Given a TypeName object, lookup the pg_type syscache entry of the type.
  *		Returns NULL if no such type can be found.  If the type is found,
  *		the typmod value represented in the TypeName struct is computed and
@@ -62,17 +51,11 @@ LookupTypeName(ParseState *pstate, const TypeName *typeName,
  * found but is a shell, and there is typmod decoration, an error will be
  * thrown --- this is intentional.
  *
- * If temp_ok is false, ignore types in the temporary namespace.  Pass false
- * when the caller will decide, using goodness of fit criteria, whether the
- * typeName is actually a type or something else.  If typeName always denotes
- * a type (or denotes nothing), pass true.
- *
  * pstate is only used for error location info, and may be NULL.
  */
 Type
-LookupTypeNameExtended(ParseState *pstate,
-					   const TypeName *typeName, int32 *typmod_p,
-					   bool temp_ok, bool missing_ok)
+LookupTypeName(ParseState *pstate, const TypeName *typeName,
+			   int32 *typmod_p, bool missing_ok)
 {
 	Oid			typoid;
 	HeapTuple	tup;
@@ -178,7 +161,7 @@ LookupTypeNameExtended(ParseState *pstate,
 
 			namespaceId = LookupExplicitNamespace(schemaname, missing_ok);
 			if (OidIsValid(namespaceId))
-				typoid = GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid,
+				typoid = GetSysCacheOid2(TYPENAMENSP,
 										 PointerGetDatum(typname),
 										 ObjectIdGetDatum(namespaceId));
 			else
@@ -189,7 +172,7 @@ LookupTypeNameExtended(ParseState *pstate,
 		else
 		{
 			/* Unqualified type name, so search the search path */
-			typoid = TypenameGetTypidExtended(typname, temp_ok);
+			typoid = TypenameGetTypid(typname);
 		}
 
 		/* If an array reference, return the array type instead */
@@ -247,7 +230,7 @@ LookupTypeNameOid(ParseState *pstate, const TypeName *typeName, bool missing_ok)
 		return InvalidOid;
 	}
 
-	typoid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+	typoid = HeapTupleGetOid(tup);
 	ReleaseSysCache(tup);
 
 	return typoid;
@@ -294,7 +277,7 @@ typenameTypeId(ParseState *pstate, const TypeName *typeName)
 	Type		tup;
 
 	tup = typenameType(pstate, typeName, NULL);
-	typoid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+	typoid = HeapTupleGetOid(tup);
 	ReleaseSysCache(tup);
 
 	return typoid;
@@ -313,7 +296,7 @@ typenameTypeIdAndMod(ParseState *pstate, const TypeName *typeName,
 	Type		tup;
 
 	tup = typenameType(pstate, typeName, typmod_p);
-	*typeid_p = ((Form_pg_type) GETSTRUCT(tup))->oid;
+	*typeid_p = HeapTupleGetOid(tup);
 	ReleaseSysCache(tup);
 }
 
@@ -409,7 +392,7 @@ typenameTypeMod(ParseState *pstate, const TypeName *typeName, Type typ)
 
 	/* hardwired knowledge about cstring's representation details here */
 	arrtypmod = construct_array(datums, n, CSTRINGOID,
-								-2, false, TYPALIGN_CHAR);
+								-2, false, 'c');
 
 	/* arrange to report location if type's typmodin function fails */
 	setup_parser_errposition_callback(&pcbstate, pstate, typeName->location);
@@ -589,7 +572,7 @@ typeTypeId(Type tp)
 {
 	if (tp == NULL)				/* probably useless */
 		elog(ERROR, "typeTypeId() called with NULL type struct");
-	return ((Form_pg_type) GETSTRUCT(tp))->oid;
+	return HeapTupleGetOid(tp);
 }
 
 /* given type (as type struct), return the length of type */
@@ -756,7 +739,7 @@ typeStringToTypeName(const char *str)
 	 * Setup error traceback support in case of ereport() during parse
 	 */
 	ptserrcontext.callback = pts_error_callback;
-	ptserrcontext.arg = unconstify(char *, str);
+	ptserrcontext.arg = (void *) str;
 	ptserrcontext.previous = error_context_stack;
 	error_context_stack = &ptserrcontext;
 
@@ -849,15 +832,13 @@ parseTypeString(const char *str, Oid *typeid_p, int32 *typmod_p, bool missing_ok
 	}
 	else
 	{
-		Form_pg_type typ = (Form_pg_type) GETSTRUCT(tup);
-
-		if (!typ->typisdefined)
+		if (!((Form_pg_type) GETSTRUCT(tup))->typisdefined)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
 					 errmsg("type \"%s\" is only a shell",
 							TypeNameToString(typeName)),
 					 parser_errposition(NULL, typeName->location)));
-		*typeid_p = typ->oid;
+		*typeid_p = HeapTupleGetOid(tup);
 		ReleaseSysCache(tup);
 	}
 }

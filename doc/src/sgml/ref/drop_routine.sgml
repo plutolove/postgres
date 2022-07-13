@@ -72,7 +72,8 @@ DROP ROUTINE foo(integer);
     <listitem>
      <para>Aggregate functions are an extension.</para>
     </listitem>
-   </itemizedlist></para>
+   </itemizedlist>
+  </para>
  </refsect1>
 
  <refsect1>

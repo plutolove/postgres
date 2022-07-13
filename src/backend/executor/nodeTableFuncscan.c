@@ -3,7 +3,7 @@
  * nodeTableFuncscan.c
  *	  Support routines for scanning RangeTableFunc (XMLTABLE like functions).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,15 +22,16 @@
  */
 #include "postgres.h"
 
+#include "nodes/execnodes.h"
 #include "executor/executor.h"
 #include "executor/nodeTableFuncscan.h"
 #include "executor/tablefunc.h"
 #include "miscadmin.h"
-#include "nodes/execnodes.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/xml.h"
+
 
 static TupleTableSlot *TableFuncNext(TableFuncScanState *node);
 static bool TableFuncRecheck(TableFuncScanState *node, TupleTableSlot *slot);
@@ -146,13 +147,12 @@ ExecInitTableFuncScan(TableFuncScan *node, EState *estate, int eflags)
 								 tf->coltypmods,
 								 tf->colcollations);
 	/* and the corresponding scan slot */
-	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc,
-						  &TTSOpsMinimalTuple);
+	ExecInitScanTupleSlot(estate, &scanstate->ss, tupdesc);
 
 	/*
-	 * Initialize result type and projection.
+	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTypeTL(&scanstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	/*
@@ -221,8 +221,7 @@ ExecEndTableFuncScan(TableFuncScanState *node)
 	/*
 	 * clean out the tuple table
 	 */
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
 	/*
@@ -244,8 +243,7 @@ ExecReScanTableFuncScan(TableFuncScanState *node)
 {
 	Bitmapset  *chgparam = node->ss.ps.chgParam;
 
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecScanReScan(&node->ss);
 
 	/*
@@ -335,6 +333,8 @@ tfuncFetchRows(TableFuncScanState *tstate, ExprContext *econtext)
 
 	MemoryContextSwitchTo(oldcxt);
 	MemoryContextReset(tstate->perTableCxt);
+
+	return;
 }
 
 /*
@@ -511,7 +511,7 @@ tfuncLoadRows(TableFuncScanState *tstate, ExprContext *econtext)
 
 			/* advance list of default expressions */
 			if (cell != NULL)
-				cell = lnext(tstate->coldefexprs, cell);
+				cell = lnext(cell);
 		}
 
 		tuplestore_putvalues(tstate->tupstore, tupdesc, values, nulls);

@@ -1,7 +1,4 @@
-<!--
-doc/src/sgml/ref/pg_config-ref.sgml
-PostgreSQL documentation
--->
+<!-- doc/src/sgml/ref/pg_config-ref.sgml -->
 
 <refentry id="app-pgconfig">
  <indexterm zone="app-pgconfig">

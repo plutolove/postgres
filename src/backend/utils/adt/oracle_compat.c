@@ -2,7 +2,7 @@
  * oracle_compat.c
  *	Oracle compatible functions.
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  *	Author: Edmund Mergl <E.Mergl@bawue.de>
  *	Multibyte enhancement: Tatsuo Ishii <ishii@postgresql.org>
@@ -16,14 +16,14 @@
 #include "postgres.h"
 
 #include "common/int.h"
-#include "mb/pg_wchar.h"
-#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/formatting.h"
+#include "mb/pg_wchar.h"
+
 
 static text *dotrim(const char *string, int stringlen,
-					const char *set, int setlen,
-					bool doltrim, bool dortrim);
+	   const char *set, int setlen,
+	   bool doltrim, bool dortrim);
 
 
 /********************************************************************
@@ -527,7 +527,7 @@ dotrim(const char *string, int stringlen,
  *
  * Syntax:
  *
- *	 bytea byteatrim(bytea string, bytea set)
+ *	 bytea byteatrim(byta string, bytea set)
  *
  * Purpose:
  *
@@ -1062,7 +1062,6 @@ repeat(PG_FUNCTION_ARGS)
 	{
 		memcpy(cp, sp, slen);
 		cp += slen;
-		CHECK_FOR_INTERRUPTS();
 	}
 
 	PG_RETURN_TEXT_P(result);

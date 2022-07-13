@@ -104,13 +104,9 @@ SELECT row_to_json(row((select array_agg(x) as d from generate_series(5,10) x)),
 
 -- anyarray column
 
-analyze rows;
-
-select attname, to_json(histogram_bounds) histogram_bounds
+select to_json(histogram_bounds) histogram_bounds
 from pg_stats
-where tablename = 'rows' and
-      schemaname = pg_my_temp_schema()::regnamespace::text
-order by 1;
+where attname = 'tmplname' and tablename = 'pg_pltemplate';
 
 -- to_json, timestamps
 
@@ -526,8 +522,6 @@ SELECT rec FROM json_populate_record(
 -- anonymous record type
 SELECT json_populate_record(null::record, '{"x": 0, "y": 1}');
 SELECT json_populate_record(row(1,2), '{"f1": 0, "f2": 1}');
-SELECT * FROM
-  json_populate_record(null::record, '{"x": 776}') AS (x int, y int);
 
 -- composite domain
 SELECT json_populate_record(null::j_ordered_pair, '{"x": 0, "y": 1}');
@@ -555,15 +549,6 @@ SELECT json_populate_recordset(null::record, '[{"x": 0, "y": 1}]');
 SELECT json_populate_recordset(row(1,2), '[{"f1": 0, "f2": 1}]');
 SELECT i, json_populate_recordset(row(i,50), '[{"f1":"42"},{"f2":"43"}]')
 FROM (VALUES (1),(2)) v(i);
-SELECT * FROM
-  json_populate_recordset(null::record, '[{"x": 776}]') AS (x int, y int);
-
--- empty array is a corner case
-SELECT json_populate_recordset(null::record, '[]');
-SELECT json_populate_recordset(row(1,2), '[]');
-SELECT * FROM json_populate_recordset(NULL::jpop,'[]') q;
-SELECT * FROM
-  json_populate_recordset(null::record, '[]') AS (x int, y int);
 
 -- composite domain
 SELECT json_populate_recordset(null::j_ordered_pair, '[{"x": 0, "y": 1}]');
@@ -752,13 +737,6 @@ select * from json_to_record('{"ia2": [1, 2, 3]}') as x(ia2 int[][]);
 select * from json_to_record('{"ia2": [[1, 2], [3, 4]]}') as x(ia2 int4[][]);
 select * from json_to_record('{"ia2": [[[1], [2], [3]]]}') as x(ia2 int4[][]);
 
-select * from json_to_record('{"out": {"key": 1}}') as x(out json);
-select * from json_to_record('{"out": [{"key": 1}]}') as x(out json);
-select * from json_to_record('{"out": "{\"key\": 1}"}') as x(out json);
-select * from json_to_record('{"out": {"key": 1}}') as x(out jsonb);
-select * from json_to_record('{"out": [{"key": 1}]}') as x(out jsonb);
-select * from json_to_record('{"out": "{\"key\": 1}"}') as x(out jsonb);
-
 -- json_strip_nulls
 
 select json_strip_nulls(null);
@@ -805,7 +783,7 @@ select json_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d":
 select json_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d": true, "f": false, "g": null}'::json, '"boolean"');
 select json_to_tsvector('english', '{"a": "aaa in bbb", "b": 123, "c": 456, "d": true, "f": false, "g": null}'::json, '["string", "numeric"]');
 
--- to_tsvector corner cases
+-- ts_vector corner cases
 select to_tsvector('""'::json);
 select to_tsvector('{}'::json);
 select to_tsvector('[]'::json);

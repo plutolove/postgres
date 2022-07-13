@@ -1,13 +1,11 @@
 # contrib/pg_freespacemap/Makefile
 
 MODULE_big = pg_freespacemap
-OBJS = \
-	$(WIN32RES) \
-	pg_freespacemap.o
+OBJS = pg_freespacemap.o $(WIN32RES)
 
 EXTENSION = pg_freespacemap
 DATA = pg_freespacemap--1.1.sql pg_freespacemap--1.1--1.2.sql \
-	pg_freespacemap--1.0--1.1.sql
+	pg_freespacemap--1.0--1.1.sql pg_freespacemap--unpackaged--1.0.sql
 PGFILEDESC = "pg_freespacemap - monitoring of free space map"
 
 ifdef USE_PGXS

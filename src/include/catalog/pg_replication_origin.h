@@ -4,7 +4,7 @@
  *	  definition of the "replication origin" system catalog
  *	  (pg_replication_origin)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_replication_origin.h
@@ -18,16 +18,17 @@
 #ifndef PG_REPLICATION_ORIGIN_H
 #define PG_REPLICATION_ORIGIN_H
 
-#include "access/xlogdefs.h"
 #include "catalog/genbki.h"
 #include "catalog/pg_replication_origin_d.h"
+
+#include "access/xlogdefs.h"
 
 /* ----------------
  *		pg_replication_origin.  cpp turns this into
  *		typedef struct FormData_pg_replication_origin
  * ----------------
  */
-CATALOG(pg_replication_origin,6000,ReplicationOriginRelationId) BKI_SHARED_RELATION
+CATALOG(pg_replication_origin,6000,ReplicationOriginRelationId) BKI_SHARED_RELATION BKI_WITHOUT_OIDS
 {
 	/*
 	 * Locally known id that get included into WAL.

@@ -3,7 +3,7 @@
  * publicationcmds.c
  *		publication manipulation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,27 +14,30 @@
 
 #include "postgres.h"
 
+#include "funcapi.h"
+#include "miscadmin.h"
+
 #include "access/genam.h"
+#include "access/hash.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/table.h"
 #include "access/xact.h"
+
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/objectaddress.h"
-#include "catalog/partition.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_type.h"
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_rel.h"
-#include "catalog/pg_type.h"
+
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/publicationcmds.h"
-#include "funcapi.h"
-#include "miscadmin.h"
-#include "utils/acl.h"
+
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -51,27 +54,26 @@
 static List *OpenTableList(List *tables);
 static void CloseTableList(List *rels);
 static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
-								 AlterPublicationStmt *stmt);
+					 AlterPublicationStmt *stmt);
 static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
 
 static void
 parse_publication_options(List *options,
 						  bool *publish_given,
-						  PublicationActions *pubactions,
-						  bool *publish_via_partition_root_given,
-						  bool *publish_via_partition_root)
+						  bool *publish_insert,
+						  bool *publish_update,
+						  bool *publish_delete,
+						  bool *publish_truncate)
 {
 	ListCell   *lc;
 
 	*publish_given = false;
-	*publish_via_partition_root_given = false;
 
-	/* defaults */
-	pubactions->pubinsert = true;
-	pubactions->pubupdate = true;
-	pubactions->pubdelete = true;
-	pubactions->pubtruncate = true;
-	*publish_via_partition_root = false;
+	/* Defaults are true */
+	*publish_insert = true;
+	*publish_update = true;
+	*publish_delete = true;
+	*publish_truncate = true;
 
 	/* Parse options */
 	foreach(lc, options)
@@ -93,10 +95,10 @@ parse_publication_options(List *options,
 			 * If publish option was given only the explicitly listed actions
 			 * should be published.
 			 */
-			pubactions->pubinsert = false;
-			pubactions->pubupdate = false;
-			pubactions->pubdelete = false;
-			pubactions->pubtruncate = false;
+			*publish_insert = false;
+			*publish_update = false;
+			*publish_delete = false;
+			*publish_truncate = false;
 
 			*publish_given = true;
 			publish = defGetString(defel);
@@ -112,32 +114,23 @@ parse_publication_options(List *options,
 				char	   *publish_opt = (char *) lfirst(lc);
 
 				if (strcmp(publish_opt, "insert") == 0)
-					pubactions->pubinsert = true;
+					*publish_insert = true;
 				else if (strcmp(publish_opt, "update") == 0)
-					pubactions->pubupdate = true;
+					*publish_update = true;
 				else if (strcmp(publish_opt, "delete") == 0)
-					pubactions->pubdelete = true;
+					*publish_delete = true;
 				else if (strcmp(publish_opt, "truncate") == 0)
-					pubactions->pubtruncate = true;
+					*publish_truncate = true;
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),
 							 errmsg("unrecognized \"publish\" value: \"%s\"", publish_opt)));
 			}
 		}
-		else if (strcmp(defel->defname, "publish_via_partition_root") == 0)
-		{
-			if (*publish_via_partition_root_given)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
-			*publish_via_partition_root_given = true;
-			*publish_via_partition_root = defGetBoolean(defel);
-		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized publication parameter: \"%s\"", defel->defname)));
+					 errmsg("unrecognized publication parameter: %s", defel->defname)));
 	}
 }
 
@@ -154,9 +147,10 @@ CreatePublication(CreatePublicationStmt *stmt)
 	Datum		values[Natts_pg_publication];
 	HeapTuple	tup;
 	bool		publish_given;
-	PublicationActions pubactions;
-	bool		publish_via_partition_root_given;
-	bool		publish_via_partition_root;
+	bool		publish_insert;
+	bool		publish_update;
+	bool		publish_delete;
+	bool		publish_truncate;
 	AclResult	aclresult;
 
 	/* must have CREATE privilege on database */
@@ -169,13 +163,12 @@ CreatePublication(CreatePublicationStmt *stmt)
 	if (stmt->for_all_tables && !superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to create FOR ALL TABLES publication")));
+				 (errmsg("must be superuser to create FOR ALL TABLES publication"))));
 
-	rel = table_open(PublicationRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	/* Check if name is used */
-	puboid = GetSysCacheOid1(PUBLICATIONNAME, Anum_pg_publication_oid,
-							 CStringGetDatum(stmt->pubname));
+	puboid = GetSysCacheOid1(PUBLICATIONNAME, CStringGetDatum(stmt->pubname));
 	if (OidIsValid(puboid))
 	{
 		ereport(ERROR,
@@ -193,30 +186,25 @@ CreatePublication(CreatePublicationStmt *stmt)
 	values[Anum_pg_publication_pubowner - 1] = ObjectIdGetDatum(GetUserId());
 
 	parse_publication_options(stmt->options,
-							  &publish_given, &pubactions,
-							  &publish_via_partition_root_given,
-							  &publish_via_partition_root);
+							  &publish_given, &publish_insert,
+							  &publish_update, &publish_delete,
+							  &publish_truncate);
 
-	puboid = GetNewOidWithIndex(rel, PublicationObjectIndexId,
-								Anum_pg_publication_oid);
-	values[Anum_pg_publication_oid - 1] = ObjectIdGetDatum(puboid);
 	values[Anum_pg_publication_puballtables - 1] =
 		BoolGetDatum(stmt->for_all_tables);
 	values[Anum_pg_publication_pubinsert - 1] =
-		BoolGetDatum(pubactions.pubinsert);
+		BoolGetDatum(publish_insert);
 	values[Anum_pg_publication_pubupdate - 1] =
-		BoolGetDatum(pubactions.pubupdate);
+		BoolGetDatum(publish_update);
 	values[Anum_pg_publication_pubdelete - 1] =
-		BoolGetDatum(pubactions.pubdelete);
+		BoolGetDatum(publish_delete);
 	values[Anum_pg_publication_pubtruncate - 1] =
-		BoolGetDatum(pubactions.pubtruncate);
-	values[Anum_pg_publication_pubviaroot - 1] =
-		BoolGetDatum(publish_via_partition_root);
+		BoolGetDatum(publish_truncate);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	puboid = CatalogTupleInsert(rel, tup);
 	heap_freetuple(tup);
 
 	recordDependencyOnOwner(PublicationRelationId, puboid, GetUserId());
@@ -237,17 +225,9 @@ CreatePublication(CreatePublicationStmt *stmt)
 		CloseTableList(rels);
 	}
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 
 	InvokeObjectPostCreateHook(PublicationRelationId, puboid, 0);
-
-	if (wal_level != WAL_LEVEL_LOGICAL)
-	{
-		ereport(WARNING,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("wal_level is insufficient to publish logical changes"),
-				 errhint("Set wal_level to logical before creating subscriptions.")));
-	}
 
 	return myself;
 }
@@ -263,16 +243,16 @@ AlterPublicationOptions(AlterPublicationStmt *stmt, Relation rel,
 	bool		replaces[Natts_pg_publication];
 	Datum		values[Natts_pg_publication];
 	bool		publish_given;
-	PublicationActions pubactions;
-	bool		publish_via_partition_root_given;
-	bool		publish_via_partition_root;
+	bool		publish_insert;
+	bool		publish_update;
+	bool		publish_delete;
+	bool		publish_truncate;
 	ObjectAddress obj;
-	Form_pg_publication pubform;
 
 	parse_publication_options(stmt->options,
-							  &publish_given, &pubactions,
-							  &publish_via_partition_root_given,
-							  &publish_via_partition_root);
+							  &publish_given, &publish_insert,
+							  &publish_update, &publish_delete,
+							  &publish_truncate);
 
 	/* Everything ok, form a new tuple. */
 	memset(values, 0, sizeof(values));
@@ -281,23 +261,17 @@ AlterPublicationOptions(AlterPublicationStmt *stmt, Relation rel,
 
 	if (publish_given)
 	{
-		values[Anum_pg_publication_pubinsert - 1] = BoolGetDatum(pubactions.pubinsert);
+		values[Anum_pg_publication_pubinsert - 1] = BoolGetDatum(publish_insert);
 		replaces[Anum_pg_publication_pubinsert - 1] = true;
 
-		values[Anum_pg_publication_pubupdate - 1] = BoolGetDatum(pubactions.pubupdate);
+		values[Anum_pg_publication_pubupdate - 1] = BoolGetDatum(publish_update);
 		replaces[Anum_pg_publication_pubupdate - 1] = true;
 
-		values[Anum_pg_publication_pubdelete - 1] = BoolGetDatum(pubactions.pubdelete);
+		values[Anum_pg_publication_pubdelete - 1] = BoolGetDatum(publish_delete);
 		replaces[Anum_pg_publication_pubdelete - 1] = true;
 
-		values[Anum_pg_publication_pubtruncate - 1] = BoolGetDatum(pubactions.pubtruncate);
+		values[Anum_pg_publication_pubtruncate - 1] = BoolGetDatum(publish_truncate);
 		replaces[Anum_pg_publication_pubtruncate - 1] = true;
-	}
-
-	if (publish_via_partition_root_given)
-	{
-		values[Anum_pg_publication_pubviaroot - 1] = BoolGetDatum(publish_via_partition_root);
-		replaces[Anum_pg_publication_pubviaroot - 1] = true;
 	}
 
 	tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
@@ -308,22 +282,14 @@ AlterPublicationOptions(AlterPublicationStmt *stmt, Relation rel,
 
 	CommandCounterIncrement();
 
-	pubform = (Form_pg_publication) GETSTRUCT(tup);
-
 	/* Invalidate the relcache. */
-	if (pubform->puballtables)
+	if (((Form_pg_publication) GETSTRUCT(tup))->puballtables)
 	{
 		CacheInvalidateRelcacheAll();
 	}
 	else
 	{
-		/*
-		 * For any partitioned tables contained in the publication, we must
-		 * invalidate all partitions contained in the respective partition
-		 * trees, not just those explicitly mentioned in the publication.
-		 */
-		List	   *relids = GetPublicationRelations(pubform->oid,
-													 PUBLICATION_PART_ALL);
+		List	   *relids = GetPublicationRelations(HeapTupleGetOid(tup));
 
 		/*
 		 * We don't want to send too many individual messages, at some point
@@ -344,11 +310,11 @@ AlterPublicationOptions(AlterPublicationStmt *stmt, Relation rel,
 			CacheInvalidateRelcacheAll();
 	}
 
-	ObjectAddressSet(obj, PublicationRelationId, pubform->oid);
+	ObjectAddressSet(obj, PublicationRelationId, HeapTupleGetOid(tup));
 	EventTriggerCollectSimpleCommand(obj, InvalidObjectAddress,
 									 (Node *) stmt);
 
-	InvokeObjectPostAlterHook(PublicationRelationId, pubform->oid, 0);
+	InvokeObjectPostAlterHook(PublicationRelationId, HeapTupleGetOid(tup), 0);
 }
 
 /*
@@ -358,9 +324,9 @@ static void
 AlterPublicationTables(AlterPublicationStmt *stmt, Relation rel,
 					   HeapTuple tup)
 {
+	Oid			pubid = HeapTupleGetOid(tup);
 	List	   *rels = NIL;
 	Form_pg_publication pubform = (Form_pg_publication) GETSTRUCT(tup);
-	Oid			pubid = pubform->oid;
 
 	/* Check that user is allowed to manipulate the publication tables. */
 	if (pubform->puballtables)
@@ -380,8 +346,7 @@ AlterPublicationTables(AlterPublicationStmt *stmt, Relation rel,
 		PublicationDropTables(pubid, rels, false);
 	else						/* DEFELEM_SET */
 	{
-		List	   *oldrelids = GetPublicationRelations(pubid,
-														PUBLICATION_PART_ROOT);
+		List	   *oldrelids = GetPublicationRelations(pubid);
 		List	   *delrels = NIL;
 		ListCell   *oldlc;
 
@@ -405,8 +370,8 @@ AlterPublicationTables(AlterPublicationStmt *stmt, Relation rel,
 
 			if (!found)
 			{
-				Relation	oldrel = table_open(oldrelid,
-												ShareUpdateExclusiveLock);
+				Relation	oldrel = heap_open(oldrelid,
+											   ShareUpdateExclusiveLock);
 
 				delrels = lappend(delrels, oldrel);
 			}
@@ -438,9 +403,8 @@ AlterPublication(AlterPublicationStmt *stmt)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	Form_pg_publication pubform;
 
-	rel = table_open(PublicationRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONNAME,
 							  CStringGetDatum(stmt->pubname));
@@ -451,10 +415,8 @@ AlterPublication(AlterPublicationStmt *stmt)
 				 errmsg("publication \"%s\" does not exist",
 						stmt->pubname)));
 
-	pubform = (Form_pg_publication) GETSTRUCT(tup);
-
 	/* must be owner */
-	if (!pg_publication_ownercheck(pubform->oid, GetUserId()))
+	if (!pg_publication_ownercheck(HeapTupleGetOid(tup), GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_PUBLICATION,
 					   stmt->pubname);
 
@@ -465,7 +427,7 @@ AlterPublication(AlterPublicationStmt *stmt)
 
 	/* Cleanup. */
 	heap_freetuple(tup);
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -477,7 +439,7 @@ RemovePublicationById(Oid pubid)
 	Relation	rel;
 	HeapTuple	tup;
 
-	rel = table_open(PublicationRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PUBLICATIONOID, ObjectIdGetDatum(pubid));
 
@@ -488,7 +450,7 @@ RemovePublicationById(Oid pubid)
 
 	ReleaseSysCache(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 }
 
 /*
@@ -501,7 +463,7 @@ RemovePublicationRelById(Oid proid)
 	HeapTuple	tup;
 	Form_pg_publication_rel pubrel;
 
-	rel = table_open(PublicationRelRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(PUBLICATIONREL, ObjectIdGetDatum(proid));
 
@@ -518,13 +480,12 @@ RemovePublicationRelById(Oid proid)
 
 	ReleaseSysCache(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 }
 
 /*
- * Open relations specified by a RangeVar list.
- * The returned tables are locked in ShareUpdateExclusiveLock mode in order to
- * add them to a publication.
+ * Open relations based on provided by RangeVar list.
+ * The returned tables are locked in ShareUpdateExclusiveLock mode.
  */
 static List *
 OpenTableList(List *tables)
@@ -538,15 +499,14 @@ OpenTableList(List *tables)
 	 */
 	foreach(lc, tables)
 	{
-		RangeVar   *rv = castNode(RangeVar, lfirst(lc));
-		bool		recurse = rv->inh;
+		RangeVar   *rv = lfirst(lc);
 		Relation	rel;
+		bool		recurse = rv->inh;
 		Oid			myrelid;
 
-		/* Allow query cancel in case this takes a long time */
 		CHECK_FOR_INTERRUPTS();
 
-		rel = table_openrv(rv, ShareUpdateExclusiveLock);
+		rel = heap_openrv(rv, ShareUpdateExclusiveLock);
 		myrelid = RelationGetRelid(rel);
 
 		/*
@@ -558,23 +518,16 @@ OpenTableList(List *tables)
 		 */
 		if (list_member_oid(relids, myrelid))
 		{
-			table_close(rel, ShareUpdateExclusiveLock);
+			heap_close(rel, ShareUpdateExclusiveLock);
 			continue;
 		}
-
 		rels = lappend(rels, rel);
 		relids = lappend_oid(relids, myrelid);
 
-		/*
-		 * Add children of this rel, if requested, so that they too are added
-		 * to the publication.  A partitioned table can't have any inheritance
-		 * children other than its partitions, which need not be explicitly
-		 * added to the publication.
-		 */
-		if (recurse && rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		if (recurse)
 		{
-			List	   *children;
 			ListCell   *child;
+			List	   *children;
 
 			children = find_all_inheritors(myrelid, ShareUpdateExclusiveLock,
 										   NULL);
@@ -583,18 +536,21 @@ OpenTableList(List *tables)
 			{
 				Oid			childrelid = lfirst_oid(child);
 
-				/* Allow query cancel in case this takes a long time */
-				CHECK_FOR_INTERRUPTS();
+				if (list_member_oid(relids, childrelid))
+					continue;
 
 				/*
 				 * Skip duplicates if user specified both parent and child
 				 * tables.
 				 */
 				if (list_member_oid(relids, childrelid))
+				{
+					heap_close(rel, ShareUpdateExclusiveLock);
 					continue;
+				}
 
 				/* find_all_inheritors already got lock */
-				rel = table_open(childrelid, NoLock);
+				rel = heap_open(childrelid, NoLock);
 				rels = lappend(rels, rel);
 				relids = lappend_oid(relids, childrelid);
 			}
@@ -618,7 +574,7 @@ CloseTableList(List *rels)
 	{
 		Relation	rel = (Relation) lfirst(lc);
 
-		table_close(rel, NoLock);
+		heap_close(rel, NoLock);
 	}
 }
 
@@ -670,8 +626,7 @@ PublicationDropTables(Oid pubid, List *rels, bool missing_ok)
 		Relation	rel = (Relation) lfirst(lc);
 		Oid			relid = RelationGetRelid(rel);
 
-		prid = GetSysCacheOid2(PUBLICATIONRELMAP, Anum_pg_publication_rel_oid,
-							   ObjectIdGetDatum(relid),
+		prid = GetSysCacheOid2(PUBLICATIONRELMAP, ObjectIdGetDatum(relid),
 							   ObjectIdGetDatum(pubid));
 		if (!OidIsValid(prid))
 		{
@@ -707,7 +662,7 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		AclResult	aclresult;
 
 		/* Must be owner */
-		if (!pg_publication_ownercheck(form->oid, GetUserId()))
+		if (!pg_publication_ownercheck(HeapTupleGetOid(tup), GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_PUBLICATION,
 						   NameStr(form->pubname));
 
@@ -733,11 +688,11 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(PublicationRelationId,
-							form->oid,
+							HeapTupleGetOid(tup),
 							newOwnerId);
 
 	InvokeObjectPostAlterHook(PublicationRelationId,
-							  form->oid, 0);
+							  HeapTupleGetOid(tup), 0);
 }
 
 /*
@@ -750,9 +705,8 @@ AlterPublicationOwner(const char *name, Oid newOwnerId)
 	HeapTuple	tup;
 	Relation	rel;
 	ObjectAddress address;
-	Form_pg_publication pubform;
 
-	rel = table_open(PublicationRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONNAME, CStringGetDatum(name));
 
@@ -761,8 +715,7 @@ AlterPublicationOwner(const char *name, Oid newOwnerId)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("publication \"%s\" does not exist", name)));
 
-	pubform = (Form_pg_publication) GETSTRUCT(tup);
-	subid = pubform->oid;
+	subid = HeapTupleGetOid(tup);
 
 	AlterPublicationOwner_internal(rel, tup, newOwnerId);
 
@@ -770,7 +723,7 @@ AlterPublicationOwner(const char *name, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 
 	return address;
 }
@@ -784,7 +737,7 @@ AlterPublicationOwner_oid(Oid subid, Oid newOwnerId)
 	HeapTuple	tup;
 	Relation	rel;
 
-	rel = table_open(PublicationRelationId, RowExclusiveLock);
+	rel = heap_open(PublicationRelationId, RowExclusiveLock);
 
 	tup = SearchSysCacheCopy1(PUBLICATIONOID, ObjectIdGetDatum(subid));
 
@@ -797,5 +750,5 @@ AlterPublicationOwner_oid(Oid subid, Oid newOwnerId)
 
 	heap_freetuple(tup);
 
-	table_close(rel, RowExclusiveLock);
+	heap_close(rel, RowExclusiveLock);
 }

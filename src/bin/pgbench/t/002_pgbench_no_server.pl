@@ -20,8 +20,6 @@ mkdir $testdir
 # invoke pgbench
 sub pgbench
 {
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
 	my ($opts, $stat, $out, $err, $name) = @_;
 	print STDERR "opts=$opts, stat=$stat, out=$out, err=$err, name=$name";
 	command_checks_all([ 'pgbench', split(/\s+/, $opts) ],
@@ -32,8 +30,6 @@ sub pgbench
 # invoke pgbench with scripts
 sub pgbench_scripts
 {
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
 	my ($opts, $stat, $out, $err, $name, $files) = @_;
 	my @cmd = ('pgbench', split /\s+/, $opts);
 	my @filenames = ();
@@ -66,7 +62,7 @@ my @options = (
 	[
 		'bad option',
 		'-h home -p 5432 -U calvin -d --bad-option',
-		[qr{--help.*more information}]
+		[ qr{(unrecognized|illegal) option}, qr{--help.*more information} ]
 	],
 	[
 		'no file',
@@ -147,37 +143,18 @@ my @options = (
 	[
 		'invalid init step',
 		'-i -I dta',
-		[
-			qr{unrecognized initialization step},
-			qr{Allowed step characters are}
-		]
+		[ qr{unrecognized initialization step}, qr{allowed steps are} ]
 	],
 	[
 		'bad random seed',
 		'--random-seed=one',
 		[
-			qr{unrecognized random seed option "one"},
-			qr{Expecting an unsigned integer, "time" or "rand"},
+			qr{unrecognized random seed option "one": expecting an unsigned integer, "time" or "rand"},
 			qr{error while setting random seed from --random-seed option}
 		]
 	],
-	[
-		'bad partition method',
-		'-i --partition-method=BAD',
-		[ qr{"range"}, qr{"hash"}, qr{"BAD"} ]
-	],
-	[
-		'bad partition number',
-		'-i --partitions -1',
-		[qr{invalid number of partitions: "-1"}]
-	],
-	[
-		'partition method without partitioning',
-		'-i --partition-method=hash',
-		[qr{partition-method requires greater than zero --partitions}]
-	],
 
-	# logging sub-options
+	# loging sub-options
 	[
 		'sampling => log', '--sampling-rate=0.01',
 		[qr{log sampling .* only when}]
@@ -236,17 +213,6 @@ pgbench(
 		qr{simple-update},              qr{select-only}
 	],
 	'pgbench builtin list');
-
-# builtin listing
-pgbench(
-	'--show-script se',
-	0,
-	[qr{^$}],
-	[
-		qr{select-only: }, qr{SELECT abalance FROM pgbench_accounts WHERE},
-		qr{(?!UPDATE)},    qr{(?!INSERT)}
-	],
-	'pgbench builtin listing');
 
 my @script_tests = (
 
@@ -320,27 +286,6 @@ my @script_tests = (
 		'too many arguments for hash',
 		[qr{unexpected number of arguments \(hash\)}],
 		{ 'bad-hash-2.sql' => "\\set i hash(1,2,3)\n" }
-	],
-	# overflow
-	[
-		'bigint overflow 1',
-		[qr{bigint constant overflow}],
-		{ 'overflow-1.sql' => "\\set i 100000000000000000000\n" }
-	],
-	[
-		'double overflow 2',
-		[qr{double constant overflow}],
-		{ 'overflow-2.sql' => "\\set d 1.0E309\n" }
-	],
-	[
-		'double overflow 3',
-		[qr{double constant overflow}],
-		{ 'overflow-3.sql' => "\\set d .1E310\n" }
-	],
-	[
-		'set i',
-		[ qr{set i 1 }, qr{\^ error found here} ],
-		{ 'set_i_op' => "\\set i 1 +\n" }
 	],);
 
 for my $t (@script_tests)

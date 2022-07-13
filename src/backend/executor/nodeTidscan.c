@@ -3,7 +3,7 @@
  * nodeTidscan.c
  *	  Routines to support direct tid scans of relations
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,13 +23,11 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
-#include "access/tableam.h"
 #include "catalog/pg_type.h"
 #include "executor/execdebug.h"
 #include "executor/nodeTidscan.h"
-#include "lib/qunique.h"
 #include "miscadmin.h"
-#include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "storage/bufmgr.h"
 #include "utils/array.h"
 #include "utils/rel.h"
@@ -130,22 +128,19 @@ static void
 TidListEval(TidScanState *tidstate)
 {
 	ExprContext *econtext = tidstate->ss.ps.ps_ExprContext;
-	TableScanDesc scan;
+	BlockNumber nblocks;
 	ItemPointerData *tidList;
 	int			numAllocTids;
 	int			numTids;
 	ListCell   *l;
 
 	/*
-	 * Start scan on-demand - initializing a scan isn't free (e.g. heap stats
-	 * the size of the table), so it makes sense to delay that until needed -
-	 * the node might never get executed.
+	 * We silently discard any TIDs that are out of range at the time of scan
+	 * start.  (Since we hold at least AccessShareLock on the table, it won't
+	 * be possible for someone to truncate away the blocks we intend to
+	 * visit.)
 	 */
-	if (tidstate->ss.ss_currentScanDesc == NULL)
-		tidstate->ss.ss_currentScanDesc =
-			table_beginscan_tid(tidstate->ss.ss_currentRelation,
-								tidstate->ss.ps.state->es_snapshot);
-	scan = tidstate->ss.ss_currentScanDesc;
+	nblocks = RelationGetNumberOfBlocks(tidstate->ss.ss_currentRelation);
 
 	/*
 	 * We initialize the array with enough slots for the case that all quals
@@ -169,27 +164,19 @@ TidListEval(TidScanState *tidstate)
 				DatumGetPointer(ExecEvalExprSwitchContext(tidexpr->exprstate,
 														  econtext,
 														  &isNull));
-			if (isNull)
-				continue;
-
-			/*
-			 * We silently discard any TIDs that the AM considers invalid
-			 * (E.g. for heap, they could be out of range at the time of scan
-			 * start.  Since we hold at least AccessShareLock on the table, it
-			 * won't be possible for someone to truncate away the blocks we
-			 * intend to visit.).
-			 */
-			if (!table_tuple_tid_valid(scan, itemptr))
-				continue;
-
-			if (numTids >= numAllocTids)
+			if (!isNull &&
+				ItemPointerIsValid(itemptr) &&
+				ItemPointerGetBlockNumber(itemptr) < nblocks)
 			{
-				numAllocTids *= 2;
-				tidList = (ItemPointerData *)
-					repalloc(tidList,
-							 numAllocTids * sizeof(ItemPointerData));
+				if (numTids >= numAllocTids)
+				{
+					numAllocTids *= 2;
+					tidList = (ItemPointerData *)
+						repalloc(tidList,
+								 numAllocTids * sizeof(ItemPointerData));
+				}
+				tidList[numTids++] = *itemptr;
 			}
-			tidList[numTids++] = *itemptr;
 		}
 		else if (tidexpr->exprstate && tidexpr->isarray)
 		{
@@ -207,7 +194,7 @@ TidListEval(TidScanState *tidstate)
 				continue;
 			itemarray = DatumGetArrayTypeP(arraydatum);
 			deconstruct_array(itemarray,
-							  TIDOID, sizeof(ItemPointerData), false, TYPALIGN_SHORT,
+							  TIDOID, sizeof(ItemPointerData), false, 's',
 							  &ipdatums, &ipnulls, &ndatums);
 			if (numTids + ndatums > numAllocTids)
 			{
@@ -218,15 +205,13 @@ TidListEval(TidScanState *tidstate)
 			}
 			for (i = 0; i < ndatums; i++)
 			{
-				if (ipnulls[i])
-					continue;
-
-				itemptr = (ItemPointer) DatumGetPointer(ipdatums[i]);
-
-				if (!table_tuple_tid_valid(scan, itemptr))
-					continue;
-
-				tidList[numTids++] = *itemptr;
+				if (!ipnulls[i])
+				{
+					itemptr = (ItemPointer) DatumGetPointer(ipdatums[i]);
+					if (ItemPointerIsValid(itemptr) &&
+						ItemPointerGetBlockNumber(itemptr) < nblocks)
+						tidList[numTids++] = *itemptr;
+				}
 			}
 			pfree(ipdatums);
 			pfree(ipnulls);
@@ -260,13 +245,21 @@ TidListEval(TidScanState *tidstate)
 	 */
 	if (numTids > 1)
 	{
+		int			lastTid;
+		int			i;
+
 		/* CurrentOfExpr could never appear OR'd with something else */
 		Assert(!tidstate->tss_isCurrentOf);
 
 		qsort((void *) tidList, numTids, sizeof(ItemPointerData),
 			  itemptr_comparator);
-		numTids = qunique(tidList, numTids, sizeof(ItemPointerData),
-						  itemptr_comparator);
+		lastTid = 0;
+		for (i = 1; i < numTids; i++)
+		{
+			if (!ItemPointerEquals(&tidList[lastTid], &tidList[i]))
+				tidList[++lastTid] = tidList[i];
+		}
+		numTids = lastTid + 1;
 	}
 
 	tidstate->tss_TidList = tidList;
@@ -312,9 +305,10 @@ TidNext(TidScanState *node)
 	EState	   *estate;
 	ScanDirection direction;
 	Snapshot	snapshot;
-	TableScanDesc scan;
 	Relation	heapRelation;
+	HeapTuple	tuple;
 	TupleTableSlot *slot;
+	Buffer		buffer = InvalidBuffer;
 	ItemPointerData *tidList;
 	int			numTids;
 	bool		bBackward;
@@ -334,9 +328,14 @@ TidNext(TidScanState *node)
 	if (node->tss_TidList == NULL)
 		TidListEval(node);
 
-	scan = node->ss.ss_currentScanDesc;
 	tidList = node->tss_TidList;
 	numTids = node->tss_NumTids;
+
+	/*
+	 * We use node->tss_htup as the tuple pointer; note this can't just be a
+	 * local variable here, as the scan tuple slot will keep a pointer to it.
+	 */
+	tuple = &(node->tss_htup);
 
 	/*
 	 * Initialize or advance scan position, depending on direction.
@@ -365,7 +364,7 @@ TidNext(TidScanState *node)
 
 	while (node->tss_TidPtr >= 0 && node->tss_TidPtr < numTids)
 	{
-		ItemPointerData tid = tidList[node->tss_TidPtr];
+		tuple->t_self = tidList[node->tss_TidPtr];
 
 		/*
 		 * For WHERE CURRENT OF, the tuple retrieved from the cursor might
@@ -373,11 +372,30 @@ TidNext(TidScanState *node)
 		 * current according to our snapshot.
 		 */
 		if (node->tss_isCurrentOf)
-			table_tuple_get_latest_tid(scan, &tid);
+			heap_get_latest_tid(heapRelation, snapshot, &tuple->t_self);
 
-		if (table_tuple_fetch_row_version(heapRelation, &tid, snapshot, slot))
+		if (heap_fetch(heapRelation, snapshot, tuple, &buffer, false, NULL))
+		{
+			/*
+			 * store the scanned tuple in the scan tuple slot of the scan
+			 * state.  Eventually we will only do this and not return a tuple.
+			 * Note: we pass 'false' because tuples returned by amgetnext are
+			 * pointers onto disk pages and were not created with palloc() and
+			 * so should not be pfree()'d.
+			 */
+			ExecStoreTuple(tuple,	/* tuple to store */
+						   slot,	/* slot to store in */
+						   buffer,	/* buffer associated with tuple  */
+						   false);	/* don't pfree */
+
+			/*
+			 * At this point we have an extra pin on the buffer, because
+			 * ExecStoreTuple incremented the pin count. Drop our local pin.
+			 */
+			ReleaseBuffer(buffer);
+
 			return slot;
-
+		}
 		/* Bad TID or failed snapshot qual; try next */
 		if (bBackward)
 			node->tss_TidPtr--;
@@ -424,7 +442,7 @@ TidRecheck(TidScanState *node, TupleTableSlot *slot)
  *		Initial States:
  *		  -- the relation indicated is opened for scanning so that the
  *			 "cursor" is positioned before the first qualifying tuple.
- *		  -- tss_TidPtr is -1.
+ *		  -- tidPtr is -1.
  * ----------------------------------------------------------------
  */
 static TupleTableSlot *
@@ -450,10 +468,6 @@ ExecReScanTidScan(TidScanState *node)
 	node->tss_NumTids = 0;
 	node->tss_TidPtr = -1;
 
-	/* not really necessary, but seems good form */
-	if (node->ss.ss_currentScanDesc)
-		table_rescan(node->ss.ss_currentScanDesc, NULL);
-
 	ExecScanReScan(&node->ss);
 }
 
@@ -467,9 +481,6 @@ ExecReScanTidScan(TidScanState *node)
 void
 ExecEndTidScan(TidScanState *node)
 {
-	if (node->ss.ss_currentScanDesc)
-		table_endscan(node->ss.ss_currentScanDesc);
-
 	/*
 	 * Free the exprcontext
 	 */
@@ -478,9 +489,13 @@ ExecEndTidScan(TidScanState *node)
 	/*
 	 * clear out tuple table slots
 	 */
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
+
+	/*
+	 * close the heap relation.
+	 */
+	ExecCloseScanRelation(node->ss.ss_currentRelation);
 }
 
 /* ----------------------------------------------------------------
@@ -490,7 +505,7 @@ ExecEndTidScan(TidScanState *node)
  *		scan keys, and opens the base and tid relations.
  *
  *		Parameters:
- *		  node: TidScan node produced by the planner.
+ *		  node: TidNode node produced by the planner.
  *		  estate: the execution state initialized in InitPlan.
  * ----------------------------------------------------------------
  */
@@ -523,7 +538,7 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 	tidstate->tss_TidPtr = -1;
 
 	/*
-	 * open the scan relation
+	 * open the base relation and acquire appropriate lock on it.
 	 */
 	currentRelation = ExecOpenScanRelation(estate, node->scan.scanrelid, eflags);
 
@@ -534,13 +549,12 @@ ExecInitTidScan(TidScan *node, EState *estate, int eflags)
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &tidstate->ss,
-						  RelationGetDescr(currentRelation),
-						  table_slot_callbacks(currentRelation));
+						  RelationGetDescr(currentRelation));
 
 	/*
-	 * Initialize result type and projection.
+	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTypeTL(&tidstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &tidstate->ss.ps);
 	ExecAssignScanProjectionInfo(&tidstate->ss);
 
 	/*

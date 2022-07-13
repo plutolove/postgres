@@ -1,25 +1,6 @@
 CREATE EXTENSION pg_visibility;
 
 --
--- recently-dropped table
---
-\set VERBOSITY sqlstate
-BEGIN;
-CREATE TABLE droppedtest (c int);
-SELECT 'droppedtest'::regclass::oid AS oid \gset
-SAVEPOINT q; DROP TABLE droppedtest; RELEASE q;
-SAVEPOINT q; SELECT * FROM pg_visibility_map(:oid); ROLLBACK TO q;
--- ERROR:  could not open relation with OID 16xxx
-SAVEPOINT q; SELECT 1; ROLLBACK TO q;
-SAVEPOINT q; SELECT 1; ROLLBACK TO q;
-SELECT pg_relation_size(:oid), pg_relation_filepath(:oid),
-  has_table_privilege(:oid, 'SELECT');
-SELECT * FROM pg_visibility_map(:oid);
--- ERROR:  could not open relation with OID 16xxx
-ROLLBACK;
-\set VERBOSITY default
-
---
 -- check that using the module's functions with unsupported relations will fail
 --
 
@@ -70,13 +51,13 @@ select pg_truncate_visibility_map('test_foreign_table');
 -- check some of the allowed relkinds
 create table regular_table (a int);
 insert into regular_table values (1), (2);
-vacuum (disable_page_skipping) regular_table;
+vacuum regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
 truncate regular_table;
 select count(*) > 0 from pg_visibility('regular_table');
 
 create materialized view matview_visibility_test as select * from regular_table;
-vacuum (disable_page_skipping) matview_visibility_test;
+vacuum matview_visibility_test;
 select count(*) > 0 from pg_visibility('matview_visibility_test');
 insert into regular_table values (1), (2);
 refresh materialized view matview_visibility_test;
@@ -84,7 +65,7 @@ select count(*) > 0 from pg_visibility('matview_visibility_test');
 
 -- regular tables which are part of a partition *do* have visibility maps
 insert into test_partition values (1);
-vacuum (disable_page_skipping) test_partition;
+vacuum test_partition;
 select count(*) > 0 from pg_visibility('test_partition', 0);
 select count(*) > 0 from pg_visibility_map('test_partition');
 select count(*) > 0 from pg_visibility_map_summary('test_partition');

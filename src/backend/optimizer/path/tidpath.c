@@ -12,19 +12,20 @@
  * this allows
  *		WHERE ctid IN (tid1, tid2, ...)
  *
- * As with indexscans, our definition of "pseudoconstant" is pretty liberal:
- * we allow anything that doesn't involve a volatile function or a Var of
- * the relation under consideration.  Vars belonging to other relations of
- * the query are allowed, giving rise to parameterized TID scans.
- *
  * We also support "WHERE CURRENT OF cursor" conditions (CurrentOfExpr),
  * which amount to "CTID = run-time-determined-TID".  These could in
  * theory be translated to a simple comparison of CTID to the result of
  * a function, but in practice it works better to keep the special node
  * representation all the way through to execution.
  *
+ * There is currently no special support for joins involving CTID; in
+ * particular nothing corresponding to best_inner_indexscan().  Since it's
+ * not very useful to store TIDs of one table in another table, there
+ * doesn't seem to be enough use-case to justify adding a lot of code
+ * for that.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ *
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -40,102 +41,84 @@
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
-#include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/restrictinfo.h"
 
-/* source-code-compatibility hacks for pull_varnos() API change */
-#define pull_varnos(a,b) pull_varnos_new(a,b)
+
+static bool IsTidEqualClause(OpExpr *node, int varno);
+static bool IsTidEqualAnyClause(ScalarArrayOpExpr *node, int varno);
+static List *TidQualFromExpr(Node *expr, int varno);
+static List *TidQualFromBaseRestrictinfo(RelOptInfo *rel);
 
 
 /*
- * Does this Var represent the CTID column of the specified baserel?
- */
-static inline bool
-IsCTIDVar(Var *var, RelOptInfo *rel)
-{
-	/* The vartype check is strictly paranoia */
-	if (var->varattno == SelfItemPointerAttributeNumber &&
-		var->vartype == TIDOID &&
-		var->varno == rel->relid &&
-		var->varlevelsup == 0)
-		return true;
-	return false;
-}
-
-/*
- * Check to see if a RestrictInfo is of the form
+ * Check to see if an opclause is of the form
  *		CTID = pseudoconstant
  * or
  *		pseudoconstant = CTID
- * where the CTID Var belongs to relation "rel", and nothing on the
- * other side of the clause does.
+ *
+ * We check that the CTID Var belongs to relation "varno".  That is probably
+ * redundant considering this is only applied to restriction clauses, but
+ * let's be safe.
  */
 static bool
-IsTidEqualClause(RestrictInfo *rinfo, RelOptInfo *rel)
+IsTidEqualClause(OpExpr *node, int varno)
 {
-	OpExpr	   *node;
 	Node	   *arg1,
 			   *arg2,
 			   *other;
-	Relids		other_relids;
-
-	/* Must be an OpExpr */
-	if (!is_opclause(rinfo->clause))
-		return false;
-	node = (OpExpr *) rinfo->clause;
+	Var		   *var;
 
 	/* Operator must be tideq */
 	if (node->opno != TIDEqualOperator)
 		return false;
-	Assert(list_length(node->args) == 2);
+	if (list_length(node->args) != 2)
+		return false;
 	arg1 = linitial(node->args);
 	arg2 = lsecond(node->args);
 
 	/* Look for CTID as either argument */
 	other = NULL;
-	other_relids = NULL;
-	if (arg1 && IsA(arg1, Var) &&
-		IsCTIDVar((Var *) arg1, rel))
+	if (arg1 && IsA(arg1, Var))
 	{
-		other = arg2;
-		other_relids = rinfo->right_relids;
+		var = (Var *) arg1;
+		if (var->varattno == SelfItemPointerAttributeNumber &&
+			var->vartype == TIDOID &&
+			var->varno == varno &&
+			var->varlevelsup == 0)
+			other = arg2;
 	}
-	if (!other && arg2 && IsA(arg2, Var) &&
-		IsCTIDVar((Var *) arg2, rel))
+	if (!other && arg2 && IsA(arg2, Var))
 	{
-		other = arg1;
-		other_relids = rinfo->left_relids;
+		var = (Var *) arg2;
+		if (var->varattno == SelfItemPointerAttributeNumber &&
+			var->vartype == TIDOID &&
+			var->varno == varno &&
+			var->varlevelsup == 0)
+			other = arg1;
 	}
 	if (!other)
 		return false;
+	if (exprType(other) != TIDOID)
+		return false;			/* probably can't happen */
 
 	/* The other argument must be a pseudoconstant */
-	if (bms_is_member(rel->relid, other_relids) ||
-		contain_volatile_functions(other))
+	if (!is_pseudo_constant_clause(other))
 		return false;
 
 	return true;				/* success */
 }
 
 /*
- * Check to see if a RestrictInfo is of the form
+ * Check to see if a clause is of the form
  *		CTID = ANY (pseudoconstant_array)
- * where the CTID Var belongs to relation "rel", and nothing on the
- * other side of the clause does.
  */
 static bool
-IsTidEqualAnyClause(PlannerInfo *root, RestrictInfo *rinfo, RelOptInfo *rel)
+IsTidEqualAnyClause(ScalarArrayOpExpr *node, int varno)
 {
-	ScalarArrayOpExpr *node;
 	Node	   *arg1,
 			   *arg2;
-
-	/* Must be a ScalarArrayOpExpr */
-	if (!(rinfo->clause && IsA(rinfo->clause, ScalarArrayOpExpr)))
-		return false;
-	node = (ScalarArrayOpExpr *) rinfo->clause;
 
 	/* Operator must be tideq */
 	if (node->opno != TIDEqualOperator)
@@ -147,235 +130,117 @@ IsTidEqualAnyClause(PlannerInfo *root, RestrictInfo *rinfo, RelOptInfo *rel)
 	arg2 = lsecond(node->args);
 
 	/* CTID must be first argument */
-	if (arg1 && IsA(arg1, Var) &&
-		IsCTIDVar((Var *) arg1, rel))
+	if (arg1 && IsA(arg1, Var))
 	{
-		/* The other argument must be a pseudoconstant */
-		if (bms_is_member(rel->relid, pull_varnos(root, arg2)) ||
-			contain_volatile_functions(arg2))
-			return false;
+		Var		   *var = (Var *) arg1;
 
-		return true;			/* success */
+		if (var->varattno == SelfItemPointerAttributeNumber &&
+			var->vartype == TIDOID &&
+			var->varno == varno &&
+			var->varlevelsup == 0)
+		{
+			/* The other argument must be a pseudoconstant */
+			if (is_pseudo_constant_clause(arg2))
+				return true;	/* success */
+		}
 	}
 
 	return false;
 }
 
 /*
- * Check to see if a RestrictInfo is a CurrentOfExpr referencing "rel".
- */
-static bool
-IsCurrentOfClause(RestrictInfo *rinfo, RelOptInfo *rel)
-{
-	CurrentOfExpr *node;
-
-	/* Must be a CurrentOfExpr */
-	if (!(rinfo->clause && IsA(rinfo->clause, CurrentOfExpr)))
-		return false;
-	node = (CurrentOfExpr *) rinfo->clause;
-
-	/* If it references this rel, we're good */
-	if (node->cvarno == rel->relid)
-		return true;
-
-	return false;
-}
-
-/*
- * Extract a set of CTID conditions from the given RestrictInfo
+ *	Extract a set of CTID conditions from the given qual expression
  *
- * Returns a List of CTID qual RestrictInfos for the specified rel (with
- * implicit OR semantics across the list), or NIL if there are no usable
- * conditions.
+ *	Returns a List of CTID qual expressions (with implicit OR semantics
+ *	across the list), or NIL if there are no usable conditions.
  *
- * This function considers only base cases; AND/OR combination is handled
- * below.  Therefore the returned List never has more than one element.
- * (Using a List may seem a bit weird, but it simplifies the caller.)
+ *	If the expression is an AND clause, we can use a CTID condition
+ *	from any sub-clause.  If it is an OR clause, we must be able to
+ *	extract a CTID condition from every sub-clause, or we can't use it.
+ *
+ *	In theory, in the AND case we could get CTID conditions from different
+ *	sub-clauses, in which case we could try to pick the most efficient one.
+ *	In practice, such usage seems very unlikely, so we don't bother; we
+ *	just exit as soon as we find the first candidate.
  */
 static List *
-TidQualFromRestrictInfo(PlannerInfo *root, RestrictInfo *rinfo, RelOptInfo *rel)
-{
-	/*
-	 * We may ignore pseudoconstant clauses (they can't contain Vars, so could
-	 * not match anyway).
-	 */
-	if (rinfo->pseudoconstant)
-		return NIL;
-
-	/*
-	 * If clause must wait till after some lower-security-level restriction
-	 * clause, reject it.
-	 */
-	if (!restriction_is_securely_promotable(rinfo, rel))
-		return NIL;
-
-	/*
-	 * Check all base cases.  If we get a match, return the clause.
-	 */
-	if (IsTidEqualClause(rinfo, rel) ||
-		IsTidEqualAnyClause(root, rinfo, rel) ||
-		IsCurrentOfClause(rinfo, rel))
-		return list_make1(rinfo);
-
-	return NIL;
-}
-
-/*
- * Extract a set of CTID conditions from implicit-AND List of RestrictInfos
- *
- * Returns a List of CTID qual RestrictInfos for the specified rel (with
- * implicit OR semantics across the list), or NIL if there are no usable
- * conditions.
- *
- * This function is just concerned with handling AND/OR recursion.
- */
-static List *
-TidQualFromRestrictInfoList(PlannerInfo *root, List *rlist, RelOptInfo *rel)
+TidQualFromExpr(Node *expr, int varno)
 {
 	List	   *rlst = NIL;
 	ListCell   *l;
 
-	foreach(l, rlist)
+	if (is_opclause(expr))
 	{
-		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
-
-		if (restriction_is_or_clause(rinfo))
+		/* base case: check for tideq opclause */
+		if (IsTidEqualClause((OpExpr *) expr, varno))
+			rlst = list_make1(expr);
+	}
+	else if (expr && IsA(expr, ScalarArrayOpExpr))
+	{
+		/* another base case: check for tid = ANY clause */
+		if (IsTidEqualAnyClause((ScalarArrayOpExpr *) expr, varno))
+			rlst = list_make1(expr);
+	}
+	else if (expr && IsA(expr, CurrentOfExpr))
+	{
+		/* another base case: check for CURRENT OF on this rel */
+		if (((CurrentOfExpr *) expr)->cvarno == varno)
+			rlst = list_make1(expr);
+	}
+	else if (and_clause(expr))
+	{
+		foreach(l, ((BoolExpr *) expr)->args)
 		{
-			ListCell   *j;
+			rlst = TidQualFromExpr((Node *) lfirst(l), varno);
+			if (rlst)
+				break;
+		}
+	}
+	else if (or_clause(expr))
+	{
+		foreach(l, ((BoolExpr *) expr)->args)
+		{
+			List	   *frtn = TidQualFromExpr((Node *) lfirst(l), varno);
 
-			/*
-			 * We must be able to extract a CTID condition from every
-			 * sub-clause of an OR, or we can't use it.
-			 */
-			foreach(j, ((BoolExpr *) rinfo->orclause)->args)
+			if (frtn)
+				rlst = list_concat(rlst, frtn);
+			else
 			{
-				Node	   *orarg = (Node *) lfirst(j);
-				List	   *sublist;
-
-				/* OR arguments should be ANDs or sub-RestrictInfos */
-				if (is_andclause(orarg))
-				{
-					List	   *andargs = ((BoolExpr *) orarg)->args;
-
-					/* Recurse in case there are sub-ORs */
-					sublist = TidQualFromRestrictInfoList(root, andargs, rel);
-				}
-				else
-				{
-					RestrictInfo *rinfo = castNode(RestrictInfo, orarg);
-
-					Assert(!restriction_is_or_clause(rinfo));
-					sublist = TidQualFromRestrictInfo(root, rinfo, rel);
-				}
-
-				/*
-				 * If nothing found in this arm, we can't do anything with
-				 * this OR clause.
-				 */
-				if (sublist == NIL)
-				{
-					rlst = NIL; /* forget anything we had */
-					break;		/* out of loop over OR args */
-				}
-
-				/*
-				 * OK, continue constructing implicitly-OR'ed result list.
-				 */
-				rlst = list_concat(rlst, sublist);
+				if (rlst)
+					list_free(rlst);
+				rlst = NIL;
+				break;
 			}
 		}
-		else
-		{
-			/* Not an OR clause, so handle base cases */
-			rlst = TidQualFromRestrictInfo(root, rinfo, rel);
-		}
-
-		/*
-		 * Stop as soon as we find any usable CTID condition.  In theory we
-		 * could get CTID equality conditions from different AND'ed clauses,
-		 * in which case we could try to pick the most efficient one.  In
-		 * practice, such usage seems very unlikely, so we don't bother; we
-		 * just exit as soon as we find the first candidate.
-		 */
-		if (rlst)
-			break;
 	}
-
 	return rlst;
 }
 
 /*
- * Given a list of join clauses involving our rel, create a parameterized
- * TidPath for each one that is a suitable TidEqual clause.
- *
- * In principle we could combine clauses that reference the same outer rels,
- * but it doesn't seem like such cases would arise often enough to be worth
- * troubling over.
+ *	Extract a set of CTID conditions from the rel's baserestrictinfo list
  */
-static void
-BuildParameterizedTidPaths(PlannerInfo *root, RelOptInfo *rel, List *clauses)
+static List *
+TidQualFromBaseRestrictinfo(RelOptInfo *rel)
 {
+	List	   *rlst = NIL;
 	ListCell   *l;
 
-	foreach(l, clauses)
+	foreach(l, rel->baserestrictinfo)
 	{
-		RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
-		List	   *tidquals;
-		Relids		required_outer;
+		RestrictInfo *rinfo = (RestrictInfo *) lfirst(l);
 
 		/*
-		 * Validate whether each clause is actually usable; we must check this
-		 * even when examining clauses generated from an EquivalenceClass,
-		 * since they might not satisfy the restriction on not having Vars of
-		 * our rel on the other side, or somebody might've built an operator
-		 * class that accepts type "tid" but has other operators in it.
-		 *
-		 * We currently consider only TidEqual join clauses.  In principle we
-		 * might find a suitable ScalarArrayOpExpr in the rel's joininfo list,
-		 * but it seems unlikely to be worth expending the cycles to check.
-		 * And we definitely won't find a CurrentOfExpr here.  Hence, we don't
-		 * use TidQualFromRestrictInfo; but this must match that function
-		 * otherwise.
+		 * If clause must wait till after some lower-security-level
+		 * restriction clause, reject it.
 		 */
-		if (rinfo->pseudoconstant ||
-			!restriction_is_securely_promotable(rinfo, rel) ||
-			!IsTidEqualClause(rinfo, rel))
+		if (!restriction_is_securely_promotable(rinfo, rel))
 			continue;
 
-		/*
-		 * Check if clause can be moved to this rel; this is probably
-		 * redundant when considering EC-derived clauses, but we must check it
-		 * for "loose" join clauses.
-		 */
-		if (!join_clause_is_movable_to(rinfo, rel))
-			continue;
-
-		/* OK, make list of clauses for this path */
-		tidquals = list_make1(rinfo);
-
-		/* Compute required outer rels for this path */
-		required_outer = bms_union(rinfo->required_relids, rel->lateral_relids);
-		required_outer = bms_del_member(required_outer, rel->relid);
-
-		add_path(rel, (Path *) create_tidscan_path(root, rel, tidquals,
-												   required_outer));
+		rlst = TidQualFromExpr((Node *) rinfo->clause, rel->relid);
+		if (rlst)
+			break;
 	}
-}
-
-/*
- * Test whether an EquivalenceClass member matches our rel's CTID Var.
- *
- * This is a callback for use by generate_implied_equalities_for_column.
- */
-static bool
-ec_member_matches_ctid(PlannerInfo *root, RelOptInfo *rel,
-					   EquivalenceClass *ec, EquivalenceMember *em,
-					   void *arg)
-{
-	if (em->em_expr && IsA(em->em_expr, Var) &&
-		IsCTIDVar((Var *) em->em_expr, rel))
-		return true;
-	return false;
+	return rlst;
 }
 
 /*
@@ -387,50 +252,19 @@ ec_member_matches_ctid(PlannerInfo *root, RelOptInfo *rel,
 void
 create_tidscan_paths(PlannerInfo *root, RelOptInfo *rel)
 {
+	Relids		required_outer;
 	List	   *tidquals;
 
 	/*
-	 * If any suitable quals exist in the rel's baserestrict list, generate a
-	 * plain (unparameterized) TidPath with them.
+	 * We don't support pushing join clauses into the quals of a tidscan, but
+	 * it could still have required parameterization due to LATERAL refs in
+	 * its tlist.
 	 */
-	tidquals = TidQualFromRestrictInfoList(root, rel->baserestrictinfo, rel);
+	required_outer = rel->lateral_relids;
+
+	tidquals = TidQualFromBaseRestrictinfo(rel);
 
 	if (tidquals)
-	{
-		/*
-		 * This path uses no join clauses, but it could still have required
-		 * parameterization due to LATERAL refs in its tlist.
-		 */
-		Relids		required_outer = rel->lateral_relids;
-
 		add_path(rel, (Path *) create_tidscan_path(root, rel, tidquals,
 												   required_outer));
-	}
-
-	/*
-	 * Try to generate parameterized TidPaths using equality clauses extracted
-	 * from EquivalenceClasses.  (This is important since simple "t1.ctid =
-	 * t2.ctid" clauses will turn into ECs.)
-	 */
-	if (rel->has_eclass_joins)
-	{
-		List	   *clauses;
-
-		/* Generate clauses, skipping any that join to lateral_referencers */
-		clauses = generate_implied_equalities_for_column(root,
-														 rel,
-														 ec_member_matches_ctid,
-														 NULL,
-														 rel->lateral_referencers);
-
-		/* Generate a path for each usable join clause */
-		BuildParameterizedTidPaths(root, rel, clauses);
-	}
-
-	/*
-	 * Also consider parameterized TidPaths using "loose" join quals.  Quals
-	 * of the form "t1.ctid = t2.ctid" would turn into these if they are outer
-	 * join quals, for example.
-	 */
-	BuildParameterizedTidPaths(root, rel, rel->joininfo);
 }

@@ -3,7 +3,7 @@
  * dict_thesaurus.c
  *		Thesaurus dictionary: phrase to phrase substitution
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -533,11 +533,15 @@ compileTheSubstitute(DictThesaurus *d)
 			}
 			else
 			{
-				lexized = (TSLexeme *) DatumGetPointer(FunctionCall4(&(d->subdict->lexize),
+				lexized = (TSLexeme *) DatumGetPointer(
+													   FunctionCall4(
+																	 &(d->subdict->lexize),
 																	 PointerGetDatum(d->subdict->dictData),
 																	 PointerGetDatum(inptr->lexeme),
 																	 Int32GetDatum(strlen(inptr->lexeme)),
-																	 PointerGetDatum(NULL)));
+																	 PointerGetDatum(NULL)
+																	 )
+					);
 			}
 
 			if (lexized && lexized->lexeme)

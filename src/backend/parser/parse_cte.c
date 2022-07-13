@@ -3,7 +3,7 @@
  * parse_cte.c
  *	  handle CTEs (common table expressions) in parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -122,7 +122,7 @@ transformWithClause(ParseState *pstate, WithClause *withClause)
 		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
 		ListCell   *rest;
 
-		for_each_cell(rest, withClause->ctes, lnext(withClause->ctes, lc))
+		for_each_cell(rest, lnext(lc))
 		{
 			CommonTableExpr *cte2 = (CommonTableExpr *) lfirst(rest);
 
@@ -327,9 +327,9 @@ analyzeCTE(ParseState *pstate, CommonTableExpr *cte)
 								get_collation_name(exprCollation(texpr))),
 						 errhint("Use the COLLATE clause to set the collation of the non-recursive term."),
 						 parser_errposition(pstate, exprLocation(texpr))));
-			lctyp = lnext(cte->ctecoltypes, lctyp);
-			lctypmod = lnext(cte->ctecoltypmods, lctypmod);
-			lccoll = lnext(cte->ctecolcollations, lccoll);
+			lctyp = lnext(lctyp);
+			lctypmod = lnext(lctypmod);
+			lccoll = lnext(lccoll);
 		}
 		if (lctyp != NULL || lctypmod != NULL || lccoll != NULL)	/* shouldn't happen */
 			elog(ERROR, "wrong number of output columns in WITH");
@@ -537,15 +537,15 @@ makeDependencyGraphWalker(Node *node, CteState *cstate)
 				 * In the non-RECURSIVE case, query names are visible to the
 				 * WITH items after them and to the main query.
 				 */
+				ListCell   *cell1;
+
 				cstate->innerwiths = lcons(NIL, cstate->innerwiths);
+				cell1 = list_head(cstate->innerwiths);
 				foreach(lc, stmt->withClause->ctes)
 				{
 					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
-					ListCell   *cell1;
 
 					(void) makeDependencyGraphWalker(cte->ctequery, cstate);
-					/* note that recursion could mutate innerwiths list */
-					cell1 = list_head(cstate->innerwiths);
 					lfirst(cell1) = lappend((List *) lfirst(cell1), cte);
 				}
 				(void) raw_expression_tree_walker(node,
@@ -813,15 +813,15 @@ checkWellFormedRecursionWalker(Node *node, CteState *cstate)
 				 * In the non-RECURSIVE case, query names are visible to the
 				 * WITH items after them and to the main query.
 				 */
+				ListCell   *cell1;
+
 				cstate->innerwiths = lcons(NIL, cstate->innerwiths);
+				cell1 = list_head(cstate->innerwiths);
 				foreach(lc, stmt->withClause->ctes)
 				{
 					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
-					ListCell   *cell1;
 
 					(void) checkWellFormedRecursionWalker(cte->ctequery, cstate);
-					/* note that recursion could mutate innerwiths list */
-					cell1 = list_head(cstate->innerwiths);
 					lfirst(cell1) = lappend((List *) lfirst(cell1), cte);
 				}
 				checkWellFormedSelectStmt(stmt, cstate);

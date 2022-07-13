@@ -3,7 +3,7 @@
  * fe-exec.c
  *	  functions related to sending a query down to the backend
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,15 +18,16 @@
 #include <fcntl.h>
 #include <limits.h>
 
+#include "libpq-fe.h"
+#include "libpq-int.h"
+
+#include "mb/pg_wchar.h"
+
 #ifdef WIN32
 #include "win32.h"
 #else
 #include <unistd.h>
 #endif
-
-#include "libpq-fe.h"
-#include "libpq-int.h"
-#include "mb/pg_wchar.h"
 
 /* keep this in same order as ExecStatusType in libpq-fe.h */
 char	   *const pgresStatus[] = {
@@ -50,25 +51,25 @@ static int	static_client_encoding = PG_SQL_ASCII;
 static bool static_std_strings = false;
 
 
-static PGEvent *dupEvents(PGEvent *events, int count, size_t *memSize);
+static PGEvent *dupEvents(PGEvent *events, int count);
 static bool pqAddTuple(PGresult *res, PGresAttValue *tup,
-					   const char **errmsgp);
+		   const char **errmsgp);
 static bool PQsendQueryStart(PGconn *conn);
-static int	PQsendQueryGuts(PGconn *conn,
-							const char *command,
-							const char *stmtName,
-							int nParams,
-							const Oid *paramTypes,
-							const char *const *paramValues,
-							const int *paramLengths,
-							const int *paramFormats,
-							int resultFormat);
+static int PQsendQueryGuts(PGconn *conn,
+				const char *command,
+				const char *stmtName,
+				int nParams,
+				const Oid *paramTypes,
+				const char *const *paramValues,
+				const int *paramLengths,
+				const int *paramFormats,
+				int resultFormat);
 static void parseInput(PGconn *conn);
 static PGresult *getCopyResult(PGconn *conn, ExecStatusType copytype);
 static bool PQexecStart(PGconn *conn);
 static PGresult *PQexecFinish(PGconn *conn);
-static int	PQsendDescribe(PGconn *conn, char desc_type,
-						   const char *desc_target);
+static int PQsendDescribe(PGconn *conn, char desc_type,
+			   const char *desc_target);
 static int	check_field_number(const PGresult *res, int field_num);
 
 
@@ -165,7 +166,6 @@ PQmakeEmptyPGresult(PGconn *conn, ExecStatusType status)
 	result->curBlock = NULL;
 	result->curOffset = 0;
 	result->spaceLeft = 0;
-	result->memorySize = sizeof(PGresult);
 
 	if (conn)
 	{
@@ -193,8 +193,7 @@ PQmakeEmptyPGresult(PGconn *conn, ExecStatusType status)
 		/* copy events last; result must be valid if we need to PQclear */
 		if (conn->nEvents > 0)
 		{
-			result->events = dupEvents(conn->events, conn->nEvents,
-									   &result->memorySize);
+			result->events = dupEvents(conn->events, conn->nEvents);
 			if (!result->events)
 			{
 				PQclear(result);
@@ -345,8 +344,7 @@ PQcopyResult(const PGresult *src, int flags)
 	/* Wants to copy PGEvents? */
 	if ((flags & PG_COPYRES_EVENTS) && src->nEvents > 0)
 	{
-		dest->events = dupEvents(src->events, src->nEvents,
-								 &dest->memorySize);
+		dest->events = dupEvents(src->events, src->nEvents);
 		if (!dest->events)
 		{
 			PQclear(dest);
@@ -381,20 +379,17 @@ PQcopyResult(const PGresult *src, int flags)
  * Copy an array of PGEvents (with no extra space for more).
  * Does not duplicate the event instance data, sets this to NULL.
  * Also, the resultInitialized flags are all cleared.
- * The total space allocated is added to *memSize.
  */
 static PGEvent *
-dupEvents(PGEvent *events, int count, size_t *memSize)
+dupEvents(PGEvent *events, int count)
 {
 	PGEvent    *newEvents;
-	size_t		msize;
 	int			i;
 
 	if (!events || count <= 0)
 		return NULL;
 
-	msize = count * sizeof(PGEvent);
-	newEvents = (PGEvent *) malloc(msize);
+	newEvents = (PGEvent *) malloc(count * sizeof(PGEvent));
 	if (!newEvents)
 		return NULL;
 
@@ -412,10 +407,8 @@ dupEvents(PGEvent *events, int count, size_t *memSize)
 			free(newEvents);
 			return NULL;
 		}
-		msize += strlen(events[i].name) + 1;
 	}
 
-	*memSize += msize;
 	return newEvents;
 }
 
@@ -574,12 +567,9 @@ pqResultAlloc(PGresult *res, size_t nBytes, bool isBinary)
 	 */
 	if (nBytes >= PGRESULT_SEP_ALLOC_THRESHOLD)
 	{
-		size_t		alloc_size = nBytes + PGRESULT_BLOCK_OVERHEAD;
-
-		block = (PGresult_data *) malloc(alloc_size);
+		block = (PGresult_data *) malloc(nBytes + PGRESULT_BLOCK_OVERHEAD);
 		if (!block)
 			return NULL;
-		res->memorySize += alloc_size;
 		space = block->space + PGRESULT_BLOCK_OVERHEAD;
 		if (res->curBlock)
 		{
@@ -604,7 +594,6 @@ pqResultAlloc(PGresult *res, size_t nBytes, bool isBinary)
 	block = (PGresult_data *) malloc(PGRESULT_DATA_BLOCKSIZE);
 	if (!block)
 		return NULL;
-	res->memorySize += PGRESULT_DATA_BLOCKSIZE;
 	block->next = res->curBlock;
 	res->curBlock = block;
 	if (isBinary)
@@ -624,18 +613,6 @@ pqResultAlloc(PGresult *res, size_t nBytes, bool isBinary)
 	res->curOffset += nBytes;
 	res->spaceLeft -= nBytes;
 	return space;
-}
-
-/*
- * PQresultMemorySize -
- *		Returns total space allocated for the PGresult.
- */
-size_t
-PQresultMemorySize(const PGresult *res)
-{
-	if (!res)
-		return 0;
-	return res->memorySize;
 }
 
 /*
@@ -787,32 +764,6 @@ pqSaveErrorResult(PGconn *conn)
 		/* Else, concatenate error message to existing async result. */
 		pqCatenateResultError(conn->result, conn->errorMessage.data);
 	}
-}
-
-/*
- * As above, and append conn->write_err_msg to whatever other error we have.
- * This is used when we've detected a write failure and have exhausted our
- * chances of reporting something else instead.
- */
-static void
-pqSaveWriteError(PGconn *conn)
-{
-	/*
-	 * Ensure conn->result is an error result, and add anything in
-	 * conn->errorMessage to it.
-	 */
-	pqSaveErrorResult(conn);
-
-	/*
-	 * Now append write_err_msg to that.  If it's null because of previous
-	 * strdup failure, do what we can.  (It's likely our machinations here are
-	 * all getting OOM failures as well, but ...)
-	 */
-	if (conn->write_err_msg && conn->write_err_msg[0] != '\0')
-		pqCatenateResultError(conn->result, conn->write_err_msg);
-	else
-		pqCatenateResultError(conn->result,
-							  libpq_gettext("write to server failed\n"));
 }
 
 /*
@@ -976,8 +927,6 @@ pqAddTuple(PGresult *res, PGresAttValue *tup, const char **errmsgp)
 				realloc(res->tuples, newSize * sizeof(PGresAttValue *));
 		if (!newTuples)
 			return false;		/* malloc or realloc failed */
-		res->memorySize +=
-			(newSize - res->tupArrSize) * sizeof(PGresAttValue *);
 		res->tupArrSize = newSize;
 		res->tuples = newTuples;
 	}
@@ -1249,7 +1198,7 @@ PQsendQuery(PGconn *conn, const char *query)
 		pqPuts(query, conn) < 0 ||
 		pqPutMsgEnd(conn) < 0)
 	{
-		/* error message should be set up already */
+		pqHandleSendFailure(conn);
 		return 0;
 	}
 
@@ -1268,7 +1217,7 @@ PQsendQuery(PGconn *conn, const char *query)
 	 */
 	if (pqFlush(conn) < 0)
 	{
-		/* error message should be set up already */
+		pqHandleSendFailure(conn);
 		return 0;
 	}
 
@@ -1414,7 +1363,7 @@ PQsendPrepare(PGconn *conn,
 	return 1;
 
 sendFailed:
-	/* error message should be set up already */
+	pqHandleSendFailure(conn);
 	return 0;
 }
 
@@ -1666,8 +1615,37 @@ PQsendQueryGuts(PGconn *conn,
 	return 1;
 
 sendFailed:
-	/* error message should be set up already */
+	pqHandleSendFailure(conn);
 	return 0;
+}
+
+/*
+ * pqHandleSendFailure: try to clean up after failure to send command.
+ *
+ * Primarily, what we want to accomplish here is to process any ERROR or
+ * NOTICE messages that the backend might have sent just before it died.
+ * Since we're in IDLE state, all such messages will get sent to the notice
+ * processor.
+ *
+ * NOTE: this routine should only be called in PGASYNC_IDLE state.
+ */
+void
+pqHandleSendFailure(PGconn *conn)
+{
+	/*
+	 * Accept and parse any available input data, ignoring I/O errors.  Note
+	 * that if pqReadData decides the backend has closed the channel, it will
+	 * close our side of the socket --- that's just what we want here.
+	 */
+	while (pqReadData(conn) > 0)
+		parseInput(conn);
+
+	/*
+	 * Be sure to parse available input messages even if we read no data.
+	 * (Note: calling parseInput within the above loop isn't really necessary,
+	 * but it prevents buffer bloat if there's a lot of data available.)
+	 */
+	parseInput(conn);
 }
 
 /*
@@ -1759,11 +1737,8 @@ PQisBusy(PGconn *conn)
 	/* Parse any available data, if our state permits. */
 	parseInput(conn);
 
-	/*
-	 * PQgetResult will return immediately in all states except BUSY, or if we
-	 * had a write failure.
-	 */
-	return conn->asyncStatus == PGASYNC_BUSY || conn->write_failed;
+	/* PQgetResult will return immediately in all states except BUSY. */
+	return conn->asyncStatus == PGASYNC_BUSY;
 }
 
 
@@ -1803,13 +1778,7 @@ PQgetResult(PGconn *conn)
 			}
 		}
 
-		/*
-		 * Wait for some more data, and load it.  (Note: if the connection has
-		 * been lost, pqWait should return immediately because the socket
-		 * should be read-ready, either with the last server data or with an
-		 * EOF indication.  We expect therefore that this won't result in any
-		 * undue delay in reporting a previous write failure.)
-		 */
+		/* Wait for some more data, and load it. */
 		if (flushResult ||
 			pqWait(true, false, conn) ||
 			pqReadData(conn) < 0)
@@ -1825,17 +1794,6 @@ PQgetResult(PGconn *conn)
 
 		/* Parse it. */
 		parseInput(conn);
-
-		/*
-		 * If we had a write error, but nothing above obtained a query result
-		 * or detected a read error, report the write error.
-		 */
-		if (conn->write_failed && conn->asyncStatus == PGASYNC_BUSY)
-		{
-			pqSaveWriteError(conn);
-			conn->asyncStatus = PGASYNC_IDLE;
-			return pqPrepareAsyncResult(conn);
-		}
 	}
 
 	/* Return the appropriate thing. */
@@ -2249,7 +2207,7 @@ PQsendDescribe(PGconn *conn, char desc_type, const char *desc_target)
 	/* remember we are doing a Describe */
 	conn->queryclass = PGQUERY_DESCRIBE;
 
-	/* reset last_query string (not relevant now) */
+	/* reset last-query string (not relevant now) */
 	if (conn->last_query)
 	{
 		free(conn->last_query);
@@ -2268,7 +2226,7 @@ PQsendDescribe(PGconn *conn, char desc_type, const char *desc_target)
 	return 1;
 
 sendFailed:
-	/* error message should be set up already */
+	pqHandleSendFailure(conn);
 	return 0;
 }
 
@@ -2281,9 +2239,6 @@ sendFailed:
  * no unhandled async notification from the backend
  *
  * the CALLER is responsible for FREE'ing the structure returned
- *
- * Note that this function does not read any new data from the socket;
- * so usually, caller should call PQconsumeInput() first.
  */
 PGnotify *
 PQnotifies(PGconn *conn)
@@ -3290,7 +3245,7 @@ PQflush(PGconn *conn)
  *		PQfreemem - safely frees memory allocated
  *
  * Needed mostly by Win32, unless multithreaded DLL (/MD in VC6)
- * Used for freeing memory from PQescapeBytea()/PQunescapeBytea()
+ * Used for freeing memory from PQescapeByte()a/PQunescapeBytea()
  */
 void
 PQfreemem(void *ptr)

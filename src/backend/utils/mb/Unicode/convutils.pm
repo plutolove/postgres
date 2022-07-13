@@ -1,12 +1,11 @@
 #
-# Copyright (c) 2001-2020, PostgreSQL Global Development Group
+# Copyright (c) 2001-2018, PostgreSQL Global Development Group
 #
 # src/backend/utils/mb/Unicode/convutils.pm
 
 package convutils;
 
 use strict;
-use warnings;
 
 use Carp;
 use Exporter 'import';

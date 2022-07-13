@@ -3,7 +3,7 @@
  * sampling.c
  *	  Relation block sampling routines.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,10 +32,8 @@
  * Since we know the total number of blocks in advance, we can use the
  * straightforward Algorithm S from Knuth 3.4.2, rather than Vitter's
  * algorithm.
- *
- * Returns the number of blocks that BlockSampler_Next will return.
  */
-BlockNumber
+void
 BlockSampler_Init(BlockSampler bs, BlockNumber nblocks, int samplesize,
 				  long randseed)
 {
@@ -50,8 +48,6 @@ BlockSampler_Init(BlockSampler bs, BlockNumber nblocks, int samplesize,
 	bs->m = 0;					/* blocks selected so far */
 
 	sampler_random_init_state(randseed, bs->randstate);
-
-	return Min(bs->n, bs->N);
 }
 
 bool

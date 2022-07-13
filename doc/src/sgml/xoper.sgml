@@ -1,7 +1,7 @@
 <!-- doc/src/sgml/xoper.sgml -->
 
  <sect1 id="xoper">
-  <title>User-Defined Operators</title>
+  <title>User-defined Operators</title>
 
   <indexterm zone="xoper">
    <primary>operator</primary>
@@ -78,11 +78,6 @@ SELECT (a + b) AS c FROM test_complex;
   <sect1 id="xoper-optimization">
    <title>Operator Optimization Information</title>
 
-  <indexterm zone="xoper-optimization">
-   <primary>optimization information</primary>
-   <secondary>for operators</secondary>
-  </indexterm>
-
    <para>
     A <productname>PostgreSQL</productname> operator definition can include
     several optional clauses that tell the system useful things about how
@@ -100,13 +95,6 @@ SELECT (a + b) AS c FROM test_complex;
     Additional optimization clauses might be added in future versions of
     <productname>PostgreSQL</productname>.  The ones described here are all
     the ones that release &version; understands.
-   </para>
-
-   <para>
-    It is also possible to attach a planner support function to the function
-    that underlies an operator, providing another way of telling the system
-    about the behavior of the operator.
-    See <xref linkend="xfunc-optimization"/> for more information.
    </para>
 
    <sect2>
@@ -283,18 +271,6 @@ column OP constant
    </para>
 
    <para>
-    Another useful built-in selectivity estimation function
-    is <function>matchingsel</function>, which will work for almost any
-    binary operator, if standard MCV and/or histogram statistics are
-    collected for the input data type(s).  Its default estimate is set to
-    twice the default estimate used in <function>eqsel</function>, making
-    it most suitable for comparison operators that are somewhat less
-    strict than equality.  (Or you could call the
-    underlying <function>generic_restriction_selectivity</function>
-    function, providing a different default estimate.)
-   </para>
-
-   <para>
     There are additional selectivity estimation functions designed for geometric
     operators in <filename>src/backend/utils/adt/geo_selfuncs.c</filename>: <function>areasel</function>, <function>positionsel</function>,
     and <function>contsel</function>.  At this writing these are just stubs, but you might want
@@ -331,7 +307,6 @@ table1.column1 OP table2.column2
       <member><function>scalarlejoinsel</function> for <literal>&lt;=</literal></member>
       <member><function>scalargtjoinsel</function> for <literal>&gt;</literal></member>
       <member><function>scalargejoinsel</function> for <literal>&gt;=</literal></member>
-      <member><function>matchingjoinsel</function> for generic matching operators</member>
       <member><function>areajoinsel</function> for 2D area-based comparisons</member>
       <member><function>positionjoinsel</function> for 2D position-based comparisons</member>
       <member><function>contjoinsel</function> for 2D containment-based comparisons</member>

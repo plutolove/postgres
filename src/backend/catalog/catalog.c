@@ -5,7 +5,7 @@
  *		bits of hard-wired knowledge
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,9 +21,7 @@
 #include <unistd.h>
 
 #include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
 #include "access/transam.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
@@ -31,8 +29,9 @@
 #include "catalog/pg_auth_members.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_database.h"
-#include "catalog/pg_db_role_setting.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_pltemplate.h"
+#include "catalog/pg_db_role_setting.h"
 #include "catalog/pg_replication_origin.h"
 #include "catalog/pg_shdepend.h"
 #include "catalog/pg_shdescription.h"
@@ -44,25 +43,21 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/fmgroids.h"
-#include "utils/fmgrprotos.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
-#include "utils/syscache.h"
+#include "utils/tqual.h"
+
 
 /*
  * IsSystemRelation
- *		True iff the relation is either a system catalog or a toast table.
- *		See IsCatalogRelation for the exact definition of a system catalog.
+ *		True iff the relation is either a system catalog or toast table.
+ *		By a system catalog, we mean one that created in the pg_catalog schema
+ *		during initdb.  User-created relations in pg_catalog don't count as
+ *		system catalogs.
  *
- *		We treat toast tables of user relations as "system relations" for
- *		protection purposes, e.g. you can't change their schemas without
- *		special permissions.  Therefore, most uses of this function are
- *		checking whether allow_system_table_mods restrictions apply.
- *		For other purposes, consider whether you shouldn't be using
- *		IsCatalogRelation instead.
- *
- *		This function does not perform any catalog accesses.
- *		Some callers rely on that!
+ *		NB: TOAST relations are considered system relations by this test
+ *		for compatibility with the old IsSystemRelationName function.
+ *		This is appropriate in many places but not all.  Where it's not,
+ *		also check IsToastRelation or use IsCatalogRelation().
  */
 bool
 IsSystemRelation(Relation relation)
@@ -79,74 +74,67 @@ IsSystemRelation(Relation relation)
 bool
 IsSystemClass(Oid relid, Form_pg_class reltuple)
 {
-	/* IsCatalogRelationOid is a bit faster, so test that first */
-	return (IsCatalogRelationOid(relid) || IsToastClass(reltuple));
+	return IsToastClass(reltuple) || IsCatalogClass(relid, reltuple);
 }
 
 /*
  * IsCatalogRelation
- *		True iff the relation is a system catalog.
+ *		True iff the relation is a system catalog, or the toast table for
+ *		a system catalog.  By a system catalog, we mean one that created
+ *		in the pg_catalog schema during initdb.  As with IsSystemRelation(),
+ *		user-created relations in pg_catalog don't count as system catalogs.
  *
- *		By a system catalog, we mean one that is created during the bootstrap
- *		phase of initdb.  That includes not just the catalogs per se, but
- *		also their indexes, and TOAST tables and indexes if any.
- *
- *		This function does not perform any catalog accesses.
- *		Some callers rely on that!
+ *		Note that IsSystemRelation() returns true for ALL toast relations,
+ *		but this function returns true only for toast relations of system
+ *		catalogs.
  */
 bool
 IsCatalogRelation(Relation relation)
 {
-	return IsCatalogRelationOid(RelationGetRelid(relation));
+	return IsCatalogClass(RelationGetRelid(relation), relation->rd_rel);
 }
 
 /*
- * IsCatalogRelationOid
- *		True iff the relation identified by this OID is a system catalog.
+ * IsCatalogClass
+ *		True iff the relation is a system catalog relation.
  *
- *		By a system catalog, we mean one that is created during the bootstrap
- *		phase of initdb.  That includes not just the catalogs per se, but
- *		also their indexes, and TOAST tables and indexes if any.
- *
- *		This function does not perform any catalog accesses.
- *		Some callers rely on that!
+ * Check IsCatalogRelation() for details.
  */
 bool
-IsCatalogRelationOid(Oid relid)
+IsCatalogClass(Oid relid, Form_pg_class reltuple)
 {
+	Oid			relnamespace = reltuple->relnamespace;
+
 	/*
-	 * We consider a relation to be a system catalog if it has an OID that was
-	 * manually assigned or assigned by genbki.pl.  This includes all the
-	 * defined catalogs, their indexes, and their TOAST tables and indexes.
-	 *
-	 * This rule excludes the relations in information_schema, which are not
-	 * integral to the system and can be treated the same as user relations.
-	 * (Since it's valid to drop and recreate information_schema, any rule
-	 * that did not act this way would be wrong.)
-	 *
-	 * This test is reliable since an OID wraparound will skip this range of
-	 * OIDs; see GetNewObjectId().
+	 * Never consider relations outside pg_catalog/pg_toast to be catalog
+	 * relations.
 	 */
-	return (relid < (Oid) FirstBootstrapObjectId);
+	if (!IsSystemNamespace(relnamespace) && !IsToastNamespace(relnamespace))
+		return false;
+
+	/* ----
+	 * Check whether the oid was assigned during initdb, when creating the
+	 * initial template database. Minus the relations in information_schema
+	 * excluded above, these are integral part of the system.
+	 * We could instead check whether the relation is pinned in pg_depend, but
+	 * this is noticeably cheaper and doesn't require catalog access.
+	 *
+	 * This test is safe since even an oid wraparound will preserve this
+	 * property (cf. GetNewObjectId()) and it has the advantage that it works
+	 * correctly even if a user decides to create a relation in the pg_catalog
+	 * namespace.
+	 * ----
+	 */
+	return relid < FirstNormalObjectId;
 }
 
 /*
  * IsToastRelation
  *		True iff relation is a TOAST support relation (or index).
- *
- *		Does not perform any catalog accesses.
  */
 bool
 IsToastRelation(Relation relation)
 {
-	/*
-	 * What we actually check is whether the relation belongs to a pg_toast
-	 * namespace.  This should be equivalent because of restrictions that are
-	 * enforced elsewhere against creating user relations in, or moving
-	 * relations into/out of, a pg_toast namespace.  Notice also that this
-	 * will not say "true" for toast tables belonging to other sessions' temp
-	 * tables; we expect that other mechanisms will prevent access to those.
-	 */
 	return IsToastNamespace(RelationGetNamespace(relation));
 }
 
@@ -165,16 +153,14 @@ IsToastClass(Form_pg_class reltuple)
 }
 
 /*
- * IsCatalogNamespace
+ * IsSystemNamespace
  *		True iff namespace is pg_catalog.
- *
- *		Does not perform any catalog accesses.
  *
  * NOTE: the reason this isn't a macro is to avoid having to include
  * catalog/pg_namespace.h in a lot of places.
  */
 bool
-IsCatalogNamespace(Oid namespaceId)
+IsSystemNamespace(Oid namespaceId)
 {
 	return namespaceId == PG_CATALOG_NAMESPACE;
 }
@@ -183,13 +169,9 @@ IsCatalogNamespace(Oid namespaceId)
  * IsToastNamespace
  *		True iff namespace is pg_toast or my temporary-toast-table namespace.
  *
- *		Does not perform any catalog accesses.
- *
  * Note: this will return false for temporary-toast-table namespaces belonging
  * to other backends.  Those are treated the same as other backends' regular
  * temp table namespaces, and access is prevented where appropriate.
- * If you need to check for those, you may be able to use isAnyTempNamespace,
- * but beware that that does involve a catalog access.
  */
 bool
 IsToastNamespace(Oid namespaceId)
@@ -241,6 +223,7 @@ IsSharedRelation(Oid relationId)
 	if (relationId == AuthIdRelationId ||
 		relationId == AuthMemRelationId ||
 		relationId == DatabaseRelationId ||
+		relationId == PLTemplateRelationId ||
 		relationId == SharedDescriptionRelationId ||
 		relationId == SharedDependRelationId ||
 		relationId == SharedSecLabelRelationId ||
@@ -256,6 +239,7 @@ IsSharedRelation(Oid relationId)
 		relationId == AuthMemMemRoleIndexId ||
 		relationId == DatabaseNameIndexId ||
 		relationId == DatabaseOidIndexId ||
+		relationId == PLTemplateNameIndexId ||
 		relationId == SharedDescriptionObjIndexId ||
 		relationId == SharedDependDependerIndexId ||
 		relationId == SharedDependReferenceIndexId ||
@@ -269,30 +253,29 @@ IsSharedRelation(Oid relationId)
 		relationId == SubscriptionNameIndexId)
 		return true;
 	/* These are their toast tables and toast indexes (see toasting.h) */
-	if (relationId == PgAuthidToastTable ||
-		relationId == PgAuthidToastIndex ||
-		relationId == PgDatabaseToastTable ||
-		relationId == PgDatabaseToastIndex ||
+	if (relationId == PgShdescriptionToastTable ||
+		relationId == PgShdescriptionToastIndex ||
 		relationId == PgDbRoleSettingToastTable ||
 		relationId == PgDbRoleSettingToastIndex ||
-		relationId == PgReplicationOriginToastTable ||
-		relationId == PgReplicationOriginToastIndex ||
-		relationId == PgShdescriptionToastTable ||
-		relationId == PgShdescriptionToastIndex ||
 		relationId == PgShseclabelToastTable ||
-		relationId == PgShseclabelToastIndex ||
-		relationId == PgSubscriptionToastTable ||
-		relationId == PgSubscriptionToastIndex ||
-		relationId == PgTablespaceToastTable ||
-		relationId == PgTablespaceToastIndex)
+		relationId == PgShseclabelToastIndex)
 		return true;
 	return false;
 }
 
 
 /*
- * GetNewOidWithIndex
- *		Generate a new OID that is unique within the system relation.
+ * GetNewOid
+ *		Generate a new OID that is unique within the given relation.
+ *
+ * Caller must have a suitable lock on the relation.
+ *
+ * Uniqueness is promised only if the relation has a unique index on OID.
+ * This is true for all system catalogs that have OIDs, but might not be
+ * true for user tables.  Note that we are effectively assuming that the
+ * table has a relatively small number of entries (much less than 2^32)
+ * and there aren't very long runs of consecutive existing OIDs.  Again,
+ * this is reasonable for system catalogs but less so for user tables.
  *
  * Since the OID is not immediately inserted into the table, there is a
  * race condition here; but a problem could occur only if someone else
@@ -305,11 +288,51 @@ IsSharedRelation(Oid relationId)
  * of transient conflicts for as long as our own MVCC snapshots think a
  * recently-deleted row is live.  The risk is far higher when selecting TOAST
  * OIDs, because SnapshotToast considers dead rows as active indefinitely.)
+ */
+Oid
+GetNewOid(Relation relation)
+{
+	Oid			oidIndex;
+
+	/* If relation doesn't have OIDs at all, caller is confused */
+	Assert(relation->rd_rel->relhasoids);
+
+	/* In bootstrap mode, we don't have any indexes to use */
+	if (IsBootstrapProcessingMode())
+		return GetNewObjectId();
+
+	/* The relcache will cache the identity of the OID index for us */
+	oidIndex = RelationGetOidIndex(relation);
+
+	/* If no OID index, just hand back the next OID counter value */
+	if (!OidIsValid(oidIndex))
+	{
+		/*
+		 * System catalogs that have OIDs should *always* have a unique OID
+		 * index; we should only take this path for user tables. Give a
+		 * warning if it looks like somebody forgot an index.
+		 */
+		if (IsSystemRelation(relation))
+			elog(WARNING, "generating possibly-non-unique OID for \"%s\"",
+				 RelationGetRelationName(relation));
+
+		return GetNewObjectId();
+	}
+
+	/* Otherwise, use the index to find a nonconflicting OID */
+	return GetNewOidWithIndex(relation, oidIndex, ObjectIdAttributeNumber);
+}
+
+/*
+ * GetNewOidWithIndex
+ *		Guts of GetNewOid: use the supplied index
  *
- * Note that we are effectively assuming that the table has a relatively small
- * number of entries (much less than 2^32) and there aren't very long runs of
- * consecutive existing OIDs.  This is a mostly reasonable assumption for
- * system catalogs.
+ * This is exported separately because there are cases where we want to use
+ * an index that will not be recognized by RelationGetOidIndex: TOAST tables
+ * have indexes that are usable, but have multiple columns and are on
+ * ordinary columns rather than a true OID column.  This code will work
+ * anyway, so long as the OID is the index's first column.  The caller must
+ * pass in the actual heap attnum of the OID column, however.
  *
  * Caller must have a suitable lock on the relation.
  */
@@ -320,13 +343,6 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
 	SysScanDesc scan;
 	ScanKeyData key;
 	bool		collides;
-
-	/* Only system relations are supported */
-	Assert(IsSystemRelation(relation));
-
-	/* In bootstrap mode, we don't have any indexes to use */
-	if (IsBootstrapProcessingMode())
-		return GetNewObjectId();
 
 	/*
 	 * We should never be asked to generate a new pg_type OID during
@@ -370,8 +386,8 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
  * is also an unused OID within pg_class.  If the result is to be used only
  * as a relfilenode for an existing relation, pass NULL for pg_class.
  *
- * As with GetNewOidWithIndex(), there is some theoretical risk of a race
- * condition, but it doesn't seem worth worrying about.
+ * As with GetNewOid, there is some theoretical risk of a race condition,
+ * but it doesn't seem worth worrying about.
  *
  * Note: we don't support using this in bootstrap mode.  All relations
  * created by bootstrap have preassigned OIDs, so there's no need.
@@ -381,6 +397,7 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 {
 	RelFileNodeBackend rnode;
 	char	   *rpath;
+	int			fd;
 	bool		collides;
 	BackendId	backend;
 
@@ -422,17 +439,18 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 
 		/* Generate the OID */
 		if (pg_class)
-			rnode.node.relNode = GetNewOidWithIndex(pg_class, ClassOidIndexId,
-													Anum_pg_class_oid);
+			rnode.node.relNode = GetNewOid(pg_class);
 		else
 			rnode.node.relNode = GetNewObjectId();
 
 		/* Check for existing file of same name */
 		rpath = relpath(rnode, MAIN_FORKNUM);
+		fd = BasicOpenFile(rpath, O_RDONLY | PG_BINARY);
 
-		if (access(rpath, F_OK) == 0)
+		if (fd >= 0)
 		{
 			/* definite collision */
+			close(fd);
 			collides = true;
 		}
 		else
@@ -440,9 +458,13 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 			/*
 			 * Here we have a little bit of a dilemma: if errno is something
 			 * other than ENOENT, should we declare a collision and loop? In
-			 * practice it seems best to go ahead regardless of the errno.  If
-			 * there is a colliding file we will get an smgr failure when we
-			 * attempt to create the new relation file.
+			 * particular one might think this advisable for, say, EPERM.
+			 * However there really shouldn't be any unreadable files in a
+			 * tablespace directory, and if the EPERM is actually complaining
+			 * that we can't read the directory itself, we'd be in an infinite
+			 * loop.  In practice it seems best to go ahead regardless of the
+			 * errno.  If there is a colliding file we will get an smgr
+			 * failure when we attempt to create the new relation file.
 			 */
 			collides = false;
 		}
@@ -451,83 +473,4 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 	} while (collides);
 
 	return rnode.node.relNode;
-}
-
-/*
- * SQL callable interface for GetNewOidWithIndex().  Outside of initdb's
- * direct insertions into catalog tables, and recovering from corruption, this
- * should rarely be needed.
- *
- * Function is intentionally not documented in the user facing docs.
- */
-Datum
-pg_nextoid(PG_FUNCTION_ARGS)
-{
-	Oid			reloid = PG_GETARG_OID(0);
-	Name		attname = PG_GETARG_NAME(1);
-	Oid			idxoid = PG_GETARG_OID(2);
-	Relation	rel;
-	Relation	idx;
-	HeapTuple	atttuple;
-	Form_pg_attribute attform;
-	AttrNumber	attno;
-	Oid			newoid;
-
-	/*
-	 * As this function is not intended to be used during normal running, and
-	 * only supports system catalogs (which require superuser permissions to
-	 * modify), just checking for superuser ought to not obstruct valid
-	 * usecases.
-	 */
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to call pg_nextoid()")));
-
-	rel = table_open(reloid, RowExclusiveLock);
-	idx = index_open(idxoid, RowExclusiveLock);
-
-	if (!IsSystemRelation(rel))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("pg_nextoid() can only be used on system catalogs")));
-
-	if (idx->rd_index->indrelid != RelationGetRelid(rel))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("index \"%s\" does not belong to table \"%s\"",
-						RelationGetRelationName(idx),
-						RelationGetRelationName(rel))));
-
-	atttuple = SearchSysCacheAttName(reloid, NameStr(*attname));
-	if (!HeapTupleIsValid(atttuple))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_COLUMN),
-				 errmsg("column \"%s\" of relation \"%s\" does not exist",
-						NameStr(*attname), RelationGetRelationName(rel))));
-
-	attform = ((Form_pg_attribute) GETSTRUCT(atttuple));
-	attno = attform->attnum;
-
-	if (attform->atttypid != OIDOID)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("column \"%s\" is not of type oid",
-						NameStr(*attname))));
-
-	if (IndexRelationGetNumberOfKeyAttributes(idx) != 1 ||
-		idx->rd_index->indkey.values[0] != attno)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("index \"%s\" is not the index for column \"%s\"",
-						RelationGetRelationName(idx),
-						NameStr(*attname))));
-
-	newoid = GetNewOidWithIndex(rel, idxoid, attno);
-
-	ReleaseSysCache(atttuple);
-	table_close(rel, RowExclusiveLock);
-	index_close(idx, RowExclusiveLock);
-
-	return newoid;
 }

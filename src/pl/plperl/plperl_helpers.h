@@ -3,9 +3,6 @@
 
 #include "mb/pg_wchar.h"
 
-#include "plperl.h"
-
-
 /*
  * convert from utf8 to database encoding
  *

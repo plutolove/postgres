@@ -198,13 +198,13 @@ explain (costs off)
 -------------------------------------------------
  Aggregate
    ->  Append
-         ->  Sample Scan on person person_1
+         ->  Sample Scan on person
                Sampling: bernoulli ('100'::real)
-         ->  Sample Scan on emp person_2
+         ->  Sample Scan on emp
                Sampling: bernoulli ('100'::real)
-         ->  Sample Scan on student person_3
+         ->  Sample Scan on student
                Sampling: bernoulli ('100'::real)
-         ->  Sample Scan on stud_emp person_4
+         ->  Sample Scan on stud_emp
                Sampling: bernoulli ('100'::real)
 (10 rows)
 

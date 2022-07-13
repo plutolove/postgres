@@ -11,7 +11,7 @@
   The <firstterm>Server Programming Interface</firstterm>
   (<acronym>SPI</acronym>) gives writers of user-defined
   <acronym>C</acronym> functions the ability to run
-  <acronym>SQL</acronym> commands inside their functions or procedures.
+  <acronym>SQL</acronym> commands inside their functions.
   <acronym>SPI</acronym> is a set of
   interface functions to simplify access to the parser, planner,
   and executor. <acronym>SPI</acronym> also does some
@@ -318,30 +318,21 @@ SPI_execute("INSERT INTO foo SELECT * FROM bar RETURNING *", false, 5);
    The structure <structname>SPITupleTable</structname> is defined
    thus:
 <programlisting>
-typedef struct SPITupleTable
+typedef struct
 {
-    /* Public members */
-    TupleDesc   tupdesc;        /* tuple descriptor */
-    HeapTuple  *vals;           /* array of tuples */
-    uint64      numvals;        /* number of valid tuples */
-
-    /* Private members, not intended for external callers */
-    uint64      alloced;        /* allocated length of vals array */
     MemoryContext tuptabcxt;    /* memory context of result table */
-    slist_node  next;           /* link for internal bookkeeping */
-    SubTransactionId subid;     /* subxact in which tuptable was created */
+    uint64      alloced;        /* number of alloced vals */
+    uint64      free;           /* number of free vals */
+    TupleDesc   tupdesc;        /* row descriptor */
+    HeapTuple  *vals;           /* rows */
 } SPITupleTable;
 </programlisting>
-   The fields <structfield>tupdesc</structfield>,
-   <structfield>vals</structfield>, and
-   <structfield>numvals</structfield>
-   can be used by SPI callers; the remaining fields are internal.
-   <structfield>vals</structfield> is an array of pointers to rows.
-   The number of rows is given by <structfield>numvals</structfield>
-   (for somewhat historical reasons, this count is also returned
-   in <varname>SPI_processed</varname>).
+   <structfield>vals</structfield> is an array of pointers to rows.  (The number
+   of valid entries is given by <varname>SPI_processed</varname>.)
    <structfield>tupdesc</structfield> is a row descriptor which you can pass to
-   SPI functions dealing with rows.
+   SPI functions dealing with rows.  <structfield>tuptabcxt</structfield>,
+   <structfield>alloced</structfield>, and <structfield>free</structfield> are internal
+   fields not intended for use by SPI callers.
   </para>
 
   <para>
@@ -3114,7 +3105,7 @@ int SPI_fnumber(TupleDesc <parameter>rowdesc</parameter>, const char * <paramete
 
   <para>
    If <parameter>colname</parameter> refers to a system column (e.g.,
-   <literal>ctid</literal>) then the appropriate negative column number will
+   <literal>oid</literal>) then the appropriate negative column number will
    be returned.  The caller should be careful to test the return value
    for exact equality to <symbol>SPI_ERROR_NOATTRIBUTE</symbol> to
    detect an error; testing the result for less than or equal to 0 is
@@ -4385,7 +4376,6 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
 
 <refentry id="spi-spi-commit">
  <indexterm><primary>SPI_commit</primary></indexterm>
- <indexterm><primary>SPI_commit_and_chain</primary></indexterm>
 
  <refmeta>
   <refentrytitle>SPI_commit</refentrytitle>
@@ -4394,17 +4384,12 @@ int SPI_freeplan(SPIPlanPtr <parameter>plan</parameter>)
 
  <refnamediv>
   <refname>SPI_commit</refname>
-  <refname>SPI_commit_and_chain</refname>
   <refpurpose>commit the current transaction</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
 <synopsis>
 void SPI_commit(void)
-</synopsis>
-
-<synopsis>
-void SPI_commit_and_chain(void)
 </synopsis>
  </refsynopsisdiv>
 
@@ -4421,14 +4406,7 @@ void SPI_commit_and_chain(void)
   </para>
 
   <para>
-   <function>SPI_commit_and_chain</function> is the same, but a new
-   transaction is immediately started with the same transaction
-   characteristics as the just finished one, like with the SQL command
-   <command>COMMIT AND CHAIN</command>.
-  </para>
-
-  <para>
-   These functions can only be executed if the SPI connection has been set as
+   This function can only be executed if the SPI connection has been set as
    nonatomic in the call to <function>SPI_connect_ext</function>.
   </para>
  </refsect1>
@@ -4438,7 +4416,6 @@ void SPI_commit_and_chain(void)
 
 <refentry id="spi-spi-rollback">
  <indexterm><primary>SPI_rollback</primary></indexterm>
- <indexterm><primary>SPI_rollback_and_chain</primary></indexterm>
 
  <refmeta>
   <refentrytitle>SPI_rollback</refentrytitle>
@@ -4447,17 +4424,12 @@ void SPI_commit_and_chain(void)
 
  <refnamediv>
   <refname>SPI_rollback</refname>
-  <refname>SPI_rollback_and_chain</refname>
   <refpurpose>abort the current transaction</refpurpose>
  </refnamediv>
 
  <refsynopsisdiv>
 <synopsis>
 void SPI_rollback(void)
-</synopsis>
-
-<synopsis>
-void SPI_rollback_and_chain(void)
 </synopsis>
  </refsynopsisdiv>
 
@@ -4472,15 +4444,9 @@ void SPI_rollback_and_chain(void)
    using <function>SPI_start_transaction</function> before further database
    actions can be executed.
   </para>
-  <para>
-   <function>SPI_rollback_and_chain</function> is the same, but a new
-   transaction is immediately started with the same transaction
-   characteristics as the just finished one, like with the SQL command
-   <command>ROLLBACK AND CHAIN</command>.
-  </para>
 
   <para>
-   These functions can only be executed if the SPI connection has been set as
+   This function can only be executed if the SPI connection has been set as
    nonatomic in the call to <function>SPI_connect_ext</function>.
   </para>
  </refsect1>
@@ -4621,32 +4587,31 @@ execq(PG_FUNCTION_ARGS)
     uint64 proc;
 
     /* Convert given text object to a C string */
-    command = text_to_cstring(PG_GETARG_TEXT_PP(0));
-    cnt = PG_GETARG_INT32(1);
+    command = text_to_cstring(PG_GETARG_TEXT_PP(1));
+    cnt = PG_GETARG_INT32(2);
 
     SPI_connect();
 
     ret = SPI_exec(command, cnt);
 
     proc = SPI_processed;
-
     /*
      * If some rows were fetched, print them via elog(INFO).
      */
     if (ret &gt; 0 &amp;&amp; SPI_tuptable != NULL)
     {
+        TupleDesc tupdesc = SPI_tuptable-&gt;tupdesc;
         SPITupleTable *tuptable = SPI_tuptable;
-        TupleDesc tupdesc = tuptable-&gt;tupdesc;
         char buf[8192];
         uint64 j;
 
-        for (j = 0; j &lt; tuptable-&gt;numvals; j++)
+        for (j = 0; j &lt; proc; j++)
         {
             HeapTuple tuple = tuptable-&gt;vals[j];
             int i;
 
             for (i = 1, buf[0] = 0; i &lt;= tupdesc-&gt;natts; i++)
-                snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " %s%s",
+                snprintf(buf + strlen (buf), sizeof(buf) - strlen(buf), " %s%s",
                         SPI_getvalue(tuple, tupdesc, i),
                         (i == tupdesc-&gt;natts) ? " " : " |");
             elog(INFO, "EXECQ: %s", buf);

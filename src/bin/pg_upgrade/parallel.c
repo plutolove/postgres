@@ -3,7 +3,7 @@
  *
  *	multi-process support
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/parallel.c
  */
 
@@ -15,6 +15,7 @@
 #endif
 
 #include "pg_upgrade.h"
+
 
 static int	parallel_jobs;
 
@@ -148,6 +149,8 @@ parallel_exec_prog(const char *log_file, const char *opt_log_file,
 		thread_handles[parallel_jobs - 1] = child;
 #endif
 	}
+
+	return;
 }
 
 
@@ -261,6 +264,8 @@ parallel_transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 		thread_handles[parallel_jobs - 1] = child;
 #endif
 	}
+
+	return;
 }
 
 
@@ -285,7 +290,7 @@ reap_child(bool wait_for_child)
 {
 #ifndef WIN32
 	int			work_status;
-	pid_t		child;
+	int			ret;
 #else
 	int			thread_num;
 	DWORD		res;
@@ -295,13 +300,14 @@ reap_child(bool wait_for_child)
 		return false;
 
 #ifndef WIN32
-	child = waitpid(-1, &work_status, wait_for_child ? 0 : WNOHANG);
-	if (child == (pid_t) -1)
-		pg_fatal("waitpid() failed: %s\n", strerror(errno));
-	if (child == 0)
-		return false;			/* no children, or no dead children */
-	if (work_status != 0)
-		pg_fatal("child process exited abnormally: status %d\n", work_status);
+	ret = waitpid(-1, &work_status, wait_for_child ? 0 : WNOHANG);
+
+	/* no children or, for WNOHANG, no dead children */
+	if (ret <= 0 || !WIFEXITED(work_status))
+		return false;
+
+	if (WEXITSTATUS(work_status) != 0)
+		pg_fatal("child worker exited abnormally: %s\n", strerror(errno));
 #else
 	/* wait for one to finish */
 	thread_num = WaitForMultipleObjects(parallel_jobs, thread_handles,
@@ -329,7 +335,7 @@ reap_child(bool wait_for_child)
 		thread_handles[thread_num] = thread_handles[parallel_jobs - 1];
 
 		/*
-		 * Move last active thread arg struct into the now-dead slot, and the
+		 * Move last active thead arg struct into the now-dead slot, and the
 		 * now-dead slot to the end for reuse by the next thread. Though the
 		 * thread struct is in use by another thread, we can safely swap the
 		 * struct pointers within the array.

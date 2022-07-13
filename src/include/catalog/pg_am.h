@@ -4,7 +4,7 @@
  *	  definition of the "access method" system catalog (pg_am)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_am.h
@@ -28,8 +28,6 @@
  */
 CATALOG(pg_am,2601,AccessMethodRelationId)
 {
-	Oid			oid;			/* oid */
-
 	/* access method name */
 	NameData	amname;
 
@@ -53,7 +51,6 @@ typedef FormData_pg_am *Form_pg_am;
  * Allowed values for amtype
  */
 #define AMTYPE_INDEX					'i' /* index access method */
-#define AMTYPE_TABLE					't' /* table access method */
 
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 

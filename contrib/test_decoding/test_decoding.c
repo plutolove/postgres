@@ -3,7 +3,7 @@
  * test_decoding.c
  *		  example logical decoding output plugin
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/test_decoding/test_decoding.c
@@ -24,7 +24,7 @@
 
 PG_MODULE_MAGIC;
 
-/* These must be available to dlsym() */
+/* These must be available to pg_dlsym() */
 extern void _PG_init(void);
 extern void _PG_output_plugin_init(OutputPluginCallbacks *cb);
 
@@ -39,29 +39,29 @@ typedef struct
 } TestDecodingData;
 
 static void pg_decode_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
-							  bool is_init);
+				  bool is_init);
 static void pg_decode_shutdown(LogicalDecodingContext *ctx);
 static void pg_decode_begin_txn(LogicalDecodingContext *ctx,
-								ReorderBufferTXN *txn);
+					ReorderBufferTXN *txn);
 static void pg_output_begin(LogicalDecodingContext *ctx,
-							TestDecodingData *data,
-							ReorderBufferTXN *txn,
-							bool last_write);
+				TestDecodingData *data,
+				ReorderBufferTXN *txn,
+				bool last_write);
 static void pg_decode_commit_txn(LogicalDecodingContext *ctx,
-								 ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
+					 ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 static void pg_decode_change(LogicalDecodingContext *ctx,
-							 ReorderBufferTXN *txn, Relation rel,
-							 ReorderBufferChange *change);
+				 ReorderBufferTXN *txn, Relation rel,
+				 ReorderBufferChange *change);
 static void pg_decode_truncate(LogicalDecodingContext *ctx,
-							   ReorderBufferTXN *txn,
-							   int nrelations, Relation relations[],
-							   ReorderBufferChange *change);
+				   ReorderBufferTXN *txn,
+				   int nrelations, Relation relations[],
+				   ReorderBufferChange *change);
 static bool pg_decode_filter(LogicalDecodingContext *ctx,
-							 RepOriginId origin_id);
+				 RepOriginId origin_id);
 static void pg_decode_message(LogicalDecodingContext *ctx,
-							  ReorderBufferTXN *txn, XLogRecPtr message_lsn,
-							  bool transactional, const char *prefix,
-							  Size sz, const char *message);
+				  ReorderBufferTXN *txn, XLogRecPtr message_lsn,
+				  bool transactional, const char *prefix,
+				  Size sz, const char *message);
 
 void
 _PG_init(void)
@@ -319,6 +319,13 @@ static void
 tuple_to_stringinfo(StringInfo s, TupleDesc tupdesc, HeapTuple tuple, bool skip_nulls)
 {
 	int			natt;
+	Oid			oid;
+
+	/* print oid of tuple, it's not included in the TupleDesc */
+	if ((oid = HeapTupleHeaderGetOid(tuple->t_data)) != InvalidOid)
+	{
+		appendStringInfo(s, " oid[oid]:%u", oid);
+	}
 
 	/* print all columns individually */
 	for (natt = 0; natt < tupdesc->natts; natt++)
@@ -419,7 +426,9 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	appendStringInfoString(ctx->out, "table ");
 	appendStringInfoString(ctx->out,
-						   quote_qualified_identifier(get_namespace_name(get_rel_namespace(RelationGetRelid(relation))),
+						   quote_qualified_identifier(
+													  get_namespace_name(
+																		 get_rel_namespace(RelationGetRelid(relation))),
 													  class_form->relrewrite ?
 													  get_rel_name(class_form->relrewrite) :
 													  NameStr(class_form->relname)));
@@ -516,9 +525,9 @@ pg_decode_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		|| change->data.truncate.cascade)
 	{
 		if (change->data.truncate.restart_seqs)
-			appendStringInfoString(ctx->out, " restart_seqs");
+			appendStringInfo(ctx->out, " restart_seqs");
 		if (change->data.truncate.cascade)
-			appendStringInfoString(ctx->out, " cascade");
+			appendStringInfo(ctx->out, " cascade");
 	}
 	else
 		appendStringInfoString(ctx->out, " (no-flags)");

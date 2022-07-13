@@ -4,12 +4,13 @@
 
 #include <time.h>
 #include <ctype.h>
+#include <float.h>
 #include <limits.h>
 
+#include "extern.h"
 #include "dt.h"
-#include "pgtypes_date.h"
 #include "pgtypes_error.h"
-#include "pgtypeslib_extern.h"
+#include "pgtypes_date.h"
 
 date *
 PGTYPESdate_new(void)
@@ -152,6 +153,7 @@ PGTYPESdate_today(date * d)
 	GetCurrentDateTime(&ts);
 	if (errno == 0)
 		*d = date2j(ts.tm_year, ts.tm_mon, ts.tm_mday) - date2j(2000, 1, 1);
+	return;
 }
 
 #define PGTYPES_DATE_NUM_MAX_DIGITS		20	/* should suffice for most
@@ -622,7 +624,7 @@ PGTYPESdate_defmt_asc(date * d, const char *fmt, const char *str)
 
 			/*
 			 * evil[tm] hack: if we read the pgtypes_date_months and haven't
-			 * found a match, reset list to point to months (abbreviations)
+			 * found a match, reset list to point to pgtypes_date_months_short
 			 * and reset the counter variable i
 			 */
 			if (list == pgtypes_date_months)

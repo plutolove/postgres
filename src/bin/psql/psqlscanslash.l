@@ -8,7 +8,7 @@
  *
  * See fe_utils/psqlscan_int.h for additional commentary.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -19,7 +19,6 @@
 #include "postgres_fe.h"
 
 #include "psqlscanslash.h"
-#include "common/logging.h"
 #include "fe_utils/conditional.h"
 
 #include "libpq-fe.h"
@@ -634,7 +633,7 @@ psql_scan_slash_option(PsqlScanState state,
 		case xslashbackquote:
 		case xslashdquote:
 			/* must have hit EOL inside quotes */
-			pg_log_error("unterminated quoted string");
+			state->callbacks->write_error("unterminated quoted string\n");
 			termPQExpBuffer(&mybuf);
 			return NULL;
 		case xslashwholeline:
@@ -777,10 +776,10 @@ evaluate_backtick(PsqlScanState state)
 
 	initPQExpBuffer(&cmd_output);
 
-	fd = popen(cmd, "r");
+	fd = popen(cmd, PG_BINARY_R);
 	if (!fd)
 	{
-		pg_log_error("%s: %m", cmd);
+		state->callbacks->write_error("%s: %s\n", cmd, strerror(errno));
 		error = true;
 	}
 
@@ -791,7 +790,7 @@ evaluate_backtick(PsqlScanState state)
 			result = fread(buf, 1, sizeof(buf), fd);
 			if (ferror(fd))
 			{
-				pg_log_error("%s: %m", cmd);
+				state->callbacks->write_error("%s: %s\n", cmd, strerror(errno));
 				error = true;
 				break;
 			}
@@ -801,13 +800,13 @@ evaluate_backtick(PsqlScanState state)
 
 	if (fd && pclose(fd) == -1)
 	{
-		pg_log_error("%s: %m", cmd);
+		state->callbacks->write_error("%s: %s\n", cmd, strerror(errno));
 		error = true;
 	}
 
 	if (PQExpBufferDataBroken(cmd_output))
 	{
-		pg_log_error("%s: out of memory", cmd);
+		state->callbacks->write_error("%s: out of memory\n", cmd);
 		error = true;
 	}
 
@@ -818,7 +817,7 @@ evaluate_backtick(PsqlScanState state)
 	/* If no error, transfer result to output_buf */
 	if (!error)
 	{
-		/* strip any trailing newline (but only one) */
+		/* strip any trailing newline */
 		if (cmd_output.len > 0 &&
 			cmd_output.data[cmd_output.len - 1] == '\n')
 			cmd_output.len--;

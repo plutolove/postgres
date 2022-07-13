@@ -3,7 +3,7 @@
  * nodeSeqscan.c
  *	  Support routines for sequential scans of relations.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,7 +28,6 @@
 #include "postgres.h"
 
 #include "access/relscan.h"
-#include "access/tableam.h"
 #include "executor/execdebug.h"
 #include "executor/nodeSeqscan.h"
 #include "utils/rel.h"
@@ -49,7 +48,8 @@ static TupleTableSlot *SeqNext(SeqScanState *node);
 static TupleTableSlot *
 SeqNext(SeqScanState *node)
 {
-	TableScanDesc scandesc;
+	HeapTuple	tuple;
+	HeapScanDesc scandesc;
 	EState	   *estate;
 	ScanDirection direction;
 	TupleTableSlot *slot;
@@ -68,18 +68,35 @@ SeqNext(SeqScanState *node)
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		scandesc = table_beginscan(node->ss.ss_currentRelation,
-								   estate->es_snapshot,
-								   0, NULL);
+		scandesc = heap_beginscan(node->ss.ss_currentRelation,
+								  estate->es_snapshot,
+								  0, NULL);
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
 	/*
 	 * get the next tuple from the table
 	 */
-	if (table_scan_getnextslot(scandesc, direction, slot))
-		return slot;
-	return NULL;
+	tuple = heap_getnext(scandesc, direction);
+
+	/*
+	 * save the tuple and the buffer returned to us by the access methods in
+	 * our scan tuple slot and return the slot.  Note: we pass 'false' because
+	 * tuples returned by heap_getnext() are pointers onto disk pages and were
+	 * not created with palloc() and so should not be pfree()'d.  Note also
+	 * that ExecStoreTuple will increment the refcount of the buffer; the
+	 * refcount will not be dropped until the tuple table slot is cleared.
+	 */
+	if (tuple)
+		ExecStoreTuple(tuple,	/* tuple to store */
+					   slot,	/* slot to store in */
+					   scandesc->rs_cbuf,	/* buffer associated with this
+											 * tuple */
+					   false);	/* don't pfree this pointer */
+	else
+		ExecClearTuple(slot);
+
+	return slot;
 }
 
 /*
@@ -147,7 +164,10 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 	ExecAssignExprContext(estate, &scanstate->ss.ps);
 
 	/*
-	 * open the scan relation
+	 * Initialize scan relation.
+	 *
+	 * Get the relation object id from the relid'th entry in the range table,
+	 * open that relation and acquire appropriate lock on it.
 	 */
 	scanstate->ss.ss_currentRelation =
 		ExecOpenScanRelation(estate,
@@ -156,13 +176,12 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 
 	/* and create slot with the appropriate rowtype */
 	ExecInitScanTupleSlot(estate, &scanstate->ss,
-						  RelationGetDescr(scanstate->ss.ss_currentRelation),
-						  table_slot_callbacks(scanstate->ss.ss_currentRelation));
+						  RelationGetDescr(scanstate->ss.ss_currentRelation));
 
 	/*
-	 * Initialize result type and projection.
+	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTypeTL(&scanstate->ss.ps);
+	ExecInitResultTupleSlotTL(estate, &scanstate->ss.ps);
 	ExecAssignScanProjectionInfo(&scanstate->ss);
 
 	/*
@@ -183,11 +202,13 @@ ExecInitSeqScan(SeqScan *node, EState *estate, int eflags)
 void
 ExecEndSeqScan(SeqScanState *node)
 {
-	TableScanDesc scanDesc;
+	Relation	relation;
+	HeapScanDesc scanDesc;
 
 	/*
 	 * get information from node
 	 */
+	relation = node->ss.ss_currentRelation;
 	scanDesc = node->ss.ss_currentScanDesc;
 
 	/*
@@ -198,15 +219,19 @@ ExecEndSeqScan(SeqScanState *node)
 	/*
 	 * clean out the tuple table
 	 */
-	if (node->ss.ps.ps_ResultTupleSlot)
-		ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
+	ExecClearTuple(node->ss.ps.ps_ResultTupleSlot);
 	ExecClearTuple(node->ss.ss_ScanTupleSlot);
 
 	/*
 	 * close heap scan
 	 */
 	if (scanDesc != NULL)
-		table_endscan(scanDesc);
+		heap_endscan(scanDesc);
+
+	/*
+	 * close the heap relation.
+	 */
+	ExecCloseScanRelation(relation);
 }
 
 /* ----------------------------------------------------------------
@@ -223,13 +248,13 @@ ExecEndSeqScan(SeqScanState *node)
 void
 ExecReScanSeqScan(SeqScanState *node)
 {
-	TableScanDesc scan;
+	HeapScanDesc scan;
 
 	scan = node->ss.ss_currentScanDesc;
 
 	if (scan != NULL)
-		table_rescan(scan,		/* scan desc */
-					 NULL);		/* new scan keys */
+		heap_rescan(scan,		/* scan desc */
+					NULL);		/* new scan keys */
 
 	ExecScanReScan((ScanState *) node);
 }
@@ -252,8 +277,7 @@ ExecSeqScanEstimate(SeqScanState *node,
 {
 	EState	   *estate = node->ss.ps.state;
 
-	node->pscan_len = table_parallelscan_estimate(node->ss.ss_currentRelation,
-												  estate->es_snapshot);
+	node->pscan_len = heap_parallelscan_estimate(estate->es_snapshot);
 	shm_toc_estimate_chunk(&pcxt->estimator, node->pscan_len);
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 }
@@ -269,15 +293,15 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 						 ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
-	ParallelTableScanDesc pscan;
+	ParallelHeapScanDesc pscan;
 
 	pscan = shm_toc_allocate(pcxt->toc, node->pscan_len);
-	table_parallelscan_initialize(node->ss.ss_currentRelation,
-								  pscan,
-								  estate->es_snapshot);
+	heap_parallelscan_initialize(pscan,
+								 node->ss.ss_currentRelation,
+								 estate->es_snapshot);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+		heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 }
 
 /* ----------------------------------------------------------------
@@ -290,10 +314,9 @@ void
 ExecSeqScanReInitializeDSM(SeqScanState *node,
 						   ParallelContext *pcxt)
 {
-	ParallelTableScanDesc pscan;
+	HeapScanDesc scan = node->ss.ss_currentScanDesc;
 
-	pscan = node->ss.ss_currentScanDesc->rs_parallel;
-	table_parallelscan_reinitialize(node->ss.ss_currentRelation, pscan);
+	heap_parallelscan_reinitialize(scan->rs_parallel);
 }
 
 /* ----------------------------------------------------------------
@@ -306,9 +329,9 @@ void
 ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
-	ParallelTableScanDesc pscan;
+	ParallelHeapScanDesc pscan;
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+		heap_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 }

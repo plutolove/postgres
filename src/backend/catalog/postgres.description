@@ -1,5 +1,3 @@
-6122	pg_proc	0	helloworld
-6123	pg_proc	0	strcon
 1242	pg_proc	0	I/O
 1243	pg_proc	0	I/O
 1244	pg_proc	0	I/O
@@ -30,7 +28,6 @@
 55	pg_proc	0	I/O
 77	pg_proc	0	convert char to int4
 78	pg_proc	0	convert int4 to char
-1364	pg_proc	0	planner support for textregexeq
 1257	pg_proc	0	length
 89	pg_proc	0	PostgreSQL version string
 86	pg_proc	0	I/O
@@ -88,10 +85,17 @@
 236	pg_proc	0	convert int2 to float4
 237	pg_proc	0	convert float8 to int2
 238	pg_proc	0	convert float4 to int2
-246	pg_proc	0	less-equal-greater
-253	pg_proc	0	less-equal-greater
-266	pg_proc	0	concatenate name and oid
+240	pg_proc	0	I/O
+241	pg_proc	0	I/O
+242	pg_proc	0	I/O
+243	pg_proc	0	I/O
+246	pg_proc	0	I/O
+247	pg_proc	0	I/O
+249	pg_proc	0	tinterval to reltime
+250	pg_proc	0	current date and time (abstime)
+273	pg_proc	0	end of interval
 274	pg_proc	0	current date and time - increments during transactions
+275	pg_proc	0	finite abstime?
 320	pg_proc	0	bucket number of operand in equal-width histogram
 311	pg_proc	0	convert float4 to float8
 312	pg_proc	0	convert float8 to float4
@@ -101,7 +105,6 @@
 317	pg_proc	0	convert float8 to int4
 318	pg_proc	0	convert int4 to float4
 319	pg_proc	0	convert float4 to int4
-3	pg_proc	0	row-oriented heap table access method handler
 330	pg_proc	0	btree index access method handler
 331	pg_proc	0	hash index access method handler
 332	pg_proc	0	gist index access method handler
@@ -115,7 +118,6 @@
 636	pg_proc	0	test property of an index access method
 637	pg_proc	0	test property of an index
 638	pg_proc	0	test property of an index column
-676	pg_proc	0	return name of given index build phase
 347	pg_proc	0	I/O
 348	pg_proc	0	I/O
 350	pg_proc	0	less-equal-greater
@@ -131,12 +133,15 @@
 356	pg_proc	0	less-equal-greater
 3134	pg_proc	0	sort support
 404	pg_proc	0	less-equal-greater
+357	pg_proc	0	less-equal-greater
 358	pg_proc	0	less-equal-greater
 359	pg_proc	0	less-equal-greater
 3135	pg_proc	0	sort support
 360	pg_proc	0	less-equal-greater
 3255	pg_proc	0	sort support
 377	pg_proc	0	less-equal-greater
+380	pg_proc	0	less-equal-greater
+381	pg_proc	0	less-equal-greater
 382	pg_proc	0	less-equal-greater
 4126	pg_proc	0	window RANGE support
 4127	pg_proc	0	window RANGE support
@@ -202,7 +207,7 @@
 714	pg_proc	0	convert int8 to int2
 754	pg_proc	0	convert int2 to int8
 668	pg_proc	0	adjust char() to typmod length
-3097	pg_proc	0	planner support for varchar length coercion
+3097	pg_proc	0	transform a varchar length coercion
 669	pg_proc	0	adjust varchar() to typmod length
 710	pg_proc	0	deprecated, use current_user instead
 720	pg_proc	0	octet length
@@ -238,7 +243,6 @@
 1193	pg_proc	0	array constructor with value
 1286	pg_proc	0	array constructor with value
 2331	pg_proc	0	expand array to set of rows
-3996	pg_proc	0	planner support for array_unnest
 3167	pg_proc	0	remove any occurrences of an element from an array
 3168	pg_proc	0	replace any occurrences of an element in an array
 2333	pg_proc	0	aggregate transition function
@@ -251,6 +255,10 @@
 3816	pg_proc	0	array typanalyze
 3817	pg_proc	0	restriction selectivity for array-containment operators
 3818	pg_proc	0	join selectivity for array-containment operators
+760	pg_proc	0	I/O
+761	pg_proc	0	I/O
+762	pg_proc	0	storage manager
+763	pg_proc	0	storage manager
 764	pg_proc	0	large object import
 767	pg_proc	0	large object import
 765	pg_proc	0	large object export
@@ -260,7 +268,6 @@
 770	pg_proc	0	larger of two
 771	pg_proc	0	smaller of two
 849	pg_proc	0	position of substring
-1023	pg_proc	0	planner support for textlike
 860	pg_proc	0	convert char to char(n)
 861	pg_proc	0	name of the current database
 817	pg_proc	0	get the currently executing query
@@ -303,6 +310,7 @@
 981	pg_proc	0	box diagonal
 992	pg_proc	0	slope between points
 993	pg_proc	0	convert points to line segment
+3994	pg_proc	0	transform a time zone adjustment
 1026	pg_proc	0	adjust timestamp to new time zone
 1031	pg_proc	0	I/O
 1032	pg_proc	0	I/O
@@ -310,8 +318,8 @@
 1036	pg_proc	0	remove ACL item
 1037	pg_proc	0	contains
 1365	pg_proc	0	make ACL item
-3943	pg_proc	0	show hardwired default privileges, primarily for use by the information schema
-1689	pg_proc	0	convert ACL item array to table, primarily for use by information schema
+3943	pg_proc	0	TODO
+1689	pg_proc	0	convert ACL item array to table, for use by information schema
 1044	pg_proc	0	I/O
 1045	pg_proc	0	I/O
 2913	pg_proc	0	I/O typmod
@@ -344,6 +352,7 @@
 2907	pg_proc	0	I/O typmod
 2908	pg_proc	0	I/O typmod
 1158	pg_proc	0	convert UNIX epoch to timestamptz
+3995	pg_proc	0	transform a time zone adjustment
 1159	pg_proc	0	adjust timestamp to new time zone
 1160	pg_proc	0	I/O
 1161	pg_proc	0	I/O
@@ -351,26 +360,30 @@
 2904	pg_proc	0	I/O typmod
 1171	pg_proc	0	extract field from timestamp with time zone
 1172	pg_proc	0	extract field from interval
+1173	pg_proc	0	convert abstime to timestamp with time zone
 1174	pg_proc	0	convert date to timestamp with time zone
 2711	pg_proc	0	promote groups of 24 hours to numbers of days and promote groups of 30 days to numbers of months
 1175	pg_proc	0	promote groups of 24 hours to numbers of days
 1295	pg_proc	0	promote groups of 30 days to numbers of months
 1176	pg_proc	0	convert date and time to timestamp with time zone
+1177	pg_proc	0	convert reltime to interval
 1178	pg_proc	0	convert timestamp with time zone to date
+1179	pg_proc	0	convert abstime to date
+1180	pg_proc	0	convert timestamp with time zone to abstime
 1181	pg_proc	0	age of a transaction ID, in transactions before current transaction
 3939	pg_proc	0	age of a multi-transaction ID, in multi-transactions before current multi-transaction
+1194	pg_proc	0	convert interval to reltime
 1195	pg_proc	0	smaller of two
 1196	pg_proc	0	larger of two
 1197	pg_proc	0	smaller of two
 1198	pg_proc	0	larger of two
 1199	pg_proc	0	date difference preserving months and years
-3918	pg_proc	0	planner support for interval length coercion
+3918	pg_proc	0	transform an interval length coercion
 1200	pg_proc	0	adjust interval precision
 1215	pg_proc	0	get description for object id and catalog name
 1216	pg_proc	0	get description for table column
 1993	pg_proc	0	get description for object id and shared catalog name
 1217	pg_proc	0	truncate timestamp with time zone to specified units
-1284	pg_proc	0	truncate timestamp with time zone to specified units in specified time zone
 1218	pg_proc	0	truncate interval to specified units
 1219	pg_proc	0	increment
 3546	pg_proc	0	decrement
@@ -378,7 +391,6 @@
 3547	pg_proc	0	decrement, ignores second argument
 1236	pg_proc	0	larger of two
 1237	pg_proc	0	smaller of two
-1024	pg_proc	0	planner support for texticregexeq
 1271	pg_proc	0	intervals overlap?
 1273	pg_proc	0	extract field from time with time zone
 1287	pg_proc	0	convert int8 to oid
@@ -389,8 +401,6 @@
 2794	pg_proc	0	less-equal-greater
 2795	pg_proc	0	larger of two
 2796	pg_proc	0	smaller of two
-2233	pg_proc	0	hash
-2234	pg_proc	0	hash
 1299	pg_proc	0	current transaction time
 2647	pg_proc	0	current transaction time
 2648	pg_proc	0	current statement time
@@ -418,7 +428,6 @@
 1318	pg_proc	0	character length
 1339	pg_proc	0	base 10 logarithm
 1340	pg_proc	0	base 10 logarithm
-1194	pg_proc	0	base 10 logarithm
 1341	pg_proc	0	natural logarithm
 1342	pg_proc	0	round to nearest integer
 1343	pg_proc	0	truncate to integer
@@ -435,6 +444,7 @@
 2912	pg_proc	0	I/O typmod
 1358	pg_proc	0	less-equal-greater
 1359	pg_proc	0	convert date and time with time zone to timestamp with time zone
+1364	pg_proc	0	convert abstime to time
 1367	pg_proc	0	character length
 1369	pg_proc	0	character length
 1370	pg_proc	0	convert time to interval
@@ -446,6 +456,8 @@
 1379	pg_proc	0	larger of two
 1380	pg_proc	0	smaller of two
 1381	pg_proc	0	character length
+1382	pg_proc	0	extract field from abstime
+1383	pg_proc	0	extract field from reltime
 1384	pg_proc	0	extract field from date
 1385	pg_proc	0	extract field from time
 1386	pg_proc	0	date difference from today preserving months and years
@@ -498,6 +510,7 @@
 4091	pg_proc	0	convert point to empty box
 1479	pg_proc	0	convert box to circle
 1480	pg_proc	0	convert circle to box
+1481	pg_proc	0	convert to tinterval
 1490	pg_proc	0	I/O
 1491	pg_proc	0	I/O
 1493	pg_proc	0	construct line from points
@@ -527,7 +540,6 @@
 1765	pg_proc	0	set sequence value and is_called status
 3078	pg_proc	0	sequence parameters, for use by information schema
 4032	pg_proc	0	sequence last value
-275	pg_proc	0	return the next oid for a system table
 1579	pg_proc	0	I/O
 1580	pg_proc	0	I/O
 2902	pg_proc	0	I/O typmod
@@ -554,17 +566,10 @@
 1608	pg_proc	0	radians to degrees
 1609	pg_proc	0	degrees to radians
 1610	pg_proc	0	PI
-2462	pg_proc	0	hyperbolic sine
-2463	pg_proc	0	hyperbolic cosine
-2464	pg_proc	0	hyperbolic tangent
-2465	pg_proc	0	inverse hyperbolic sine
-2466	pg_proc	0	inverse hyperbolic cosine
-2467	pg_proc	0	inverse hyperbolic tangent
 1620	pg_proc	0	convert first char to int4
 1621	pg_proc	0	convert int4 to char
 1622	pg_proc	0	replicate string n times
 1623	pg_proc	0	convert SQL99 regexp pattern to POSIX style
-1025	pg_proc	0	planner support for texticlike
 1637	pg_proc	0	convert LIKE pattern to use backslash escapes
 868	pg_proc	0	position of substring
 870	pg_proc	0	lowercase
@@ -652,7 +657,7 @@
 1683	pg_proc	0	convert int4 to bitstring
 1684	pg_proc	0	convert bitstring to int4
 1685	pg_proc	0	adjust bit() to typmod length
-3158	pg_proc	0	planner support for varbit length coercion
+3158	pg_proc	0	transform a varbit length coercion
 1687	pg_proc	0	adjust varbit() to typmod length
 1698	pg_proc	0	position of sub-bitstring
 1699	pg_proc	0	extract portion of bitstring
@@ -679,7 +684,6 @@
 3562	pg_proc	0	larger of two
 3563	pg_proc	0	smaller of two
 926	pg_proc	0	less-equal-greater
-1173	pg_proc	0	planner support for network_sub/superset
 598	pg_proc	0	abbreviated display of inet value
 599	pg_proc	0	abbreviated display of cidr value
 605	pg_proc	0	change netmask of inet
@@ -724,7 +728,7 @@
 1702	pg_proc	0	I/O
 2917	pg_proc	0	I/O typmod
 2918	pg_proc	0	I/O typmod
-3157	pg_proc	0	planner support for numeric length coercion
+3157	pg_proc	0	transform a numeric length coercion
 1703	pg_proc	0	adjust numeric to typmod precision/scale
 1705	pg_proc	0	absolute value
 1706	pg_proc	0	sign of value
@@ -749,7 +753,6 @@
 3281	pg_proc	0	number of decimal digits in the fractional part
 1740	pg_proc	0	convert int4 to numeric
 1741	pg_proc	0	base 10 logarithm
-1481	pg_proc	0	base 10 logarithm
 1742	pg_proc	0	convert float4 to numeric
 1743	pg_proc	0	convert float8 to numeric
 1744	pg_proc	0	convert numeric to int4
@@ -934,11 +937,6 @@
 3405	pg_proc	0	I/O
 3406	pg_proc	0	I/O
 3407	pg_proc	0	I/O
-5018	pg_proc	0	I/O
-5019	pg_proc	0	I/O
-5020	pg_proc	0	I/O
-5021	pg_proc	0	I/O
-3427	pg_proc	0	details about MCV list items
 1928	pg_proc	0	statistics: number of scans done for table/index
 1929	pg_proc	0	statistics: number of tuples read by seqscan
 1930	pg_proc	0	statistics: number of tuples fetched by idxscan
@@ -994,8 +992,6 @@
 3069	pg_proc	0	statistics: recovery conflicts in database caused by buffer deadlock
 3070	pg_proc	0	statistics: recovery conflicts in database
 3152	pg_proc	0	statistics: deadlocks detected in database
-3426	pg_proc	0	statistics: checksum failures detected in database
-3428	pg_proc	0	statistics: when last checksum failure was detected in database
 3074	pg_proc	0	statistics: last reset for a database
 3150	pg_proc	0	statistics: number of temporary files written
 3151	pg_proc	0	statistics: number of bytes in temporary files written
@@ -1040,8 +1036,8 @@
 1947	pg_proc	0	convert ascii-encoded text string into bytea value
 1954	pg_proc	0	less-equal-greater
 3331	pg_proc	0	sort support
-3917	pg_proc	0	planner support for timestamp length coercion
-3944	pg_proc	0	planner support for time length coercion
+3917	pg_proc	0	transform a timestamp length coercion
+3944	pg_proc	0	transform a time length coercion
 1961	pg_proc	0	adjust timestamp precision
 1965	pg_proc	0	larger of two
 1966	pg_proc	0	smaller of two
@@ -1061,11 +1057,13 @@
 2019	pg_proc	0	convert timestamp with time zone to time
 2020	pg_proc	0	truncate timestamp to specified units
 2021	pg_proc	0	extract field from timestamp
+2023	pg_proc	0	convert abstime to timestamp
 2024	pg_proc	0	convert date to timestamp
 2025	pg_proc	0	convert date and time to timestamp
 2027	pg_proc	0	convert timestamp with time zone to timestamp
 2028	pg_proc	0	convert timestamp to timestamp with time zone
 2029	pg_proc	0	convert timestamp to date
+2030	pg_proc	0	convert timestamp to abstime
 2035	pg_proc	0	smaller of two
 2036	pg_proc	0	larger of two
 2037	pg_proc	0	adjust time with time zone to new zone
@@ -1135,7 +1133,6 @@
 2739	pg_proc	0	finish taking an online backup
 3813	pg_proc	0	true if server is in online backup
 3814	pg_proc	0	start time of an online backup
-3436	pg_proc	0	promote standby server
 2848	pg_proc	0	switch to new wal file
 3098	pg_proc	0	create a named restore point
 2849	pg_proc	0	current wal write location
@@ -1194,6 +1191,7 @@
 2118	pg_proc	0	maximum value of all oid input values
 2119	pg_proc	0	maximum value of all float4 input values
 2120	pg_proc	0	maximum value of all float8 input values
+2121	pg_proc	0	maximum value of all abstime input values
 2122	pg_proc	0	maximum value of all date input values
 2123	pg_proc	0	maximum value of all time input values
 2124	pg_proc	0	maximum value of all time with time zone input values
@@ -1213,6 +1211,7 @@
 2134	pg_proc	0	minimum value of all oid input values
 2135	pg_proc	0	minimum value of all float4 input values
 2136	pg_proc	0	minimum value of all float8 input values
+2137	pg_proc	0	minimum value of all abstime input values
 2138	pg_proc	0	minimum value of all date input values
 2139	pg_proc	0	minimum value of all time input values
 2140	pg_proc	0	minimum value of all time with time zone input values
@@ -1418,8 +1417,6 @@
 327	pg_proc	0	I/O
 3311	pg_proc	0	I/O
 3312	pg_proc	0	I/O
-267	pg_proc	0	I/O
-268	pg_proc	0	I/O
 3313	pg_proc	0	BERNOULLI tablesample method handler
 3314	pg_proc	0	SYSTEM tablesample method handler
 2311	pg_proc	0	MD5 hash
@@ -1500,6 +1497,12 @@
 2459	pg_proc	0	I/O
 2460	pg_proc	0	I/O
 2461	pg_proc	0	I/O
+2462	pg_proc	0	I/O
+2463	pg_proc	0	I/O
+2464	pg_proc	0	I/O
+2465	pg_proc	0	I/O
+2466	pg_proc	0	I/O
+2467	pg_proc	0	I/O
 2468	pg_proc	0	I/O
 2469	pg_proc	0	I/O
 2470	pg_proc	0	I/O
@@ -1557,10 +1560,8 @@
 3296	pg_proc	0	get the fraction of the asynchronous notification queue currently in use
 1066	pg_proc	0	non-persistent series generator
 1067	pg_proc	0	non-persistent series generator
-3994	pg_proc	0	planner support for generate_series
 1068	pg_proc	0	non-persistent series generator
 1069	pg_proc	0	non-persistent series generator
-3995	pg_proc	0	planner support for generate_series
 3259	pg_proc	0	non-persistent series generator
 3260	pg_proc	0	non-persistent series generator
 938	pg_proc	0	non-persistent series generator
@@ -1908,17 +1909,6 @@
 3305	pg_proc	0	Set part of a jsonb
 3306	pg_proc	0	Indented text from jsonb
 3579	pg_proc	0	Insert value into a jsonb
-4001	pg_proc	0	I/O
-4002	pg_proc	0	I/O
-4003	pg_proc	0	I/O
-4004	pg_proc	0	I/O
-4005	pg_proc	0	jsonpath exists test
-4006	pg_proc	0	jsonpath query
-4007	pg_proc	0	jsonpath query wrapped into array
-4008	pg_proc	0	jsonpath query first item
-4009	pg_proc	0	jsonpath match
-4010	pg_proc	0	implementation of @? operator
-4011	pg_proc	0	implementation of @@ operator
 2939	pg_proc	0	I/O
 2940	pg_proc	0	I/O
 2941	pg_proc	0	I/O
@@ -2030,14 +2020,9 @@
 5010	pg_proc	0	SP-GiST support for quad tree over 2-D types represented by their bounding boxes
 5011	pg_proc	0	SP-GiST support for quad tree over polygons
 3779	pg_proc	0	create a physical replication slot
-4220	pg_proc	0	copy a physical replication slot, changing temporality
-4221	pg_proc	0	copy a physical replication slot
 3780	pg_proc	0	drop a replication slot
 3781	pg_proc	0	information about replication slots currently in use
 3786	pg_proc	0	set up a logical replication slot
-4222	pg_proc	0	copy a logical replication slot, changing temporality and plugin
-4223	pg_proc	0	copy a logical replication slot, changing temporality
-4224	pg_proc	0	copy a logical replication slot
 3782	pg_proc	0	get changes from replication slot
 3783	pg_proc	0	get binary changes from replication slot
 3784	pg_proc	0	peek at changes from replication slot
@@ -2084,94 +2069,6 @@
 3591	pg_proc	0	for use by pg_upgrade
 4083	pg_proc	0	for use by pg_upgrade
 4101	pg_proc	0	for use by pg_upgrade
-4300	pg_proc	0	internal conversion function for SQL_ASCII to MULE_INTERNAL
-4301	pg_proc	0	internal conversion function for MULE_INTERNAL to SQL_ASCII
-4302	pg_proc	0	internal conversion function for KOI8R to MULE_INTERNAL
-4303	pg_proc	0	internal conversion function for MULE_INTERNAL to KOI8R
-4304	pg_proc	0	internal conversion function for ISO-8859-5 to MULE_INTERNAL
-4305	pg_proc	0	internal conversion function for MULE_INTERNAL to ISO-8859-5
-4306	pg_proc	0	internal conversion function for WIN1251 to MULE_INTERNAL
-4307	pg_proc	0	internal conversion function for MULE_INTERNAL to WIN1251
-4308	pg_proc	0	internal conversion function for WIN866 to MULE_INTERNAL
-4309	pg_proc	0	internal conversion function for MULE_INTERNAL to WIN866
-4310	pg_proc	0	internal conversion function for KOI8R to WIN1251
-4311	pg_proc	0	internal conversion function for WIN1251 to KOI8R
-4312	pg_proc	0	internal conversion function for KOI8R to WIN866
-4313	pg_proc	0	internal conversion function for WIN866 to KOI8R
-4314	pg_proc	0	internal conversion function for WIN866 to WIN1251
-4315	pg_proc	0	internal conversion function for WIN1251 to WIN866
-4316	pg_proc	0	internal conversion function for ISO-8859-5 to KOI8R
-4317	pg_proc	0	internal conversion function for KOI8R to ISO-8859-5
-4318	pg_proc	0	internal conversion function for ISO-8859-5 to WIN1251
-4319	pg_proc	0	internal conversion function for WIN1251 to ISO-8859-5
-4320	pg_proc	0	internal conversion function for ISO-8859-5 to WIN866
-4321	pg_proc	0	internal conversion function for WIN866 to ISO-8859-5
-4322	pg_proc	0	internal conversion function for EUC_CN to MULE_INTERNAL
-4323	pg_proc	0	internal conversion function for MULE_INTERNAL to EUC_CN
-4324	pg_proc	0	internal conversion function for EUC_JP to SJIS
-4325	pg_proc	0	internal conversion function for SJIS to EUC_JP
-4326	pg_proc	0	internal conversion function for EUC_JP to MULE_INTERNAL
-4327	pg_proc	0	internal conversion function for SJIS to MULE_INTERNAL
-4328	pg_proc	0	internal conversion function for MULE_INTERNAL to EUC_JP
-4329	pg_proc	0	internal conversion function for MULE_INTERNAL to SJIS
-4330	pg_proc	0	internal conversion function for EUC_KR to MULE_INTERNAL
-4331	pg_proc	0	internal conversion function for MULE_INTERNAL to EUC_KR
-4332	pg_proc	0	internal conversion function for EUC_TW to BIG5
-4333	pg_proc	0	internal conversion function for BIG5 to EUC_TW
-4334	pg_proc	0	internal conversion function for EUC_TW to MULE_INTERNAL
-4335	pg_proc	0	internal conversion function for BIG5 to MULE_INTERNAL
-4336	pg_proc	0	internal conversion function for MULE_INTERNAL to EUC_TW
-4337	pg_proc	0	internal conversion function for MULE_INTERNAL to BIG5
-4338	pg_proc	0	internal conversion function for LATIN2 to MULE_INTERNAL
-4339	pg_proc	0	internal conversion function for MULE_INTERNAL to LATIN2
-4340	pg_proc	0	internal conversion function for WIN1250 to MULE_INTERNAL
-4341	pg_proc	0	internal conversion function for MULE_INTERNAL to WIN1250
-4342	pg_proc	0	internal conversion function for LATIN2 to WIN1250
-4343	pg_proc	0	internal conversion function for WIN1250 to LATIN2
-4344	pg_proc	0	internal conversion function for LATIN1 to MULE_INTERNAL
-4345	pg_proc	0	internal conversion function for MULE_INTERNAL to LATIN1
-4346	pg_proc	0	internal conversion function for LATIN3 to MULE_INTERNAL
-4347	pg_proc	0	internal conversion function for MULE_INTERNAL to LATIN3
-4348	pg_proc	0	internal conversion function for LATIN4 to MULE_INTERNAL
-4349	pg_proc	0	internal conversion function for MULE_INTERNAL to LATIN4
-4350	pg_proc	0	internal conversion function for SQL_ASCII to UTF8
-4351	pg_proc	0	internal conversion function for UTF8 to SQL_ASCII
-4352	pg_proc	0	internal conversion function for BIG5 to UTF8
-4353	pg_proc	0	internal conversion function for UTF8 to BIG5
-4354	pg_proc	0	internal conversion function for UTF8 to KOI8R
-4355	pg_proc	0	internal conversion function for KOI8R to UTF8
-4356	pg_proc	0	internal conversion function for UTF8 to KOI8U
-4357	pg_proc	0	internal conversion function for KOI8U to UTF8
-4358	pg_proc	0	internal conversion function for UTF8 to WIN
-4359	pg_proc	0	internal conversion function for WIN to UTF8
-4360	pg_proc	0	internal conversion function for EUC_CN to UTF8
-4361	pg_proc	0	internal conversion function for UTF8 to EUC_CN
-4362	pg_proc	0	internal conversion function for EUC_JP to UTF8
-4363	pg_proc	0	internal conversion function for UTF8 to EUC_JP
-4364	pg_proc	0	internal conversion function for EUC_KR to UTF8
-4365	pg_proc	0	internal conversion function for UTF8 to EUC_KR
-4366	pg_proc	0	internal conversion function for EUC_TW to UTF8
-4367	pg_proc	0	internal conversion function for UTF8 to EUC_TW
-4368	pg_proc	0	internal conversion function for GB18030 to UTF8
-4369	pg_proc	0	internal conversion function for UTF8 to GB18030
-4370	pg_proc	0	internal conversion function for GBK to UTF8
-4371	pg_proc	0	internal conversion function for UTF8 to GBK
-4372	pg_proc	0	internal conversion function for UTF8 to ISO-8859 2-16
-4373	pg_proc	0	internal conversion function for ISO-8859 2-16 to UTF8
-4374	pg_proc	0	internal conversion function for LATIN1 to UTF8
-4375	pg_proc	0	internal conversion function for UTF8 to LATIN1
-4376	pg_proc	0	internal conversion function for JOHAB to UTF8
-4377	pg_proc	0	internal conversion function for UTF8 to JOHAB
-4378	pg_proc	0	internal conversion function for SJIS to UTF8
-4379	pg_proc	0	internal conversion function for UTF8 to SJIS
-4380	pg_proc	0	internal conversion function for UHC to UTF8
-4381	pg_proc	0	internal conversion function for UTF8 to UHC
-4382	pg_proc	0	internal conversion function for EUC_JIS_2004 to UTF8
-4383	pg_proc	0	internal conversion function for UTF8 to EUC_JIS_2004
-4384	pg_proc	0	internal conversion function for SHIFT_JIS_2004 to UTF8
-4385	pg_proc	0	internal conversion function for UTF8 to SHIFT_JIS_2004
-4386	pg_proc	0	internal conversion function for EUC_JIS_2004 to SHIFT_JIS_2004
-4387	pg_proc	0	internal conversion function for SHIFT_JIS_2004 to EUC_JIS_2004
 6003	pg_proc	0	create a replication origin
 6004	pg_proc	0	drop replication origin identified by its name
 6005	pg_proc	0	translate the replication origin's name to its id
@@ -2197,13 +2094,7 @@
 3448	pg_proc	0	get actual version of collation from operating system
 3353	pg_proc	0	list files in the log directory
 3354	pg_proc	0	list of files in the WAL directory
-5031	pg_proc	0	list of files in the archive_status directory
-5029	pg_proc	0	list files in the pgsql_tmp directory
-5030	pg_proc	0	list files in the pgsql_tmp directory
 5028	pg_proc	0	hash partition CHECK constraint
-3423	pg_proc	0	view partition tree tables
-3425	pg_proc	0	view ancestors of the partition
-3424	pg_proc	0	get top-most partition root parent
 16	pg_type	0	boolean, 'true'/'false'
 17	pg_type	0	variable-length string, binary values escaped
 18	pg_type	0	single character
@@ -2219,13 +2110,12 @@
 28	pg_type	0	transaction id
 29	pg_type	0	command identifier type, sequence in transaction id
 30	pg_type	0	array of oids, used in system tables
-114	pg_type	0	JSON stored as text
 142	pg_type	0	XML content
 194	pg_type	0	string representing an internal node tree
 3361	pg_type	0	multivariate ndistinct coefficients
 3402	pg_type	0	multivariate dependencies
-5017	pg_type	0	multivariate MCV list
 32	pg_type	0	internal type for passing CollectedCommand
+210	pg_type	0	storage manager
 600	pg_type	0	geometric point '(x, y)'
 601	pg_type	0	geometric line segment '(pt1,pt2)'
 602	pg_type	0	geometric path '(pt1,...)'
@@ -2234,7 +2124,9 @@
 628	pg_type	0	geometric line
 700	pg_type	0	single-precision floating point number, 4-byte storage
 701	pg_type	0	double-precision floating point number, 8-byte storage
-705	pg_type	0	pseudo-type representing an undetermined type
+702	pg_type	0	absolute, limited-range date and time (Unix system time)
+703	pg_type	0	relative, limited-range time interval (Unix delta time)
+704	pg_type	0	(abstime,abstime), time interval
 718	pg_type	0	geometric circle '(center,radius)'
 790	pg_type	0	monetary amounts, $d,ddd.cc
 829	pg_type	0	XX:XX:XX:XX:XX:XX, MAC address
@@ -2269,7 +2161,6 @@
 3734	pg_type	0	registered text search configuration
 3769	pg_type	0	registered text search dictionary
 3802	pg_type	0	Binary JSON
-4072	pg_type	0	JSON path
 2970	pg_type	0	txid snapshot
 3904	pg_type	0	range of integers
 3906	pg_type	0	range of numerics
@@ -2277,23 +2168,6 @@
 3910	pg_type	0	range of timestamps with time zone
 3912	pg_type	0	range of dates
 3926	pg_type	0	range of bigints
-2249	pg_type	0	pseudo-type representing any composite type
-2275	pg_type	0	C-style string
-2276	pg_type	0	pseudo-type representing any type
-2277	pg_type	0	pseudo-type representing a polymorphic array type
-2278	pg_type	0	pseudo-type for the result of a function with no real result
-2279	pg_type	0	pseudo-type for the result of a trigger function
-3838	pg_type	0	pseudo-type for the result of an event trigger function
-2280	pg_type	0	pseudo-type for the result of a language handler function
-2281	pg_type	0	pseudo-type representing an internal data structure
-2282	pg_type	0	obsolete, deprecated pseudo-type
-2283	pg_type	0	pseudo-type representing a polymorphic base type
-2776	pg_type	0	pseudo-type representing a polymorphic base type that is not an array
-3500	pg_type	0	pseudo-type representing a polymorphic base type that is an enum
-3115	pg_type	0	pseudo-type for the result of an FDW handler function
-325	pg_type	0	pseudo-type for the result of an index AM handler function
-3310	pg_type	0	pseudo-type for the result of a tablesample method function
-3831	pg_type	0	pseudo-type representing a polymorphic base type that is a range
 15	pg_operator	0	equal
 36	pg_operator	0	not equal
 37	pg_operator	0	less than
@@ -2314,18 +2188,6 @@
 97	pg_operator	0	less than
 98	pg_operator	0	equal
 3877	pg_operator	0	starts with
-254	pg_operator	0	equal
-255	pg_operator	0	less than
-256	pg_operator	0	less than or equal
-257	pg_operator	0	greater than or equal
-258	pg_operator	0	greater than
-259	pg_operator	0	not equal
-260	pg_operator	0	equal
-261	pg_operator	0	less than
-262	pg_operator	0	less than or equal
-263	pg_operator	0	greater than or equal
-264	pg_operator	0	greater than
-265	pg_operator	0	not equal
 349	pg_operator	0	append element onto end of array
 374	pg_operator	0	prepend element onto front of array
 375	pg_operator	0	concatenate
@@ -2429,6 +2291,30 @@
 557	pg_operator	0	subtract
 558	pg_operator	0	negate
 559	pg_operator	0	negate
+560	pg_operator	0	equal
+561	pg_operator	0	not equal
+562	pg_operator	0	less than
+563	pg_operator	0	greater than
+564	pg_operator	0	less than or equal
+565	pg_operator	0	greater than or equal
+566	pg_operator	0	equal
+567	pg_operator	0	not equal
+568	pg_operator	0	less than
+569	pg_operator	0	greater than
+570	pg_operator	0	less than or equal
+571	pg_operator	0	greater than or equal
+572	pg_operator	0	same as
+573	pg_operator	0	contains
+574	pg_operator	0	overlaps
+575	pg_operator	0	equal by length
+576	pg_operator	0	not equal by length
+577	pg_operator	0	less than by length
+578	pg_operator	0	greater than by length
+579	pg_operator	0	less than or equal by length
+580	pg_operator	0	greater than or equal by length
+581	pg_operator	0	add
+582	pg_operator	0	subtract
+583	pg_operator	0	is contained by
 584	pg_operator	0	negate
 585	pg_operator	0	negate
 586	pg_operator	0	add
@@ -2443,6 +2329,8 @@
 595	pg_operator	0	absolute value
 596	pg_operator	0	square root
 597	pg_operator	0	cube root
+1284	pg_operator	0	start of interval
+606	pg_operator	0	convert to tinterval
 607	pg_operator	0	equal
 608	pg_operator	0	not equal
 609	pg_operator	0	less than
@@ -2552,6 +2440,12 @@
 807	pg_operator	0	divide box by point (scale)
 808	pg_operator	0	horizontally aligned
 809	pg_operator	0	vertically aligned
+811	pg_operator	0	equal
+812	pg_operator	0	not equal
+813	pg_operator	0	less than
+814	pg_operator	0	greater than
+815	pg_operator	0	less than or equal
+816	pg_operator	0	greater than or equal
 843	pg_operator	0	multiply
 844	pg_operator	0	divide
 845	pg_operator	0	multiply
@@ -3062,9 +2956,6 @@
 3398	pg_operator	0	delete object fields
 3286	pg_operator	0	delete array element
 3287	pg_operator	0	delete path
-4012	pg_operator	0	jsonpath exists
-4013	pg_operator	0	jsonpath match
-2	pg_am	0	heap table access method
 403	pg_am	0	b-tree index access method
 405	pg_am	0	hash index access method
 783	pg_am	0	GiST index access method
@@ -3077,138 +2968,6 @@
 11	pg_namespace	0	system catalog schema
 99	pg_namespace	0	reserved schema for TOAST tables
 2200	pg_namespace	0	standard public schema
-4400	pg_conversion	0	conversion for SQL_ASCII to MULE_INTERNAL
-4401	pg_conversion	0	conversion for MULE_INTERNAL to SQL_ASCII
-4402	pg_conversion	0	conversion for KOI8R to MULE_INTERNAL
-4403	pg_conversion	0	conversion for MULE_INTERNAL to KOI8R
-4404	pg_conversion	0	conversion for ISO-8859-5 to MULE_INTERNAL
-4405	pg_conversion	0	conversion for MULE_INTERNAL to ISO-8859-5
-4406	pg_conversion	0	conversion for WIN1251 to MULE_INTERNAL
-4407	pg_conversion	0	conversion for MULE_INTERNAL to WIN1251
-4408	pg_conversion	0	conversion for WIN866 to MULE_INTERNAL
-4409	pg_conversion	0	conversion for MULE_INTERNAL to WIN866
-4410	pg_conversion	0	conversion for KOI8R to WIN1251
-4411	pg_conversion	0	conversion for WIN1251 to KOI8R
-4412	pg_conversion	0	conversion for KOI8R to WIN866
-4413	pg_conversion	0	conversion for WIN866 to KOI8R
-4414	pg_conversion	0	conversion for WIN866 to WIN1251
-4415	pg_conversion	0	conversion for WIN1251 to WIN866
-4416	pg_conversion	0	conversion for ISO-8859-5 to KOI8R
-4417	pg_conversion	0	conversion for KOI8R to ISO-8859-5
-4418	pg_conversion	0	conversion for ISO-8859-5 to WIN1251
-4419	pg_conversion	0	conversion for WIN1251 to ISO-8859-5
-4420	pg_conversion	0	conversion for ISO-8859-5 to WIN866
-4421	pg_conversion	0	conversion for WIN866 to ISO-8859-5
-4422	pg_conversion	0	conversion for EUC_CN to MULE_INTERNAL
-4423	pg_conversion	0	conversion for MULE_INTERNAL to EUC_CN
-4424	pg_conversion	0	conversion for EUC_JP to SJIS
-4425	pg_conversion	0	conversion for SJIS to EUC_JP
-4426	pg_conversion	0	conversion for EUC_JP to MULE_INTERNAL
-4427	pg_conversion	0	conversion for SJIS to MULE_INTERNAL
-4428	pg_conversion	0	conversion for MULE_INTERNAL to EUC_JP
-4429	pg_conversion	0	conversion for MULE_INTERNAL to SJIS
-4430	pg_conversion	0	conversion for EUC_KR to MULE_INTERNAL
-4431	pg_conversion	0	conversion for MULE_INTERNAL to EUC_KR
-4432	pg_conversion	0	conversion for EUC_TW to BIG5
-4433	pg_conversion	0	conversion for BIG5 to EUC_TW
-4434	pg_conversion	0	conversion for EUC_TW to MULE_INTERNAL
-4435	pg_conversion	0	conversion for BIG5 to MULE_INTERNAL
-4436	pg_conversion	0	conversion for MULE_INTERNAL to EUC_TW
-4437	pg_conversion	0	conversion for MULE_INTERNAL to BIG5
-4438	pg_conversion	0	conversion for LATIN2 to MULE_INTERNAL
-4439	pg_conversion	0	conversion for MULE_INTERNAL to LATIN2
-4440	pg_conversion	0	conversion for WIN1250 to MULE_INTERNAL
-4441	pg_conversion	0	conversion for MULE_INTERNAL to WIN1250
-4442	pg_conversion	0	conversion for LATIN2 to WIN1250
-4443	pg_conversion	0	conversion for WIN1250 to LATIN2
-4444	pg_conversion	0	conversion for LATIN1 to MULE_INTERNAL
-4445	pg_conversion	0	conversion for MULE_INTERNAL to LATIN1
-4446	pg_conversion	0	conversion for LATIN3 to MULE_INTERNAL
-4447	pg_conversion	0	conversion for MULE_INTERNAL to LATIN3
-4448	pg_conversion	0	conversion for LATIN4 to MULE_INTERNAL
-4449	pg_conversion	0	conversion for MULE_INTERNAL to LATIN4
-4450	pg_conversion	0	conversion for SQL_ASCII to UTF8
-4451	pg_conversion	0	conversion for UTF8 to SQL_ASCII
-4452	pg_conversion	0	conversion for BIG5 to UTF8
-4453	pg_conversion	0	conversion for UTF8 to BIG5
-4454	pg_conversion	0	conversion for UTF8 to KOI8R
-4455	pg_conversion	0	conversion for KOI8R to UTF8
-4456	pg_conversion	0	conversion for UTF8 to KOI8U
-4457	pg_conversion	0	conversion for KOI8U to UTF8
-4458	pg_conversion	0	conversion for UTF8 to WIN866
-4459	pg_conversion	0	conversion for WIN866 to UTF8
-4460	pg_conversion	0	conversion for UTF8 to WIN874
-4461	pg_conversion	0	conversion for WIN874 to UTF8
-4462	pg_conversion	0	conversion for UTF8 to WIN1250
-4463	pg_conversion	0	conversion for WIN1250 to UTF8
-4464	pg_conversion	0	conversion for UTF8 to WIN1251
-4465	pg_conversion	0	conversion for WIN1251 to UTF8
-4466	pg_conversion	0	conversion for UTF8 to WIN1252
-4467	pg_conversion	0	conversion for WIN1252 to UTF8
-4468	pg_conversion	0	conversion for UTF8 to WIN1253
-4469	pg_conversion	0	conversion for WIN1253 to UTF8
-4470	pg_conversion	0	conversion for UTF8 to WIN1254
-4471	pg_conversion	0	conversion for WIN1254 to UTF8
-4472	pg_conversion	0	conversion for UTF8 to WIN1255
-4473	pg_conversion	0	conversion for WIN1255 to UTF8
-4474	pg_conversion	0	conversion for UTF8 to WIN1256
-4475	pg_conversion	0	conversion for WIN1256 to UTF8
-4476	pg_conversion	0	conversion for UTF8 to WIN1257
-4477	pg_conversion	0	conversion for WIN1257 to UTF8
-4478	pg_conversion	0	conversion for UTF8 to WIN1258
-4479	pg_conversion	0	conversion for WIN1258 to UTF8
-4480	pg_conversion	0	conversion for EUC_CN to UTF8
-4481	pg_conversion	0	conversion for UTF8 to EUC_CN
-4482	pg_conversion	0	conversion for EUC_JP to UTF8
-4483	pg_conversion	0	conversion for UTF8 to EUC_JP
-4484	pg_conversion	0	conversion for EUC_KR to UTF8
-4485	pg_conversion	0	conversion for UTF8 to EUC_KR
-4486	pg_conversion	0	conversion for EUC_TW to UTF8
-4487	pg_conversion	0	conversion for UTF8 to EUC_TW
-4488	pg_conversion	0	conversion for GB18030 to UTF8
-4489	pg_conversion	0	conversion for UTF8 to GB18030
-4490	pg_conversion	0	conversion for GBK to UTF8
-4491	pg_conversion	0	conversion for UTF8 to GBK
-4492	pg_conversion	0	conversion for UTF8 to LATIN2
-4493	pg_conversion	0	conversion for LATIN2 to UTF8
-4494	pg_conversion	0	conversion for UTF8 to LATIN3
-4495	pg_conversion	0	conversion for LATIN3 to UTF8
-4496	pg_conversion	0	conversion for UTF8 to LATIN4
-4497	pg_conversion	0	conversion for LATIN4 to UTF8
-4498	pg_conversion	0	conversion for UTF8 to LATIN5
-4499	pg_conversion	0	conversion for LATIN5 to UTF8
-4500	pg_conversion	0	conversion for UTF8 to LATIN6
-4501	pg_conversion	0	conversion for LATIN6 to UTF8
-4502	pg_conversion	0	conversion for UTF8 to LATIN7
-4503	pg_conversion	0	conversion for LATIN7 to UTF8
-4504	pg_conversion	0	conversion for UTF8 to LATIN8
-4505	pg_conversion	0	conversion for LATIN8 to UTF8
-4506	pg_conversion	0	conversion for UTF8 to LATIN9
-4507	pg_conversion	0	conversion for LATIN9 to UTF8
-4508	pg_conversion	0	conversion for UTF8 to LATIN10
-4509	pg_conversion	0	conversion for LATIN10 to UTF8
-4510	pg_conversion	0	conversion for UTF8 to ISO-8859-5
-4511	pg_conversion	0	conversion for ISO-8859-5 to UTF8
-4512	pg_conversion	0	conversion for UTF8 to ISO-8859-6
-4513	pg_conversion	0	conversion for ISO-8859-6 to UTF8
-4514	pg_conversion	0	conversion for UTF8 to ISO-8859-7
-4515	pg_conversion	0	conversion for ISO-8859-7 to UTF8
-4516	pg_conversion	0	conversion for UTF8 to ISO-8859-8
-4517	pg_conversion	0	conversion for ISO-8859-8 to UTF8
-4518	pg_conversion	0	conversion for LATIN1 to UTF8
-4519	pg_conversion	0	conversion for UTF8 to LATIN1
-4520	pg_conversion	0	conversion for JOHAB to UTF8
-4521	pg_conversion	0	conversion for UTF8 to JOHAB
-4522	pg_conversion	0	conversion for SJIS to UTF8
-4523	pg_conversion	0	conversion for UTF8 to SJIS
-4524	pg_conversion	0	conversion for UHC to UTF8
-4525	pg_conversion	0	conversion for UTF8 to UHC
-4526	pg_conversion	0	conversion for EUC_JIS_2004 to UTF8
-4527	pg_conversion	0	conversion for UTF8 to EUC_JIS_2004
-4528	pg_conversion	0	conversion for SHIFT_JIS_2004 to UTF8
-4529	pg_conversion	0	conversion for UTF8 to SHIFT_JIS_2004
-4530	pg_conversion	0	conversion for EUC_JIS_2004 to SHIFT_JIS_2004
-4531	pg_conversion	0	conversion for SHIFT_JIS_2004 to EUC_JIS_2004
 3748	pg_ts_config	0	simple configuration
 3765	pg_ts_dict	0	simple dictionary: just lower case and check for stopword
 3722	pg_ts_parser	0	default word parser

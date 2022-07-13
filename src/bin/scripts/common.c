@@ -4,7 +4,7 @@
  *		Common support routines for bin/scripts/
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/scripts/common.c
@@ -18,12 +18,16 @@
 #include <unistd.h>
 
 #include "common.h"
-#include "common/connect.h"
-#include "common/logging.h"
-#include "fe_utils/cancel.h"
+#include "fe_utils/connect.h"
 #include "fe_utils/string_utils.h"
 
-#define ERRCODE_UNDEFINED_TABLE  "42P01"
+
+static PGcancel *volatile cancelConn = NULL;
+bool		CancelRequested = false;
+
+#ifdef WIN32
+static CRITICAL_SECTION cancelConnLock;
+#endif
 
 /*
  * Provide strictly harmonized handling of --help and --version
@@ -53,7 +57,7 @@ handle_help_version_opts(int argc, char *argv[],
  * Make a database connection with the given parameters.
  *
  * An interactive password prompt is automatically issued if needed and
- * allowed by cparams->prompt_password.
+ * allowed by prompt_password.
  *
  * If allow_password_reuse is true, we will try to re-use any password
  * given during previous calls to this routine.  (Callers should not pass
@@ -61,7 +65,9 @@ handle_help_version_opts(int argc, char *argv[],
  * as before, else we might create password exposure hazards.)
  */
 PGconn *
-connectDatabase(const ConnParams *cparams, const char *progname,
+connectDatabase(const char *dbname, const char *pghost,
+				const char *pgport, const char *pguser,
+				enum trivalue prompt_password, const char *progname,
 				bool echo, bool fail_ok, bool allow_password_reuse)
 {
 	PGconn	   *conn;
@@ -69,13 +75,10 @@ connectDatabase(const ConnParams *cparams, const char *progname,
 	static bool have_password = false;
 	static char password[100];
 
-	/* Callers must supply at least dbname; other params can be NULL */
-	Assert(cparams->dbname);
-
 	if (!allow_password_reuse)
 		have_password = false;
 
-	if (cparams->prompt_password == TRI_YES && !have_password)
+	if (!have_password && prompt_password == TRI_YES)
 	{
 		simple_prompt("Password: ", password, sizeof(password), false);
 		have_password = true;
@@ -87,43 +90,31 @@ connectDatabase(const ConnParams *cparams, const char *progname,
 	 */
 	do
 	{
-		const char *keywords[8];
-		const char *values[8];
-		int			i = 0;
+		const char *keywords[7];
+		const char *values[7];
 
-		/*
-		 * If dbname is a connstring, its entries can override the other
-		 * values obtained from cparams; but in turn, override_dbname can
-		 * override the dbname component of it.
-		 */
-		keywords[i] = "host";
-		values[i++] = cparams->pghost;
-		keywords[i] = "port";
-		values[i++] = cparams->pgport;
-		keywords[i] = "user";
-		values[i++] = cparams->pguser;
-		keywords[i] = "password";
-		values[i++] = have_password ? password : NULL;
-		keywords[i] = "dbname";
-		values[i++] = cparams->dbname;
-		if (cparams->override_dbname)
-		{
-			keywords[i] = "dbname";
-			values[i++] = cparams->override_dbname;
-		}
-		keywords[i] = "fallback_application_name";
-		values[i++] = progname;
-		keywords[i] = NULL;
-		values[i++] = NULL;
-		Assert(i <= lengthof(keywords));
+		keywords[0] = "host";
+		values[0] = pghost;
+		keywords[1] = "port";
+		values[1] = pgport;
+		keywords[2] = "user";
+		values[2] = pguser;
+		keywords[3] = "password";
+		values[3] = have_password ? password : NULL;
+		keywords[4] = "dbname";
+		values[4] = dbname;
+		keywords[5] = "fallback_application_name";
+		values[5] = progname;
+		keywords[6] = NULL;
+		values[6] = NULL;
 
 		new_pass = false;
 		conn = PQconnectdbParams(keywords, values, true);
 
 		if (!conn)
 		{
-			pg_log_error("could not connect to database %s: out of memory",
-						 cparams->dbname);
+			fprintf(stderr, _("%s: could not connect to database %s: out of memory\n"),
+					progname, dbname);
 			exit(1);
 		}
 
@@ -132,7 +123,7 @@ connectDatabase(const ConnParams *cparams, const char *progname,
 		 */
 		if (PQstatus(conn) == CONNECTION_BAD &&
 			PQconnectionNeedsPassword(conn) &&
-			cparams->prompt_password != TRI_NO)
+			prompt_password != TRI_NO)
 		{
 			PQfinish(conn);
 			simple_prompt("Password: ", password, sizeof(password), false);
@@ -149,75 +140,49 @@ connectDatabase(const ConnParams *cparams, const char *progname,
 			PQfinish(conn);
 			return NULL;
 		}
-		pg_log_error("could not connect to database %s: %s",
-					 cparams->dbname, PQerrorMessage(conn));
+		fprintf(stderr, _("%s: could not connect to database %s: %s"),
+				progname, dbname, PQerrorMessage(conn));
 		exit(1);
 	}
 
-	/* Start strict; callers may override this. */
-	PQclear(executeQuery(conn, ALWAYS_SECURE_SEARCH_PATH_SQL, echo));
+	if (PQserverVersion(conn) >= 70300)
+		PQclear(executeQuery(conn, ALWAYS_SECURE_SEARCH_PATH_SQL,
+							 progname, echo));
 
 	return conn;
 }
 
 /*
  * Try to connect to the appropriate maintenance database.
- *
- * This differs from connectDatabase only in that it has a rule for
- * inserting a default "dbname" if none was given (which is why cparams
- * is not const).  Note that cparams->dbname should typically come from
- * a --maintenance-db command line parameter.
  */
 PGconn *
-connectMaintenanceDatabase(ConnParams *cparams,
+connectMaintenanceDatabase(const char *maintenance_db,
+						   const char *pghost, const char *pgport,
+						   const char *pguser, enum trivalue prompt_password,
 						   const char *progname, bool echo)
 {
 	PGconn	   *conn;
 
 	/* If a maintenance database name was specified, just connect to it. */
-	if (cparams->dbname)
-		return connectDatabase(cparams, progname, echo, false, false);
+	if (maintenance_db)
+		return connectDatabase(maintenance_db, pghost, pgport, pguser,
+							   prompt_password, progname, echo, false, false);
 
 	/* Otherwise, try postgres first and then template1. */
-	cparams->dbname = "postgres";
-	conn = connectDatabase(cparams, progname, echo, true, false);
+	conn = connectDatabase("postgres", pghost, pgport, pguser, prompt_password,
+						   progname, echo, true, false);
 	if (!conn)
-	{
-		cparams->dbname = "template1";
-		conn = connectDatabase(cparams, progname, echo, false, false);
-	}
+		conn = connectDatabase("template1", pghost, pgport, pguser,
+							   prompt_password, progname, echo, false, false);
+
 	return conn;
-}
-
-/*
- * Disconnect the given connection, canceling any statement if one is active.
- */
-void
-disconnectDatabase(PGconn *conn)
-{
-	char		errbuf[256];
-
-	Assert(conn != NULL);
-
-	if (PQtransactionStatus(conn) == PQTRANS_ACTIVE)
-	{
-		PGcancel   *cancel;
-
-		if ((cancel = PQgetCancel(conn)))
-		{
-			(void) PQcancel(cancel, errbuf, sizeof(errbuf));
-			PQfreeCancel(cancel);
-		}
-	}
-
-	PQfinish(conn);
 }
 
 /*
  * Run a query, return the results, exit program on failure.
  */
 PGresult *
-executeQuery(PGconn *conn, const char *query, bool echo)
+executeQuery(PGconn *conn, const char *query, const char *progname, bool echo)
 {
 	PGresult   *res;
 
@@ -228,8 +193,10 @@ executeQuery(PGconn *conn, const char *query, bool echo)
 	if (!res ||
 		PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
-		pg_log_error("query failed: %s", PQerrorMessage(conn));
-		pg_log_info("query was: %s", query);
+		fprintf(stderr, _("%s: query failed: %s"),
+				progname, PQerrorMessage(conn));
+		fprintf(stderr, _("%s: query was: %s\n"),
+				progname, query);
 		PQfinish(conn);
 		exit(1);
 	}
@@ -242,7 +209,8 @@ executeQuery(PGconn *conn, const char *query, bool echo)
  * As above for a SQL command (which returns nothing).
  */
 void
-executeCommand(PGconn *conn, const char *query, bool echo)
+executeCommand(PGconn *conn, const char *query,
+			   const char *progname, bool echo)
 {
 	PGresult   *res;
 
@@ -253,8 +221,10 @@ executeCommand(PGconn *conn, const char *query, bool echo)
 	if (!res ||
 		PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
-		pg_log_error("query failed: %s", PQerrorMessage(conn));
-		pg_log_info("query was: %s", query);
+		fprintf(stderr, _("%s: query failed: %s"),
+				progname, PQerrorMessage(conn));
+		fprintf(stderr, _("%s: query was: %s\n"),
+				progname, query);
 		PQfinish(conn);
 		exit(1);
 	}
@@ -289,66 +259,15 @@ executeMaintenanceCommand(PGconn *conn, const char *query, bool echo)
 	return r;
 }
 
-/*
- * Consume all the results generated for the given connection until
- * nothing remains.  If at least one error is encountered, return false.
- * Note that this will block if the connection is busy.
- */
-bool
-consumeQueryResult(PGconn *conn)
-{
-	bool		ok = true;
-	PGresult   *result;
-
-	SetCancelConn(conn);
-	while ((result = PQgetResult(conn)) != NULL)
-	{
-		if (!processQueryResult(conn, result))
-			ok = false;
-	}
-	ResetCancelConn();
-	return ok;
-}
-
-/*
- * Process (and delete) a query result.  Returns true if there's no error,
- * false otherwise -- but errors about trying to work on a missing relation
- * are reported and subsequently ignored.
- */
-bool
-processQueryResult(PGconn *conn, PGresult *result)
-{
-	/*
-	 * If it's an error, report it.  Errors about a missing table are harmless
-	 * so we continue processing; but die for other errors.
-	 */
-	if (PQresultStatus(result) != PGRES_COMMAND_OK)
-	{
-		char	   *sqlState = PQresultErrorField(result, PG_DIAG_SQLSTATE);
-
-		pg_log_error("processing of database \"%s\" failed: %s",
-					 PQdb(conn), PQerrorMessage(conn));
-
-		if (sqlState && strcmp(sqlState, ERRCODE_UNDEFINED_TABLE) != 0)
-		{
-			PQclear(result);
-			return false;
-		}
-	}
-
-	PQclear(result);
-	return true;
-}
-
 
 /*
  * Split TABLE[(COLUMNS)] into TABLE and [(COLUMNS)] portions.  When you
  * finish using them, pg_free(*table).  *columns is a pointer into "spec",
  * possibly to its NUL terminator.
  */
-void
-splitTableColumnsSpec(const char *spec, int encoding,
-					  char **table, const char **columns)
+static void
+split_table_columns_spec(const char *spec, int encoding,
+						 char **table, const char **columns)
 {
 	bool		inquotes = false;
 	const char *cp = spec;
@@ -370,7 +289,8 @@ splitTableColumnsSpec(const char *spec, int encoding,
 		else
 			cp += PQmblen(cp, encoding);
 	}
-	*table = pnstrdup(spec, cp - spec);
+	*table = pg_strdup(spec);
+	(*table)[cp - spec] = '\0'; /* no strndup */
 	*columns = cp;
 }
 
@@ -383,7 +303,7 @@ splitTableColumnsSpec(const char *spec, int encoding,
  */
 void
 appendQualifiedRelation(PQExpBuffer buf, const char *spec,
-						PGconn *conn, bool echo)
+						PGconn *conn, const char *progname, bool echo)
 {
 	char	   *table;
 	const char *columns;
@@ -391,7 +311,14 @@ appendQualifiedRelation(PQExpBuffer buf, const char *spec,
 	PGresult   *res;
 	int			ntups;
 
-	splitTableColumnsSpec(spec, PQclientEncoding(conn), &table, &columns);
+	/* Before 7.3, the concept of qualifying a name did not exist. */
+	if (PQserverVersion(conn) < 70300)
+	{
+		appendPQExpBufferStr(&sql, spec);
+		return;
+	}
+
+	split_table_columns_spec(spec, PQclientEncoding(conn), &table, &columns);
 
 	/*
 	 * Query must remain ABSOLUTELY devoid of unqualified names.  This would
@@ -408,7 +335,7 @@ appendQualifiedRelation(PQExpBuffer buf, const char *spec,
 	appendStringLiteralConn(&sql, table, conn);
 	appendPQExpBufferStr(&sql, "::pg_catalog.regclass;");
 
-	executeCommand(conn, "RESET search_path;", echo);
+	executeCommand(conn, "RESET search_path", progname, echo);
 
 	/*
 	 * One row is a typical result, as is a nonexistent relation ERROR.
@@ -416,14 +343,15 @@ appendQualifiedRelation(PQExpBuffer buf, const char *spec,
 	 * relation has that OID; this query returns no rows.  Catalog corruption
 	 * might elicit other row counts.
 	 */
-	res = executeQuery(conn, sql.data, echo);
+	res = executeQuery(conn, sql.data, progname, echo);
 	ntups = PQntuples(res);
 	if (ntups != 1)
 	{
-		pg_log_error(ngettext("query returned %d row instead of one: %s",
-							  "query returned %d rows instead of one: %s",
-							  ntups),
-					 ntups, sql.data);
+		fprintf(stderr,
+				ngettext("%s: query returned %d row instead of one: %s\n",
+						 "%s: query returned %d rows instead of one: %s\n",
+						 ntups),
+				progname, ntups, sql.data);
 		PQfinish(conn);
 		exit(1);
 	}
@@ -435,7 +363,8 @@ appendQualifiedRelation(PQExpBuffer buf, const char *spec,
 	termPQExpBuffer(&sql);
 	pg_free(table);
 
-	PQclear(executeQuery(conn, ALWAYS_SECURE_SEARCH_PATH_SQL, echo));
+	PQclear(executeQuery(conn, ALWAYS_SECURE_SEARCH_PATH_SQL,
+						 progname, echo));
 }
 
 
@@ -474,3 +403,142 @@ yesno_prompt(const char *question)
 			   _(PG_YESLETTER), _(PG_NOLETTER));
 	}
 }
+
+/*
+ * SetCancelConn
+ *
+ * Set cancelConn to point to the current database connection.
+ */
+void
+SetCancelConn(PGconn *conn)
+{
+	PGcancel   *oldCancelConn;
+
+#ifdef WIN32
+	EnterCriticalSection(&cancelConnLock);
+#endif
+
+	/* Free the old one if we have one */
+	oldCancelConn = cancelConn;
+
+	/* be sure handle_sigint doesn't use pointer while freeing */
+	cancelConn = NULL;
+
+	if (oldCancelConn != NULL)
+		PQfreeCancel(oldCancelConn);
+
+	cancelConn = PQgetCancel(conn);
+
+#ifdef WIN32
+	LeaveCriticalSection(&cancelConnLock);
+#endif
+}
+
+/*
+ * ResetCancelConn
+ *
+ * Free the current cancel connection, if any, and set to NULL.
+ */
+void
+ResetCancelConn(void)
+{
+	PGcancel   *oldCancelConn;
+
+#ifdef WIN32
+	EnterCriticalSection(&cancelConnLock);
+#endif
+
+	oldCancelConn = cancelConn;
+
+	/* be sure handle_sigint doesn't use pointer while freeing */
+	cancelConn = NULL;
+
+	if (oldCancelConn != NULL)
+		PQfreeCancel(oldCancelConn);
+
+#ifdef WIN32
+	LeaveCriticalSection(&cancelConnLock);
+#endif
+}
+
+#ifndef WIN32
+/*
+ * Handle interrupt signals by canceling the current command, if a cancelConn
+ * is set.
+ */
+static void
+handle_sigint(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+	char		errbuf[256];
+
+	/* Send QueryCancel if we are processing a database query */
+	if (cancelConn != NULL)
+	{
+		if (PQcancel(cancelConn, errbuf, sizeof(errbuf)))
+		{
+			CancelRequested = true;
+			fprintf(stderr, _("Cancel request sent\n"));
+		}
+		else
+			fprintf(stderr, _("Could not send cancel request: %s"), errbuf);
+	}
+	else
+		CancelRequested = true;
+
+	errno = save_errno;			/* just in case the write changed it */
+}
+
+void
+setup_cancel_handler(void)
+{
+	pqsignal(SIGINT, handle_sigint);
+}
+#else							/* WIN32 */
+
+/*
+ * Console control handler for Win32. Note that the control handler will
+ * execute on a *different thread* than the main one, so we need to do
+ * proper locking around those structures.
+ */
+static BOOL WINAPI
+consoleHandler(DWORD dwCtrlType)
+{
+	char		errbuf[256];
+
+	if (dwCtrlType == CTRL_C_EVENT ||
+		dwCtrlType == CTRL_BREAK_EVENT)
+	{
+		/* Send QueryCancel if we are processing a database query */
+		EnterCriticalSection(&cancelConnLock);
+		if (cancelConn != NULL)
+		{
+			if (PQcancel(cancelConn, errbuf, sizeof(errbuf)))
+			{
+				fprintf(stderr, _("Cancel request sent\n"));
+				CancelRequested = true;
+			}
+			else
+				fprintf(stderr, _("Could not send cancel request: %s"), errbuf);
+		}
+		else
+			CancelRequested = true;
+
+		LeaveCriticalSection(&cancelConnLock);
+
+		return TRUE;
+	}
+	else
+		/* Return FALSE for any signals not being handled */
+		return FALSE;
+}
+
+void
+setup_cancel_handler(void)
+{
+	InitializeCriticalSection(&cancelConnLock);
+
+	SetConsoleCtrlHandler(consoleHandler, TRUE);
+}
+
+#endif							/* WIN32 */

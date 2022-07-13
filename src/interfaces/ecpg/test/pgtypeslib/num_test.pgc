@@ -5,7 +5,12 @@
 
 exec sql include ../regression;
 
-exec sql include ../printf_hack;
+
+/*
+
+NOTE: This file has a different expect file for regression tests on MinGW32
+
+*/
 
 
 int
@@ -70,9 +75,7 @@ main(void)
 	PGTYPESnumeric_div(res, value2, res);
 	text = PGTYPESnumeric_to_asc(res, -1);
 	PGTYPESnumeric_to_double(res, &d);
-	printf("div = %s ", text);
-	print_double(d);
-	printf("\n");
+	printf("div = %s %e\n", text, d);
 
 	PGTYPESnumeric_free(value1);
 	PGTYPESnumeric_free(value2);

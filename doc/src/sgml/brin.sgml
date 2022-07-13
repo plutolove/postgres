@@ -121,9 +121,6 @@ LOG:  request for BRIN range summarization for index "brin_wi_idx" page 128 was 
  <table id="brin-builtin-opclasses-table">
   <title>Built-in <acronym>BRIN</acronym> Operator Classes</title>
   <tgroup cols="3">
-   <colspec colname="col1" colwidth="2*"/>
-   <colspec colname="col2" colwidth="2*"/>
-   <colspec colname="col3" colwidth="1*"/>
    <thead>
     <row>
      <entry>Name</entry>
@@ -132,6 +129,17 @@ LOG:  request for BRIN range summarization for index "brin_wi_idx" page 128 was 
     </row>
    </thead>
    <tbody>
+    <row>
+     <entry><literal>abstime_minmax_ops</literal></entry>
+     <entry><type>abstime</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
     <row>
      <entry><literal>int8_minmax_ops</literal></entry>
      <entry><type>bigint</type></entry>
@@ -381,6 +389,17 @@ LOG:  request for BRIN range summarization for index "brin_wi_idx" page 128 was 
      </entry>
     </row>
     <row>
+     <entry><literal>reltime_minmax_ops</literal></entry>
+     <entry><type>reltime</type></entry>
+     <entry>
+      <literal>&lt;</literal>
+      <literal>&lt;=</literal>
+      <literal>=</literal>
+      <literal>&gt;=</literal>
+      <literal>&gt;</literal>
+     </entry>
+    </row>
+    <row>
      <entry><literal>int2_minmax_ops</literal></entry>
      <entry><type>smallint</type></entry>
      <entry>
@@ -562,36 +581,6 @@ typedef struct BrinOpcInfo
    </varlistentry>
   </variablelist>
 
-  An operator class for <acronym>BRIN</acronym> can optionally specify the
-  following method:
-
-  <variablelist>
-    <varlistentry>
-     <term><function>void options(local_relopts *relopts)</function></term>
-     <listitem>
-      <para>
-       Defines a set of user-visible parameters that control operator class
-       behavior.
-      </para>
-
-      <para>
-       The <function>options</function> function is passed a pointer to a
-       <replaceable>local_relopts</replaceable> struct, which needs to be
-       filled with a set of operator class specific options.  The options
-       can be accessed from other support functions using the
-       <literal>PG_HAS_OPCLASS_OPTIONS()</literal> and
-       <literal>PG_GET_OPCLASS_OPTIONS()</literal> macros.
-      </para>
-
-      <para>
-       Since both key extraction of indexed values and representation of the
-       key in <acronym>BRIN</acronym> are flexible, they may depend on
-       user-specified parameters.
-      </para>
-     </listitem>
-    </varlistentry>
-  </variablelist>
-
   The core distribution includes support for two types of operator classes:
   minmax and inclusion.  Operator class definitions using them are shipped for
   in-core data types as appropriate.  Additional operator classes can be
@@ -620,8 +609,6 @@ typedef struct BrinOpcInfo
  <table id="brin-extensibility-minmax-table">
   <title>Function and Support Numbers for Minmax Operator Classes</title>
   <tgroup cols="2">
-   <colspec colname="col1" colwidth="1*"/>
-   <colspec colname="col2" colwidth="2*"/>
    <thead>
     <row>
      <entry>Operator class member</entry>
@@ -683,9 +670,6 @@ typedef struct BrinOpcInfo
  <table id="brin-extensibility-inclusion-table">
   <title>Function and Support Numbers for Inclusion Operator Classes</title>
   <tgroup cols="3">
-   <colspec colname="col1" colwidth="1*"/>
-   <colspec colname="col2" colwidth="2*"/>
-   <colspec colname="col3" colwidth="1*"/>
    <thead>
     <row>
      <entry>Operator class member</entry>
@@ -819,7 +803,7 @@ typedef struct BrinOpcInfo
  </table>
 
  <para>
-    Support function numbers 1 through 10 are reserved for the BRIN internal
+    Support function numbers 1-10 are reserved for the BRIN internal
     functions, so the SQL level functions start with number 11.  Support
     function number 11 is the main function required to build the index.
     It should accept two arguments with the same data type as the operator class,

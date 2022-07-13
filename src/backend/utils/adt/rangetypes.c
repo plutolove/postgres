@@ -19,7 +19,7 @@
  * value; we must detoast it first.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -30,8 +30,7 @@
  */
 #include "postgres.h"
 
-#include "access/tupmacs.h"
-#include "common/hashfn.h"
+#include "access/hash.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
@@ -49,25 +48,26 @@
 typedef struct RangeIOData
 {
 	TypeCacheEntry *typcache;	/* range type's typcache entry */
-	FmgrInfo	typioproc;		/* element type's I/O function */
+	Oid			typiofunc;		/* element type's I/O function */
 	Oid			typioparam;		/* element type's I/O parameter */
+	FmgrInfo	proc;			/* lookup result for typiofunc */
 } RangeIOData;
 
 
 static RangeIOData *get_range_io_data(FunctionCallInfo fcinfo, Oid rngtypid,
-									  IOFuncSelector func);
+				  IOFuncSelector func);
 static char range_parse_flags(const char *flags_str);
 static void range_parse(const char *input_str, char *flags, char **lbound_str,
-						char **ubound_str);
+			char **ubound_str);
 static const char *range_parse_bound(const char *string, const char *ptr,
-									 char **bound_str, bool *infinite);
+				  char **bound_str, bool *infinite);
 static char *range_deparse(char flags, const char *lbound_str,
-						   const char *ubound_str);
+			  const char *ubound_str);
 static char *range_bound_escape(const char *value);
 static Size datum_compute_size(Size sz, Datum datum, bool typbyval,
-							   char typalign, int16 typlen, char typstorage);
+				   char typalign, int16 typlen, char typstorage);
 static Pointer datum_write(Pointer ptr, Datum datum, bool typbyval,
-						   char typalign, int16 typlen, char typstorage);
+			char typalign, int16 typlen, char typstorage);
 
 
 /*
@@ -99,10 +99,10 @@ range_in(PG_FUNCTION_ARGS)
 
 	/* call element type's input function */
 	if (RANGE_HAS_LBOUND(flags))
-		lower.val = InputFunctionCall(&cache->typioproc, lbound_str,
+		lower.val = InputFunctionCall(&cache->proc, lbound_str,
 									  cache->typioparam, typmod);
 	if (RANGE_HAS_UBOUND(flags))
-		upper.val = InputFunctionCall(&cache->typioproc, ubound_str,
+		upper.val = InputFunctionCall(&cache->proc, ubound_str,
 									  cache->typioparam, typmod);
 
 	lower.infinite = (flags & RANGE_LB_INF) != 0;
@@ -141,9 +141,9 @@ range_out(PG_FUNCTION_ARGS)
 
 	/* call element type's output function */
 	if (RANGE_HAS_LBOUND(flags))
-		lbound_str = OutputFunctionCall(&cache->typioproc, lower.val);
+		lbound_str = OutputFunctionCall(&cache->proc, lower.val);
 	if (RANGE_HAS_UBOUND(flags))
-		ubound_str = OutputFunctionCall(&cache->typioproc, upper.val);
+		ubound_str = OutputFunctionCall(&cache->proc, upper.val);
 
 	/* construct result string */
 	output_str = range_deparse(flags, lbound_str, ubound_str);
@@ -198,7 +198,7 @@ range_recv(PG_FUNCTION_ARGS)
 		initStringInfo(&bound_buf);
 		appendBinaryStringInfo(&bound_buf, bound_data, bound_len);
 
-		lower.val = ReceiveFunctionCall(&cache->typioproc,
+		lower.val = ReceiveFunctionCall(&cache->proc,
 										&bound_buf,
 										cache->typioparam,
 										typmod);
@@ -216,7 +216,7 @@ range_recv(PG_FUNCTION_ARGS)
 		initStringInfo(&bound_buf);
 		appendBinaryStringInfo(&bound_buf, bound_data, bound_len);
 
-		upper.val = ReceiveFunctionCall(&cache->typioproc,
+		upper.val = ReceiveFunctionCall(&cache->proc,
 										&bound_buf,
 										cache->typioparam,
 										typmod);
@@ -267,7 +267,7 @@ range_send(PG_FUNCTION_ARGS)
 
 	if (RANGE_HAS_LBOUND(flags))
 	{
-		Datum		bound = PointerGetDatum(SendFunctionCall(&cache->typioproc,
+		Datum		bound = PointerGetDatum(SendFunctionCall(&cache->proc,
 															 lower.val));
 		uint32		bound_len = VARSIZE(bound) - VARHDRSZ;
 		char	   *bound_data = VARDATA(bound);
@@ -278,7 +278,7 @@ range_send(PG_FUNCTION_ARGS)
 
 	if (RANGE_HAS_UBOUND(flags))
 	{
-		Datum		bound = PointerGetDatum(SendFunctionCall(&cache->typioproc,
+		Datum		bound = PointerGetDatum(SendFunctionCall(&cache->proc,
 															 upper.val));
 		uint32		bound_len = VARSIZE(bound) - VARHDRSZ;
 		char	   *bound_data = VARDATA(bound);
@@ -308,7 +308,6 @@ get_range_io_data(FunctionCallInfo fcinfo, Oid rngtypid, IOFuncSelector func)
 		bool		typbyval;
 		char		typalign;
 		char		typdelim;
-		Oid			typiofunc;
 
 		cache = (RangeIOData *) MemoryContextAlloc(fcinfo->flinfo->fn_mcxt,
 												   sizeof(RangeIOData));
@@ -324,9 +323,9 @@ get_range_io_data(FunctionCallInfo fcinfo, Oid rngtypid, IOFuncSelector func)
 						 &typalign,
 						 &typdelim,
 						 &cache->typioparam,
-						 &typiofunc);
+						 &cache->typiofunc);
 
-		if (!OidIsValid(typiofunc))
+		if (!OidIsValid(cache->typiofunc))
 		{
 			/* this could only happen for receive or send */
 			if (func == IOFunc_receive)
@@ -340,7 +339,7 @@ get_range_io_data(FunctionCallInfo fcinfo, Oid rngtypid, IOFuncSelector func)
 						 errmsg("no binary output function available for type %s",
 								format_type_be(cache->typcache->rngelemtype->type_id))));
 		}
-		fmgr_info_cxt(typiofunc, &cache->typioproc,
+		fmgr_info_cxt(cache->typiofunc, &cache->proc,
 					  fcinfo->flinfo->fn_mcxt);
 
 		fcinfo->flinfo->fn_extra = (void *) cache;
@@ -554,7 +553,7 @@ elem_contained_by_range(PG_FUNCTION_ARGS)
 
 /* equality (internal version) */
 bool
-range_eq_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_eq_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -599,7 +598,7 @@ range_eq(PG_FUNCTION_ARGS)
 
 /* inequality (internal version) */
 bool
-range_ne_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_ne_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	return (!range_eq_internal(typcache, r1, r2));
 }
@@ -645,7 +644,7 @@ range_contained_by(PG_FUNCTION_ARGS)
 
 /* strictly left of? (internal version) */
 bool
-range_before_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_before_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -683,7 +682,7 @@ range_before(PG_FUNCTION_ARGS)
 
 /* strictly right of? (internal version) */
 bool
-range_after_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_after_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -779,7 +778,7 @@ bounds_adjacent(TypeCacheEntry *typcache, RangeBound boundA, RangeBound boundB)
 
 /* adjacent to (but not overlapping)? (internal version) */
 bool
-range_adjacent_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_adjacent_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -822,7 +821,7 @@ range_adjacent(PG_FUNCTION_ARGS)
 
 /* overlaps? (internal version) */
 bool
-range_overlaps_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_overlaps_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -868,7 +867,7 @@ range_overlaps(PG_FUNCTION_ARGS)
 
 /* does not extend to right of? (internal version) */
 bool
-range_overleft_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_overleft_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -909,7 +908,7 @@ range_overleft(PG_FUNCTION_ARGS)
 
 /* does not extend to left of? (internal version) */
 bool
-range_overright_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_overright_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1,
 				lower2;
@@ -1431,15 +1430,13 @@ daterange_canonical(PG_FUNCTION_ARGS)
 	if (empty)
 		PG_RETURN_RANGE_P(r);
 
-	if (!lower.infinite && !DATE_NOT_FINITE(DatumGetDateADT(lower.val)) &&
-		!lower.inclusive)
+	if (!lower.infinite && !lower.inclusive)
 	{
 		lower.val = DirectFunctionCall2(date_pli, lower.val, Int32GetDatum(1));
 		lower.inclusive = true;
 	}
 
-	if (!upper.infinite && !DATE_NOT_FINITE(DatumGetDateADT(upper.val)) &&
-		upper.inclusive)
+	if (!upper.infinite && upper.inclusive)
 	{
 		upper.val = DirectFunctionCall2(date_pli, upper.val, Int32GetDatum(1));
 		upper.inclusive = false;
@@ -1696,7 +1693,7 @@ range_serialize(TypeCacheEntry *typcache, RangeBound *lower, RangeBound *upper,
  * RangeBound structs will be pointers into the given range object.
  */
 void
-range_deserialize(TypeCacheEntry *typcache, const RangeType *range,
+range_deserialize(TypeCacheEntry *typcache, RangeType *range,
 				  RangeBound *lower, RangeBound *upper, bool *empty)
 {
 	char		flags;
@@ -1711,7 +1708,7 @@ range_deserialize(TypeCacheEntry *typcache, const RangeType *range,
 	Assert(RangeTypeGetOid(range) == typcache->type_id);
 
 	/* fetch the flag byte from datum's last byte */
-	flags = *((const char *) range + VARSIZE(range) - 1);
+	flags = *((char *) range + VARSIZE(range) - 1);
 
 	/* fetch information about range's element type */
 	typlen = typcache->rngelemtype->typlen;
@@ -1763,7 +1760,7 @@ range_deserialize(TypeCacheEntry *typcache, const RangeType *range,
  * the full results of range_deserialize.
  */
 char
-range_get_flags(const RangeType *range)
+range_get_flags(RangeType *range)
 {
 	/* fetch the flag byte from datum's last byte */
 	return *((char *) range + VARSIZE(range) - 1);
@@ -1832,7 +1829,7 @@ make_range(TypeCacheEntry *typcache, RangeBound *lower, RangeBound *upper,
  * but one is an upper bound and the other a lower bound.
  */
 int
-range_cmp_bounds(TypeCacheEntry *typcache, const RangeBound *b1, const RangeBound *b2)
+range_cmp_bounds(TypeCacheEntry *typcache, RangeBound *b1, RangeBound *b2)
 {
 	int32		result;
 
@@ -1906,8 +1903,8 @@ range_cmp_bounds(TypeCacheEntry *typcache, const RangeBound *b1, const RangeBoun
  * infinity is plus or minus.
  */
 int
-range_cmp_bound_values(TypeCacheEntry *typcache, const RangeBound *b1,
-					   const RangeBound *b2)
+range_cmp_bound_values(TypeCacheEntry *typcache, RangeBound *b1,
+					   RangeBound *b2)
 {
 	/*
 	 * First, handle cases involving infinity, which don't require invoking
@@ -2300,7 +2297,7 @@ range_bound_escape(const char *value)
  * the necessary typcache entry.
  */
 bool
-range_contains_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_contains_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	RangeBound	lower1;
 	RangeBound	upper1;
@@ -2332,7 +2329,7 @@ range_contains_internal(TypeCacheEntry *typcache, const RangeType *r1, const Ran
 }
 
 bool
-range_contained_by_internal(TypeCacheEntry *typcache, const RangeType *r1, const RangeType *r2)
+range_contained_by_internal(TypeCacheEntry *typcache, RangeType *r1, RangeType *r2)
 {
 	return range_contains_internal(typcache, r2, r1);
 }
@@ -2341,7 +2338,7 @@ range_contained_by_internal(TypeCacheEntry *typcache, const RangeType *r1, const
  * Test whether range r contains a specific element value.
  */
 bool
-range_contains_elem_internal(TypeCacheEntry *typcache, const RangeType *r, Datum val)
+range_contains_elem_internal(TypeCacheEntry *typcache, RangeType *r, Datum val)
 {
 	RangeBound	lower;
 	RangeBound	upper;
@@ -2389,7 +2386,7 @@ range_contains_elem_internal(TypeCacheEntry *typcache, const RangeType *r, Datum
 
 /* Does datatype allow packing into the 1-byte-header varlena format? */
 #define TYPE_IS_PACKABLE(typlen, typstorage) \
-	((typlen) == -1 && (typstorage) != TYPSTORAGE_PLAIN)
+	((typlen) == -1 && (typstorage) != 'p')
 
 /*
  * Increment data_length by the space needed by the datum, including any
@@ -2473,7 +2470,7 @@ datum_write(Pointer ptr, Datum datum, bool typbyval, char typalign,
 	else if (typlen == -2)
 	{
 		/* cstring ... never needs alignment */
-		Assert(typalign == TYPALIGN_CHAR);
+		Assert(typalign == 'c');
 		data_length = strlen(DatumGetCString(datum)) + 1;
 		memcpy(ptr, DatumGetPointer(datum), data_length);
 	}

@@ -13,7 +13,7 @@
  *		as this notice is not removed.
  *
  *	The author is not responsible for loss or damages that may
- *	result from its use.
+ *	result from it's use.
  *
  *
  * IDENTIFICATION
@@ -24,10 +24,12 @@
 #ifndef __PG_BACKUP_ARCHIVE__
 #define __PG_BACKUP_ARCHIVE__
 
+
 #include <time.h>
 
-#include "libpq-fe.h"
 #include "pg_backup.h"
+
+#include "libpq-fe.h"
 #include "pqexpbuffer.h"
 
 #define LOBBUFSIZE 16384
@@ -92,13 +94,12 @@ typedef z_stream *z_streamp;
 													 * entries */
 #define K_VERS_1_13 MAKE_ARCHIVE_VERSION(1, 13, 0)	/* change search_path
 													 * behavior */
-#define K_VERS_1_14 MAKE_ARCHIVE_VERSION(1, 14, 0)	/* add tableam */
 
 /* Current archive version number (the format we can output) */
 #define K_VERS_MAJOR 1
-#define K_VERS_MINOR 14
+#define K_VERS_MINOR 13
 #define K_VERS_REV 0
-#define K_VERS_SELF MAKE_ARCHIVE_VERSION(K_VERS_MAJOR, K_VERS_MINOR, K_VERS_REV)
+#define K_VERS_SELF MAKE_ARCHIVE_VERSION(K_VERS_MAJOR, K_VERS_MINOR, K_VERS_REV);
 
 /* Newest format we can read */
 #define K_VERS_MAX	MAKE_ARCHIVE_VERSION(K_VERS_MAJOR, K_VERS_MINOR, 255)
@@ -125,14 +126,17 @@ struct ParallelState;
 #define READ_ERROR_EXIT(fd) \
 	do { \
 		if (feof(fd)) \
-			fatal("could not read from input file: end of file"); \
+			exit_horribly(modulename, \
+						  "could not read from input file: end of file\n"); \
 		else \
-			fatal("could not read from input file: %m"); \
+			exit_horribly(modulename, \
+					"could not read from input file: %s\n", strerror(errno)); \
 	} while (0)
 
 #define WRITE_ERROR_EXIT \
 	do { \
-		fatal("could not write to output file: %m"); \
+		exit_horribly(modulename, "could not write to output file: %s\n", \
+					  strerror(errno)); \
 	} while (0)
 
 typedef enum T_Action
@@ -158,12 +162,12 @@ typedef int (*WriteBytePtrType) (ArchiveHandle *AH, const int i);
 typedef int (*ReadBytePtrType) (ArchiveHandle *AH);
 typedef void (*WriteBufPtrType) (ArchiveHandle *AH, const void *c, size_t len);
 typedef void (*ReadBufPtrType) (ArchiveHandle *AH, void *buf, size_t len);
+typedef void (*SaveArchivePtrType) (ArchiveHandle *AH);
 typedef void (*WriteExtraTocPtrType) (ArchiveHandle *AH, TocEntry *te);
 typedef void (*ReadExtraTocPtrType) (ArchiveHandle *AH, TocEntry *te);
 typedef void (*PrintExtraTocPtrType) (ArchiveHandle *AH, TocEntry *te);
 typedef void (*PrintTocDataPtrType) (ArchiveHandle *AH, TocEntry *te);
 
-typedef void (*PrepParallelRestorePtrType) (ArchiveHandle *AH);
 typedef void (*ClonePtrType) (ArchiveHandle *AH);
 typedef void (*DeClonePtrType) (ArchiveHandle *AH);
 
@@ -209,14 +213,10 @@ typedef enum
  * data restore failures.  On the other hand, matview REFRESH commands should
  * come out after ACLs, as otherwise non-superuser-owned matviews might not
  * be able to execute.  (If the permissions at the time of dumping would not
- * allow a REFRESH, too bad; we won't fix that for you.)  We also want event
- * triggers to be restored after ACLs, so that they can't mess those up.
- *
- * These considerations force us to make three passes over the TOC,
- * restoring the appropriate subset of items in each pass.  We assume that
- * the dependency sort resulted in an appropriate ordering of items within
- * each subset.
- *
+ * allow a REFRESH, too bad; we won't fix that for you.)  These considerations
+ * force us to make three passes over the TOC, restoring the appropriate
+ * subset of items in each pass.  We assume that the dependency sort resulted
+ * in an appropriate ordering of items within each subset.
  * XXX This mechanism should be superseded by tracking dependencies on ACLs
  * properly; but we'll still need it for old dump files even after that.
  */
@@ -224,9 +224,9 @@ typedef enum
 {
 	RESTORE_PASS_MAIN = 0,		/* Main pass (most TOC item types) */
 	RESTORE_PASS_ACL,			/* ACL item types */
-	RESTORE_PASS_POST_ACL		/* Event trigger and matview refresh items */
+	RESTORE_PASS_REFRESH		/* Matview REFRESH items */
 
-#define RESTORE_PASS_LAST RESTORE_PASS_POST_ACL
+#define RESTORE_PASS_LAST RESTORE_PASS_REFRESH
 } RestorePass;
 
 typedef enum
@@ -246,6 +246,8 @@ struct _archiveHandle
 	char	   *archiveDumpVersion; /* When reading an archive, the version of
 									 * the dumper */
 
+	int			debugLevel;		/* Used for logging (currently only by
+								 * --verbose) */
 	size_t		intSize;		/* Size of an integer in the archive */
 	size_t		offSize;		/* Size of a file offset in the archive -
 								 * Added V1.7 */
@@ -256,21 +258,15 @@ struct _archiveHandle
 	time_t		createDate;		/* Date archive created */
 
 	/*
-	 * Fields used when discovering archive format.  For tar format, we load
-	 * the first block into the lookahead buffer, and verify that it looks
-	 * like a tar header.  The tar module must then consume bytes from the
-	 * lookahead buffer before reading any more from the file.  For custom
-	 * format, we load only the "PGDMP" marker into the buffer, and then set
-	 * readHeader after confirming it matches.  The buffer is vestigial in
-	 * this case, as the subsequent code just checks readHeader and doesn't
-	 * examine the buffer.
+	 * Fields used when discovering header. A format can always get the
+	 * previous read bytes from here...
 	 */
-	int			readHeader;		/* Set if we already read "PGDMP" marker */
+	int			readHeader;		/* Used if file header has been read already */
 	char	   *lookahead;		/* Buffer used when reading header to discover
 								 * format */
-	size_t		lookaheadSize;	/* Allocated size of buffer */
-	size_t		lookaheadLen;	/* Length of valid data in lookahead */
-	size_t		lookaheadPos;	/* Current read position in lookahead buffer */
+	size_t		lookaheadSize;	/* Size of allocated buffer */
+	size_t		lookaheadLen;	/* Length of data in lookahead */
+	pgoff_t		lookaheadPos;	/* Current read position in lookahead buffer */
 
 	ArchiveEntryPtrType ArchiveEntryPtr;	/* Called for each metadata object */
 	StartDataPtrType StartDataPtr;	/* Called when table data is about to be
@@ -301,7 +297,6 @@ struct _archiveHandle
 	WorkerJobDumpPtrType WorkerJobDumpPtr;
 	WorkerJobRestorePtrType WorkerJobRestorePtr;
 
-	PrepParallelRestorePtrType PrepParallelRestorePtr;
 	ClonePtrType ClonePtr;		/* Clone format-specific fields */
 	DeClonePtrType DeClonePtr;	/* Clean up cloned fields */
 
@@ -309,6 +304,7 @@ struct _archiveHandle
 
 	/* Stuff for direct DB connection */
 	char	   *archdbname;		/* DB name *read* from archive */
+	trivalue	promptPassword;
 	char	   *savedPassword;	/* password for ropt->username, if known */
 	char	   *use_role;
 	PGconn	   *connection;
@@ -350,7 +346,7 @@ struct _archiveHandle
 	char	   *currUser;		/* current username, or NULL if unknown */
 	char	   *currSchema;		/* current schema, or NULL */
 	char	   *currTablespace; /* current tablespace, or NULL */
-	char	   *currTableAm;	/* current table access method, or NULL */
+	bool		currWithOids;	/* current default_with_oids setting */
 
 	void	   *lo_buf;
 	size_t		lo_buf_used;
@@ -377,8 +373,8 @@ struct _tocEntry
 	char	   *namespace;		/* null or empty string if not in a schema */
 	char	   *tablespace;		/* null if not in a tablespace; empty string
 								 * means use database default */
-	char	   *tableam;		/* table access method, only for TABLE tags */
 	char	   *owner;
+	bool		withOids;		/* Used only by "TABLE" tags */
 	char	   *desc;
 	char	   *defn;
 	char	   *dropStmt;
@@ -391,13 +387,12 @@ struct _tocEntry
 	void	   *formatData;		/* TOC Entry data specific to file format */
 
 	/* working state while dumping/restoring */
-	pgoff_t		dataLength;		/* item's data size; 0 if none or unknown */
 	teReqs		reqs;			/* do we need schema and/or data of object */
 	bool		created;		/* set for DATA member if TABLE was created */
 
 	/* working state (needed only for parallel restore) */
-	struct _tocEntry *pending_prev; /* list links for pending-items list; */
-	struct _tocEntry *pending_next; /* NULL if not in that list */
+	struct _tocEntry *par_prev; /* list links for pending/ready items; */
+	struct _tocEntry *par_next; /* these are NULL if not in either list */
 	int			depCount;		/* number of dependencies not yet restored */
 	DumpId	   *revDeps;		/* dumpIds of objects depending on this one */
 	int			nRevDeps;		/* number of such dependencies */
@@ -408,31 +403,10 @@ struct _tocEntry
 extern int	parallel_restore(ArchiveHandle *AH, TocEntry *te);
 extern void on_exit_close_archive(Archive *AHX);
 
-extern void warn_or_exit_horribly(ArchiveHandle *AH, const char *fmt,...) pg_attribute_printf(2, 3);
+extern void warn_or_exit_horribly(ArchiveHandle *AH, const char *modulename, const char *fmt,...) pg_attribute_printf(3, 4);
 
-/* Options for ArchiveEntry */
-typedef struct _archiveOpts
-{
-	const char *tag;
-	const char *namespace;
-	const char *tablespace;
-	const char *tableam;
-	const char *owner;
-	const char *description;
-	teSection	section;
-	const char *createStmt;
-	const char *dropStmt;
-	const char *copyStmt;
-	const DumpId *deps;
-	int			nDeps;
-	DataDumperPtr dumpFn;
-	void	   *dumpArg;
-} ArchiveOpts;
-#define ARCHIVE_OPTS(...) &(ArchiveOpts){__VA_ARGS__}
-/* Called to add a TOC entry */
-extern TocEntry *ArchiveEntry(Archive *AHX, CatalogId catalogId,
-							  DumpId dumpId, ArchiveOpts *opts);
-
+extern void WriteTOC(ArchiveHandle *AH);
+extern void ReadTOC(ArchiveHandle *AH);
 extern void WriteHead(ArchiveHandle *AH);
 extern void ReadHead(ArchiveHandle *AH);
 extern void WriteToc(ArchiveHandle *AH);
@@ -476,10 +450,12 @@ extern void InitArchiveFmt_Tar(ArchiveHandle *AH);
 
 extern bool isValidTarHeader(char *header);
 
-extern void ReconnectToServer(ArchiveHandle *AH, const char *dbname);
+extern void ReconnectToServer(ArchiveHandle *AH, const char *dbname, const char *newUser);
 extern void DropBlobIfExists(ArchiveHandle *AH, Oid oid);
 
 void		ahwrite(const void *ptr, size_t size, size_t nmemb, ArchiveHandle *AH);
 int			ahprintf(ArchiveHandle *AH, const char *fmt,...) pg_attribute_printf(2, 3);
+
+void		ahlog(ArchiveHandle *AH, int level, const char *fmt,...) pg_attribute_printf(3, 4);
 
 #endif

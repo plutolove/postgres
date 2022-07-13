@@ -43,9 +43,11 @@
 
 /*
  * towlower() and friends should be in <wctype.h>, but some pre-C99 systems
- * declare them in <wchar.h>, so include that too.
+ * declare them in <wchar.h>.
  */
+#ifdef HAVE_WCHAR_H
 #include <wchar.h>
+#endif
 #ifdef HAVE_WCTYPE_H
 #include <wctype.h>
 #endif

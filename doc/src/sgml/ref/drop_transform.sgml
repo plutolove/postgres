@@ -1,7 +1,4 @@
-<!--
-doc/src/sgml/ref/drop_transform.sgml
-PostgreSQL documentation
--->
+<!-- doc/src/sgml/ref/drop_transform.sgml -->
 
 <refentry id="sql-droptransform">
  <indexterm zone="sql-droptransform">

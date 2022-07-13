@@ -84,7 +84,7 @@ select relname from pg_locks l, pg_class c
  where l.relation = c.oid and relname like '%lock_%' and mode = 'ExclusiveLock'
  order by relname;
 ROLLBACK;
--- Verify that we cope with infinite recursion in view definitions.
+-- detecting infinite recursions in view definitions
 CREATE OR REPLACE VIEW lock_view2 AS SELECT * from lock_view3;
 BEGIN TRANSACTION;
 LOCK TABLE lock_view2 IN EXCLUSIVE MODE;
@@ -101,14 +101,10 @@ BEGIN TRANSACTION;
 LOCK TABLE lock_tbl1 * IN ACCESS EXCLUSIVE MODE;
 ROLLBACK;
 
--- Child tables are locked without granting explicit permission to do so as
--- long as we have permission to lock the parent.
+-- Verify that we can't lock a child table just because we have permission
+-- on the parent, but that we can lock the parent only.
 GRANT UPDATE ON TABLE lock_tbl1 TO regress_rol_lock1;
 SET ROLE regress_rol_lock1;
--- fail when child locked directly
-BEGIN;
-LOCK TABLE lock_tbl2;
-ROLLBACK;
 BEGIN;
 LOCK TABLE lock_tbl1 * IN ACCESS EXCLUSIVE MODE;
 ROLLBACK;

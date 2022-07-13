@@ -6,7 +6,7 @@
  *	   logical replication slots via SQL.
  *
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logicalfuncs.c
@@ -17,27 +17,36 @@
 
 #include <unistd.h>
 
-#include "access/xact.h"
-#include "access/xlog_internal.h"
-#include "access/xlogutils.h"
-#include "catalog/pg_type.h"
 #include "fmgr.h"
 #include "funcapi.h"
-#include "mb/pg_wchar.h"
 #include "miscadmin.h"
+
+#include "access/xlog_internal.h"
+#include "access/xlogutils.h"
+
+#include "access/xact.h"
+
+#include "catalog/pg_type.h"
+
 #include "nodes/makefuncs.h"
-#include "replication/decode.h"
-#include "replication/logical.h"
-#include "replication/message.h"
-#include "storage/fd.h"
+
+#include "mb/pg_wchar.h"
+
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/inval.h"
-#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/regproc.h"
 #include "utils/resowner.h"
+#include "utils/lsyscache.h"
+
+#include "replication/decode.h"
+#include "replication/logical.h"
+#include "replication/logicalfuncs.h"
+#include "replication/message.h"
+
+#include "storage/fd.h"
 
 /* private date for writing out data */
 typedef struct DecodingOutputState
@@ -89,7 +98,8 @@ LogicalOutputWrite(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xi
 							   false));
 
 	/* ick, but cstring_to_text_with_len works for bytea perfectly fine */
-	values[2] = PointerGetDatum(cstring_to_text_with_len(ctx->out->data, ctx->out->len));
+	values[2] = PointerGetDatum(
+								cstring_to_text_with_len(ctx->out->data, ctx->out->len));
 
 	tuplestore_putvalues(p->tupstore, p->tupdesc, values, nulls);
 	p->returned_rows++;
@@ -101,7 +111,15 @@ check_permissions(void)
 	if (!superuser() && !has_rolreplication(GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or replication role to use replication slots")));
+				 (errmsg("must be superuser or replication role to use replication slots"))));
+}
+
+int
+logical_read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
+							 int reqLen, XLogRecPtr targetRecPtr, char *cur_page, TimeLineID *pageTLI)
+{
+	return read_local_xlog_page(state, targetPagePtr, reqLen,
+								targetRecPtr, cur_page, pageTLI);
 }
 
 /*
@@ -117,6 +135,7 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	XLogRecPtr	end_of_wal;
+	XLogRecPtr	startptr;
 	LogicalDecodingContext *ctx;
 	ResourceOwner old_resowner = CurrentResourceOwner;
 	ArrayType  *arr;
@@ -194,7 +213,7 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 
 		Assert(ARR_ELEMTYPE(arr) == TEXTOID);
 
-		deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT,
+		deconstruct_array(arr, TEXTOID, -1, false, 'i',
 						  &datum_opts, NULL, &nelems);
 
 		if (nelems % 2 != 0)
@@ -225,7 +244,7 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 	else
 		end_of_wal = GetXLogReplayRecPtr(&ThisTimeLineID);
 
-	(void) ReplicationSlotAcquire(NameStr(*name), SAB_Error);
+	ReplicationSlotAcquire(NameStr(*name), true);
 
 	PG_TRY();
 	{
@@ -233,24 +252,9 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 		ctx = CreateDecodingContext(InvalidXLogRecPtr,
 									options,
 									false,
-									XL_ROUTINE(.page_read = read_local_xlog_page,
-											   .segment_open = wal_segment_open,
-											   .segment_close = wal_segment_close),
+									logical_read_local_xlog_page,
 									LogicalOutputPrepareWrite,
 									LogicalOutputWrite, NULL);
-
-		/*
-		 * After the sanity checks in CreateDecodingContext, make sure the
-		 * restart_lsn is valid.  Avoid "cannot get changes" wording in this
-		 * errmsg because that'd be confusingly ambiguous about no changes
-		 * being available.
-		 */
-		if (XLogRecPtrIsInvalid(MyReplicationSlot->data.restart_lsn))
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("can no longer get changes from replication slot \"%s\"",
-							NameStr(*name)),
-					 errdetail("This slot has never previously reserved WAL, or has been invalidated.")));
 
 		MemoryContextSwitchTo(oldcontext);
 
@@ -273,20 +277,29 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 		 * xacts that committed after the slot's confirmed_flush can be
 		 * accumulated into reorder buffers.
 		 */
-		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
+		startptr = MyReplicationSlot->data.restart_lsn;
+
+		CurrentResourceOwner = ResourceOwnerCreate(CurrentResourceOwner, "logical decoding");
 
 		/* invalidate non-timetravel entries */
 		InvalidateSystemCaches();
 
 		/* Decode until we run out of records */
-		while (ctx->reader->EndRecPtr < end_of_wal)
+		while ((startptr != InvalidXLogRecPtr && startptr < end_of_wal) ||
+			   (ctx->reader->EndRecPtr != InvalidXLogRecPtr && ctx->reader->EndRecPtr < end_of_wal))
 		{
 			XLogRecord *record;
 			char	   *errm = NULL;
 
-			record = XLogReadRecord(ctx->reader, &errm);
+			record = XLogReadRecord(ctx->reader, startptr, &errm);
 			if (errm)
 				elog(ERROR, "%s", errm);
+
+			/*
+			 * Now that we've set up the xlog reader state, subsequent calls
+			 * pass InvalidXLogRecPtr to say "continue from last record"
+			 */
+			startptr = InvalidXLogRecPtr;
 
 			/*
 			 * The {begin_txn,change,commit_txn}_wrapper callbacks above will
@@ -307,11 +320,6 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 
 		tuplestore_donestoring(tupstore);
 
-		/*
-		 * Logical decoding could have clobbered CurrentResourceOwner during
-		 * transaction management, so restore the executor's value.  (This is
-		 * a kluge, but it's not worth cleaning up right now.)
-		 */
 		CurrentResourceOwner = old_resowner;
 
 		/*

@@ -5,12 +5,12 @@
  *
  *	This is subtle stuff, so pay attention:
  *
- *	When a tuple is updated or deleted, our standard visibility rules
+ *	When a tuple is updated or deleted, our standard time qualification rules
  *	consider that it is *still valid* so long as we are in the same command,
  *	ie, until the next CommandCounterIncrement() or transaction commit.
- *	(See access/heap/heapam_visibility.c, and note that system catalogs are
- *  generally scanned under the most current snapshot available, rather than
- *  the transaction snapshot.)	At the command boundary, the old tuple stops
+ *	(See utils/time/tqual.c, and note that system catalogs are generally
+ *	scanned under the most current snapshot available, rather than the
+ *	transaction snapshot.)	At the command boundary, the old tuple stops
  *	being valid and the new version, if any, becomes valid.  Therefore,
  *	we cannot simply flush a tuple from the system caches during heap_update()
  *	or heap_delete().  The tuple is still good at that point; what's more,
@@ -54,7 +54,6 @@
  *	Also, whenever we see an operation on a pg_class, pg_attribute, or
  *	pg_index tuple, we register a relcache flush operation for the relation
  *	described by that tuple (as specified in CacheInvalidateHeapTuple()).
- *	Likewise for pg_constraint tuples for foreign keys on relations.
  *
  *	We keep the relcache flush requests in lists separate from the catcache
  *	tuple flush requests.  This allows us to issue all the pending catcache
@@ -86,7 +85,7 @@
  *	problems can be overcome cheaply.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -101,7 +100,6 @@
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
-#include "catalog/pg_constraint.h"
 #include "miscadmin.h"
 #include "storage/sinval.h"
 #include "storage/smgr.h"
@@ -619,9 +617,9 @@ LocalExecuteInvalidationMessage(SharedInvalidationMessage *msg)
 	else if (msg->id == SHAREDINVALSNAPSHOT_ID)
 	{
 		/* We only care about our own database and shared catalogs */
-		if (msg->sn.dbId == InvalidOid)
+		if (msg->rm.dbId == InvalidOid)
 			InvalidateCatalogSnapshot();
-		else if (msg->sn.dbId == MyDatabaseId)
+		else if (msg->rm.dbId == MyDatabaseId)
 			InvalidateCatalogSnapshot();
 	}
 	else
@@ -1168,7 +1166,7 @@ CacheInvalidateHeapTuple(Relation relation,
 	{
 		Form_pg_class classtup = (Form_pg_class) GETSTRUCT(tuple);
 
-		relationId = classtup->oid;
+		relationId = HeapTupleGetOid(tuple);
 		if (classtup->relisshared)
 			databaseId = InvalidOid;
 		else
@@ -1204,23 +1202,6 @@ CacheInvalidateHeapTuple(Relation relation,
 		 */
 		relationId = indextup->indexrelid;
 		databaseId = MyDatabaseId;
-	}
-	else if (tupleRelId == ConstraintRelationId)
-	{
-		Form_pg_constraint constrtup = (Form_pg_constraint) GETSTRUCT(tuple);
-
-		/*
-		 * Foreign keys are part of relcache entries, too, so send out an
-		 * inval for the table that the FK applies to.
-		 */
-		if (constrtup->contype == CONSTRAINT_FOREIGN &&
-			OidIsValid(constrtup->conrelid))
-		{
-			relationId = constrtup->conrelid;
-			databaseId = MyDatabaseId;
-		}
-		else
-			return;
 	}
 	else
 		return;
@@ -1311,7 +1292,7 @@ CacheInvalidateRelcacheByTuple(HeapTuple classTuple)
 
 	PrepareInvalidationState();
 
-	relationId = classtup->oid;
+	relationId = HeapTupleGetOid(classTuple);
 	if (classtup->relisshared)
 		databaseId = InvalidOid;
 	else

@@ -53,12 +53,9 @@ override XSLTPROCFLAGS += --stringparam pg.version '$(VERSION)'
 
 
 GENERATED_SGML = version.sgml \
-	features-supported.sgml features-unsupported.sgml errcodes-table.sgml \
-	keywords-table.sgml
+	features-supported.sgml features-unsupported.sgml errcodes-table.sgml
 
 ALLSGML := $(wildcard $(srcdir)/*.sgml $(srcdir)/ref/*.sgml) $(GENERATED_SGML)
-
-ALL_IMAGES := $(wildcard $(srcdir)/images/*.svg)
 
 
 ##
@@ -97,21 +94,24 @@ features-unsupported.sgml: $(top_srcdir)/src/backend/catalog/sql_feature_package
 errcodes-table.sgml: $(top_srcdir)/src/backend/utils/errcodes.txt generate-errcodes-table.pl
 	$(PERL) $(srcdir)/generate-errcodes-table.pl $< > $@
 
-keywords-table.sgml: $(top_srcdir)/src/include/parser/kwlist.h $(wildcard $(srcdir)/keywords/sql*.txt) generate-keywords-table.pl
-	$(PERL) $(srcdir)/generate-keywords-table.pl $(srcdir) > $@
-
 
 ##
 ## Generation of some text files.
 ##
 
 ICONV = iconv
-PANDOC = pandoc
+LYNX = lynx
 
+# The documentation may contain non-ASCII characters (mostly for
+# contributor names), which lynx converts to the encoding determined
+# by the current locale.  To get text output that is deterministic and
+# easily readable by everyone, we make lynx produce LATIN1 and then
+# convert that to ASCII with transliteration for the non-ASCII characters.
+# Official releases were historically built on FreeBSD, which has limited
+# locale support and is very picky about locale name spelling.  The
+# below has been finely tuned to run on FreeBSD and Linux/glibc.
 INSTALL: % : %.html
-	$(PANDOC) -t plain -o $@.tmp $<
-	$(ICONV) -f utf8 -t us-ascii//TRANSLIT $@.tmp > $@
-	rm $@.tmp
+	$(PERL) -p -e 's,<h(1|2) class="title",<h\1 align=center,g' $< | LC_ALL=en_US.ISO8859-1 $(LYNX) -force_html -dump -nolist -stdin | $(ICONV) -f latin1 -t us-ascii//TRANSLIT > $@
 
 INSTALL.html: %.html : stylesheet-text.xsl %.xml
 	$(XMLLINT) --noout --valid $*.xml
@@ -131,30 +131,24 @@ endif
 
 html: html-stamp
 
-html-stamp: stylesheet.xsl postgres.sgml $(ALLSGML) $(ALL_IMAGES)
+html-stamp: stylesheet.xsl postgres.sgml $(ALLSGML)
 	$(XMLLINT) $(XMLINCLUDE) --noout --valid $(word 2,$^)
 	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(XSLTPROC_HTML_FLAGS) $(wordlist 1,2,$^)
-	cp $(ALL_IMAGES) html/
 	cp $(srcdir)/stylesheet.css html/
 	touch $@
 
-htmlhelp: htmlhelp-stamp
-
-htmlhelp-stamp: stylesheet-hh.xsl postgres.sgml $(ALLSGML) $(ALL_IMAGES)
+htmlhelp: stylesheet-hh.xsl postgres.sgml $(ALLSGML)
 	$(XMLLINT) $(XMLINCLUDE) --noout --valid $(word 2,$^)
 	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(wordlist 1,2,$^)
-	cp $(ALL_IMAGES) htmlhelp/
-	cp $(srcdir)/stylesheet.css htmlhelp/
-	touch $@
 
 # single-page HTML
-postgres.html: stylesheet-html-nochunk.xsl postgres.sgml $(ALLSGML) $(ALL_IMAGES)
+postgres.html: stylesheet-html-nochunk.xsl postgres.sgml $(ALLSGML)
 	$(XMLLINT) $(XMLINCLUDE) --noout --valid $(word 2,$^)
 	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(XSLTPROC_HTML_FLAGS) -o $@ $(wordlist 1,2,$^)
 
 # single-page text
 postgres.txt: postgres.html
-	$(PANDOC) -t plain -o $@ $<
+	$(LYNX) -force_html -dump -nolist $< > $@
 
 
 ##
@@ -164,17 +158,15 @@ postgres.txt: postgres.html
 postgres.pdf:
 	$(error Invalid target;  use postgres-A4.pdf or postgres-US.pdf as targets)
 
-XSLTPROC_FO_FLAGS += --stringparam img.src.path '$(srcdir)/'
-
 %-A4.fo: stylesheet-fo.xsl %.sgml $(ALLSGML)
 	$(XMLLINT) $(XMLINCLUDE) --noout --valid $(word 2,$^)
-	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(XSLTPROC_FO_FLAGS) --stringparam paper.type A4 -o $@ $(wordlist 1,2,$^)
+	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) --stringparam paper.type A4 -o $@ $(wordlist 1,2,$^)
 
 %-US.fo: stylesheet-fo.xsl %.sgml $(ALLSGML)
 	$(XMLLINT) $(XMLINCLUDE) --noout --valid $(word 2,$^)
-	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(XSLTPROC_FO_FLAGS) --stringparam paper.type USletter -o $@ $(wordlist 1,2,$^)
+	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) --stringparam paper.type USletter -o $@ $(wordlist 1,2,$^)
 
-%.pdf: %.fo $(ALL_IMAGES)
+%.pdf: %.fo
 	$(FOP) -fo $< -pdf $@
 
 
@@ -183,9 +175,9 @@ XSLTPROC_FO_FLAGS += --stringparam img.src.path '$(srcdir)/'
 ##
 
 epub: postgres.epub
-postgres.epub: postgres.sgml $(ALLSGML) $(ALL_IMAGES)
+postgres.epub: postgres.sgml $(ALLSGML)
 	$(XMLLINT) --noout --valid $<
-	$(DBTOEPUB) -o $@ $<
+	$(DBTOEPUB) $<
 
 
 ##
@@ -298,7 +290,7 @@ clean:
 # generated SGML files
 	rm -f $(GENERATED_SGML)
 # HTML Help
-	rm -rf htmlhelp/ htmlhelp-stamp
+	rm -f htmlhelp.hhp toc.hhc index.hhk
 # EPUB
 	rm -f postgres.epub
 # Texinfo

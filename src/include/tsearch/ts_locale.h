@@ -3,7 +3,7 @@
  * ts_locale.h
  *		locale compatibility layer for tsearch
  *
- * Copyright (c) 1998-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2018, PostgreSQL Global Development Group
  *
  * src/include/tsearch/ts_locale.h
  *
@@ -15,14 +15,16 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include "mb/pg_wchar.h"
 #include "utils/pg_locale.h"
+#include "mb/pg_wchar.h"
 
 /*
  * towlower() and friends should be in <wctype.h>, but some pre-C99 systems
- * declare them in <wchar.h>, so include that too.
+ * declare them in <wchar.h>.
  */
+#ifdef HAVE_WCHAR_H
 #include <wchar.h>
+#endif
 #ifdef HAVE_WCTYPE_H
 #include <wctype.h>
 #endif
@@ -53,7 +55,7 @@ extern char *lowerstr(const char *str);
 extern char *lowerstr_with_len(const char *str, int len);
 
 extern bool tsearch_readline_begin(tsearch_readline_state *stp,
-								   const char *filename);
+					   const char *filename);
 extern char *tsearch_readline(tsearch_readline_state *stp);
 extern void tsearch_readline_end(tsearch_readline_state *stp);
 

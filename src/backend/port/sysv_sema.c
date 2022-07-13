@@ -4,7 +4,7 @@
  *	  Implement PGSemaphores using SysV semaphore facilities
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,7 +17,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/file.h>
-#include <sys/stat.h>
 #ifdef HAVE_SYS_IPC_H
 #include <sys/ipc.h>
 #endif
@@ -73,9 +72,9 @@ static int	nextSemaNumber;		/* next free sem num in last sema set */
 
 
 static IpcSemaphoreId InternalIpcSemaphoreCreate(IpcSemaphoreKey semKey,
-												 int numSems);
+						   int numSems);
 static void IpcSemaphoreInitialize(IpcSemaphoreId semId, int semNum,
-								   int value);
+					   int value);
 static void IpcSemaphoreKill(IpcSemaphoreId semId);
 static int	IpcSemaphoreGetValue(IpcSemaphoreId semId, int semNum);
 static pid_t IpcSemaphoreGetLastPID(IpcSemaphoreId semId, int semNum);
@@ -302,6 +301,10 @@ PGSemaphoreShmemSize(int maxSemas)
  * are acquired here or in PGSemaphoreCreate, register an on_shmem_exit
  * callback to release them.
  *
+ * The port number is passed for possible use as a key (for SysV, we use
+ * it to generate the starting semaphore key).  In a standalone backend,
+ * zero will be passed.
+ *
  * In the SysV implementation, we acquire semaphore sets on-demand; the
  * maxSemas parameter is just used to size the arrays.  There is an array
  * of PGSemaphoreData structs in shared memory, and a postmaster-local array
@@ -311,22 +314,8 @@ PGSemaphoreShmemSize(int maxSemas)
  * have clobbered.)
  */
 void
-PGReserveSemaphores(int maxSemas)
+PGReserveSemaphores(int maxSemas, int port)
 {
-	struct stat statbuf;
-
-	/*
-	 * We use the data directory's inode number to seed the search for free
-	 * semaphore keys.  This minimizes the odds of collision with other
-	 * postmasters, while maximizing the odds that we will detect and clean up
-	 * semaphores left over from a crashed postmaster in our own directory.
-	 */
-	if (stat(DataDir, &statbuf) < 0)
-		ereport(FATAL,
-				(errcode_for_file_access(),
-				 errmsg("could not stat data directory \"%s\": %m",
-						DataDir)));
-
 	/*
 	 * We must use ShmemAllocUnlocked(), since the spinlock protecting
 	 * ShmemAlloc() won't be ready yet.  (This ordering is necessary when we
@@ -343,7 +332,7 @@ PGReserveSemaphores(int maxSemas)
 	if (mySemaSets == NULL)
 		elog(PANIC, "out of memory");
 	numSemaSets = 0;
-	nextSemaKey = statbuf.st_ino;
+	nextSemaKey = port * 1000;
 	nextSemaNumber = SEMAS_PER_SET; /* force sema set alloc on 1st call */
 
 	on_shmem_exit(ReleaseSemaphores, 0);

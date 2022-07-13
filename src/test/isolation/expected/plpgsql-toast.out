@@ -22,7 +22,7 @@ do $$
     delete from test1;
     commit;
     perform pg_advisory_lock(1);
-    raise notice 'length(x) = %', length(x);
+    raise notice 'x = %', x;
   end;
 $$;
  <waiting ...>
@@ -35,7 +35,6 @@ step unlock:
 pg_advisory_unlock
 
 t              
-s1: NOTICE:  length(x) = 6000
 step assign1: <... completed>
 
 starting permutation: lock assign2 vacuum unlock
@@ -60,7 +59,7 @@ do $$
     delete from test1;
     commit;
     perform pg_advisory_lock(1);
-    raise notice 'length(x) = %', length(x);
+    raise notice 'x = %', x;
   end;
 $$;
  <waiting ...>
@@ -73,7 +72,6 @@ step unlock:
 pg_advisory_unlock
 
 t              
-s1: NOTICE:  length(x) = 6000
 step assign2: <... completed>
 
 starting permutation: lock assign3 vacuum unlock
@@ -99,7 +97,7 @@ do $$
     delete from test1;
     commit;
     perform pg_advisory_lock(1);
-    raise notice 'length(r) = %', length(r::text);
+    raise notice 'r = %', r;
   end;
 $$;
  <waiting ...>
@@ -112,7 +110,6 @@ step unlock:
 pg_advisory_unlock
 
 t              
-s1: NOTICE:  length(r) = 6004
 step assign3: <... completed>
 
 starting permutation: lock assign4 vacuum unlock
@@ -137,7 +134,7 @@ do $$
     delete from test1;
     commit;
     perform pg_advisory_lock(1);
-    raise notice 'length(r) = %', length(r::text);
+    raise notice 'r = %', r;
   end;
 $$;
  <waiting ...>
@@ -150,7 +147,6 @@ step unlock:
 pg_advisory_unlock
 
 t              
-s1: NOTICE:  length(r) = 6004
 step assign4: <... completed>
 
 starting permutation: lock assign5 vacuum unlock
@@ -177,7 +173,7 @@ do $$
     delete from test1;
     commit;
     perform pg_advisory_lock(1);
-    raise notice 'length(r) = %', length(r::text);
+    raise notice 'r = %', r;
   end;
 $$;
  <waiting ...>
@@ -190,5 +186,4 @@ step unlock:
 pg_advisory_unlock
 
 t              
-s1: NOTICE:  length(r) = 6002
 step assign5: <... completed>

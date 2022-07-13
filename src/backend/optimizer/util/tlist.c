@@ -3,7 +3,7 @@
  * tlist.c
  *	  Target list manipulation routines
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,9 +17,13 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
-#include "optimizer/optimizer.h"
 #include "optimizer/tlist.h"
 
+
+/* Test if an expression node represents a SRF call.  Beware multiple eval! */
+#define IS_SRF_CALL(node) \
+	((IsA(node, FuncExpr) && ((FuncExpr *) (node))->funcretset) || \
+	 (IsA(node, OpExpr) && ((OpExpr *) (node))->opretset))
 
 /*
  * Data structures for split_pathtarget_at_srfs().  To preserve the identity
@@ -49,9 +53,9 @@ typedef struct
 } split_pathtarget_context;
 
 static bool split_pathtarget_walker(Node *node,
-									split_pathtarget_context *context);
+						split_pathtarget_context *context);
 static void add_sp_item_to_pathtarget(PathTarget *target,
-									  split_pathtarget_item *item);
+						  split_pathtarget_item *item);
 static void add_sp_items_to_pathtarget(PathTarget *target, List *items);
 
 
@@ -282,7 +286,7 @@ tlist_same_datatypes(List *tlist, List *colTypes, bool junkOK)
 				return false;	/* tlist longer than colTypes */
 			if (exprType((Node *) tle->expr) != lfirst_oid(curColType))
 				return false;
-			curColType = lnext(colTypes, curColType);
+			curColType = lnext(curColType);
 		}
 	}
 	if (curColType != NULL)
@@ -316,7 +320,7 @@ tlist_same_collations(List *tlist, List *colCollations, bool junkOK)
 				return false;	/* tlist longer than colCollations */
 			if (exprCollation((Node *) tle->expr) != lfirst_oid(curColColl))
 				return false;
-			curColColl = lnext(colCollations, curColColl);
+			curColColl = lnext(curColColl);
 		}
 	}
 	if (curColColl != NULL)
@@ -499,31 +503,6 @@ extract_grouping_ops(List *groupClause)
 }
 
 /*
- * extract_grouping_collations - make an array of the grouping column collations
- *		for a SortGroupClause list
- */
-Oid *
-extract_grouping_collations(List *groupClause, List *tlist)
-{
-	int			numCols = list_length(groupClause);
-	int			colno = 0;
-	Oid		   *grpCollations;
-	ListCell   *glitem;
-
-	grpCollations = (Oid *) palloc(sizeof(Oid) * numCols);
-
-	foreach(glitem, groupClause)
-	{
-		SortGroupClause *groupcl = (SortGroupClause *) lfirst(glitem);
-		TargetEntry *tle = get_sortgroupclause_tle(groupcl, tlist);
-
-		grpCollations[colno++] = exprCollation((Node *) tle->expr);
-	}
-
-	return grpCollations;
-}
-
-/*
  * extract_grouping_cols - make an array of the grouping column resnos
  *		for a SortGroupClause list
  */
@@ -660,8 +639,9 @@ make_tlist_from_pathtarget(PathTarget *target)
  * copy_pathtarget
  *	  Copy a PathTarget.
  *
- * The new PathTarget has its own exprs List, but shares the underlying
- * target expression trees with the old one.
+ * The new PathTarget has its own List cells, but shares the underlying
+ * target expression trees with the old one.  We duplicate the List cells
+ * so that items can be added to one target without damaging the other.
  */
 PathTarget *
 copy_pathtarget(PathTarget *src)
@@ -1016,7 +996,7 @@ split_pathtarget_at_srfs(PlannerInfo *root,
 		List	   *level_srfs = (List *) lfirst(lc1);
 		PathTarget *ntarget;
 
-		if (lnext(context.level_srfs, lc1) == NULL)
+		if (lnext(lc1) == NULL)
 		{
 			ntarget = target;
 		}
@@ -1031,15 +1011,13 @@ split_pathtarget_at_srfs(PlannerInfo *root,
 			 * later levels.
 			 */
 			add_sp_items_to_pathtarget(ntarget, level_srfs);
-			for_each_cell(lc, context.level_input_vars,
-						  lnext(context.level_input_vars, lc2))
+			for_each_cell(lc, lnext(lc2))
 			{
 				List	   *input_vars = (List *) lfirst(lc);
 
 				add_sp_items_to_pathtarget(ntarget, input_vars);
 			}
-			for_each_cell(lc, context.level_input_srfs,
-						  lnext(context.level_input_srfs, lc3))
+			for_each_cell(lc, lnext(lc3))
 			{
 				List	   *input_srfs = (List *) lfirst(lc);
 				ListCell   *lcx;

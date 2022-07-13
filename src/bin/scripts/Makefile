@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/scripts
 #
-# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/bin/scripts/Makefile
@@ -23,14 +23,17 @@ LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
 
 all: $(PROGRAMS)
 
-createdb: createdb.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-createuser: createuser.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-dropdb: dropdb.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-dropuser: dropuser.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-clusterdb: clusterdb.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-vacuumdb: vacuumdb.o common.o scripts_parallel.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-reindexdb: reindexdb.o common.o scripts_parallel.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
-pg_isready: pg_isready.o common.o $(WIN32RES) | submake-libpq submake-libpgport submake-libpgfeutils
+%: %.o $(WIN32RES)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+
+createdb: createdb.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+createuser: createuser.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+dropdb: dropdb.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+dropuser: dropuser.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+clusterdb: clusterdb.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+vacuumdb: vacuumdb.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+reindexdb: reindexdb.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
+pg_isready: pg_isready.o common.o | submake-libpq submake-libpgport submake-libpgfeutils
 
 install: all installdirs
 	$(INSTALL_PROGRAM) createdb$(X)   '$(DESTDIR)$(bindir)'/createdb$(X)
@@ -50,7 +53,7 @@ uninstall:
 
 clean distclean maintainer-clean:
 	rm -f $(addsuffix $(X), $(PROGRAMS)) $(addsuffix .o, $(PROGRAMS))
-	rm -f common.o scripts_parallel.o $(WIN32RES)
+	rm -f common.o $(WIN32RES)
 	rm -rf tmp_check
 
 check:

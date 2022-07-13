@@ -1,7 +1,6 @@
 #!/usr/bin/perl
 
 use strict;
-use warnings;
 
 # make sure we are in a sane environment.
 use DBI();

@@ -39,13 +39,13 @@ static const char *
 num_word(Cash value)
 {
 	static char buf[128];
-	static const char *const small[] = {
+	static const char *small[] = {
 		"zero", "one", "two", "three", "four", "five", "six", "seven",
 		"eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
 		"fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
 		"thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"
 	};
-	const char *const *big = small + 18;
+	const char **big = small + 18;
 	int			tu = value % 100;
 
 	/* deal with the simple cases first */
@@ -1032,8 +1032,13 @@ Datum
 cash_numeric(PG_FUNCTION_ARGS)
 {
 	Cash		money = PG_GETARG_CASH(0);
-	Datum		result;
+	Numeric		result;
 	int			fpoint;
+	int64		scale;
+	int			i;
+	Datum		amount;
+	Datum		numeric_scale;
+	Datum		quotient;
 	struct lconv *lconvert = PGLC_localeconv();
 
 	/* see comments about frac_digits in cash_in() */
@@ -1041,45 +1046,22 @@ cash_numeric(PG_FUNCTION_ARGS)
 	if (fpoint < 0 || fpoint > 10)
 		fpoint = 2;
 
-	/* convert the integral money value to numeric */
-	result = DirectFunctionCall1(int8_numeric, Int64GetDatum(money));
+	/* compute required scale factor */
+	scale = 1;
+	for (i = 0; i < fpoint; i++)
+		scale *= 10;
 
-	/* scale appropriately, if needed */
-	if (fpoint > 0)
-	{
-		int64		scale;
-		int			i;
-		Datum		numeric_scale;
-		Datum		quotient;
+	/* form the result as money / scale */
+	amount = DirectFunctionCall1(int8_numeric, Int64GetDatum(money));
+	numeric_scale = DirectFunctionCall1(int8_numeric, Int64GetDatum(scale));
+	quotient = DirectFunctionCall2(numeric_div, amount, numeric_scale);
 
-		/* compute required scale factor */
-		scale = 1;
-		for (i = 0; i < fpoint; i++)
-			scale *= 10;
-		numeric_scale = DirectFunctionCall1(int8_numeric,
-											Int64GetDatum(scale));
+	/* forcibly round to exactly the intended number of digits */
+	result = DatumGetNumeric(DirectFunctionCall2(numeric_round,
+												 quotient,
+												 Int32GetDatum(fpoint)));
 
-		/*
-		 * Given integral inputs approaching INT64_MAX, select_div_scale()
-		 * might choose a result scale of zero, causing loss of fractional
-		 * digits in the quotient.  We can ensure an exact result by setting
-		 * the dscale of either input to be at least as large as the desired
-		 * result scale.  numeric_round() will do that for us.
-		 */
-		numeric_scale = DirectFunctionCall2(numeric_round,
-											numeric_scale,
-											Int32GetDatum(fpoint));
-
-		/* Now we can safely divide ... */
-		quotient = DirectFunctionCall2(numeric_div, result, numeric_scale);
-
-		/* ... and forcibly round to exactly the intended number of digits */
-		result = DirectFunctionCall2(numeric_round,
-									 quotient,
-									 Int32GetDatum(fpoint));
-	}
-
-	PG_RETURN_DATUM(result);
+	PG_RETURN_NUMERIC(result);
 }
 
 /* numeric_cash()

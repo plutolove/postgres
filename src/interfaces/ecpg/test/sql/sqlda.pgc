@@ -39,15 +39,11 @@ dump_sqlda(sqlda_t *sqlda)
 		case ECPGt_long:
 			printf("name sqlda descriptor: '%s' value %ld\n", sqlda->sqlvar[i].sqlname.data, *(long int *)sqlda->sqlvar[i].sqldata);
 			break;
+#ifdef HAVE_LONG_LONG_INT
 		case ECPGt_long_long:
-			printf(
-#ifdef _WIN32
-				"name sqlda descriptor: '%s' value %I64d\n",
-#else
-				"name sqlda descriptor: '%s' value %lld\n",
-#endif
-				sqlda->sqlvar[i].sqlname.data, *(long long int *)sqlda->sqlvar[i].sqldata);
+			printf("name sqlda descriptor: '%s' value %lld\n", sqlda->sqlvar[i].sqlname.data, *(long long int *)sqlda->sqlvar[i].sqldata);
 			break;
+#endif
 		case ECPGt_double:
 			printf("name sqlda descriptor: '%s' value %f\n", sqlda->sqlvar[i].sqlname.data, *(double *)sqlda->sqlvar[i].sqldata);
 			break;
@@ -98,9 +94,7 @@ exec sql end declare section;
 	exec sql insert into t1 values
 		(1, 'a', 1.0, 1, 'a',1111111111111111111),
 		(2, null, null, null, null,null),
-		(3, 'c', 0.0, 3, 'c',3333333333333333333),
-		(4, 'd', 'NaN', 4, 'd',4444444444444444444),
-		(5, 'e', 0.001234, 5, 'e',5555555555555555555);
+		(4, 'd', 4.0, 4, 'd',4444444444444444444);
 
 	strcpy(msg, "commit");
 	exec sql commit;

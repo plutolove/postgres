@@ -129,18 +129,14 @@ SELECT * FROM atest1; -- ok
 
 -- test leaky-function protections in selfuncs
 
--- regress_priv_user1 will own a table and provide views for it.
+-- regress_priv_user1 will own a table and provide a view for it.
 SET SESSION AUTHORIZATION regress_priv_user1;
 
 CREATE TABLE atest12 as
   SELECT x AS a, 10001 - x AS b FROM generate_series(1,10000) x;
 CREATE INDEX ON atest12 (a);
 CREATE INDEX ON atest12 (abs(a));
--- results below depend on having quite accurate stats for atest12, so...
-ALTER TABLE atest12 SET (autovacuum_enabled = off);
-SET default_statistics_target = 10000;
 VACUUM ANALYZE atest12;
-RESET default_statistics_target;
 
 CREATE FUNCTION leak(integer,integer) RETURNS boolean
   AS $$begin return $1 < $2; end$$
@@ -148,13 +144,10 @@ CREATE FUNCTION leak(integer,integer) RETURNS boolean
 CREATE OPERATOR <<< (procedure = leak, leftarg = integer, rightarg = integer,
                      restrict = scalarltsel);
 
--- views with leaky operator
+-- view with leaky operator
 CREATE VIEW atest12v AS
   SELECT * FROM atest12 WHERE b <<< 5;
-CREATE VIEW atest12sbv WITH (security_barrier=true) AS
-  SELECT * FROM atest12 WHERE b <<< 5;
 GRANT SELECT ON atest12v TO PUBLIC;
-GRANT SELECT ON atest12sbv TO PUBLIC;
 
 -- This plan should use nestloop, knowing that few rows will be selected.
 EXPLAIN (COSTS OFF) SELECT * FROM atest12v x, atest12v y WHERE x.a = y.b;
@@ -162,10 +155,6 @@ EXPLAIN (COSTS OFF) SELECT * FROM atest12v x, atest12v y WHERE x.a = y.b;
 -- And this one.
 EXPLAIN (COSTS OFF) SELECT * FROM atest12 x, atest12 y
   WHERE x.a = y.b and abs(y.a) <<< 5;
-
--- This should also be a nestloop, but the security barrier forces the inner
--- scan to be materialized
-EXPLAIN (COSTS OFF) SELECT * FROM atest12sbv x, atest12sbv y WHERE x.a = y.b;
 
 -- Check if regress_priv_user2 can break security.
 SET SESSION AUTHORIZATION regress_priv_user2;
@@ -179,25 +168,15 @@ CREATE OPERATOR >>> (procedure = leak2, leftarg = integer, rightarg = integer,
 -- This should not show any "leak" notices before failing.
 EXPLAIN (COSTS OFF) SELECT * FROM atest12 WHERE a >>> 0;
 
--- These plans should continue to use a nestloop, since they execute with the
--- privileges of the view owner.
+-- This plan should use hashjoin, as it will expect many rows to be selected.
 EXPLAIN (COSTS OFF) SELECT * FROM atest12v x, atest12v y WHERE x.a = y.b;
-EXPLAIN (COSTS OFF) SELECT * FROM atest12sbv x, atest12sbv y WHERE x.a = y.b;
-
--- A non-security barrier view does not guard against information leakage.
-EXPLAIN (COSTS OFF) SELECT * FROM atest12v x, atest12v y
-  WHERE x.a = y.b and abs(y.a) <<< 5;
-
--- But a security barrier view isolates the leaky operator.
-EXPLAIN (COSTS OFF) SELECT * FROM atest12sbv x, atest12sbv y
-  WHERE x.a = y.b and abs(y.a) <<< 5;
 
 -- Now regress_priv_user1 grants sufficient access to regress_priv_user2.
 SET SESSION AUTHORIZATION regress_priv_user1;
 GRANT SELECT (a, b) ON atest12 TO PUBLIC;
 SET SESSION AUTHORIZATION regress_priv_user2;
 
--- regress_priv_user2 should continue to get a good row estimate.
+-- Now regress_priv_user2 will also get a good row estimate.
 EXPLAIN (COSTS OFF) SELECT * FROM atest12v x, atest12v y WHERE x.a = y.b;
 
 -- But not for this, due to lack of table-wide permissions needed
@@ -220,12 +199,6 @@ SET SESSION AUTHORIZATION regress_priv_user1;
 SELECT * FROM atest3; -- fail
 DELETE FROM atest3; -- ok
 
-BEGIN;
-RESET SESSION AUTHORIZATION;
-ALTER ROLE regress_priv_user1 NOINHERIT;
-SET SESSION AUTHORIZATION regress_priv_user1;
-DELETE FROM atest3;
-ROLLBACK;
 
 -- views
 
@@ -301,26 +274,7 @@ SELECT 1 FROM atest5; -- ok
 SELECT 1 FROM atest5 a JOIN atest5 b USING (one); -- ok
 SELECT 1 FROM atest5 a JOIN atest5 b USING (two); -- fail
 SELECT 1 FROM atest5 a NATURAL JOIN atest5 b; -- fail
-SELECT * FROM (atest5 a JOIN atest5 b USING (one)) j; -- fail
-SELECT j.* FROM (atest5 a JOIN atest5 b USING (one)) j; -- fail
 SELECT (j.*) IS NULL FROM (atest5 a JOIN atest5 b USING (one)) j; -- fail
-SELECT one FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- ok
-SELECT j.one FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- ok
-SELECT two FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- fail
-SELECT j.two FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- fail
-SELECT y FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- fail
-SELECT j.y FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)) j; -- fail
-SELECT * FROM (atest5 a JOIN atest5 b USING (one)); -- fail
-SELECT a.* FROM (atest5 a JOIN atest5 b USING (one)); -- fail
-SELECT (a.*) IS NULL FROM (atest5 a JOIN atest5 b USING (one)); -- fail
-SELECT two FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT a.two FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT y FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT b.y FROM (atest5 a JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT y FROM (atest5 a LEFT JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT b.y FROM (atest5 a LEFT JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT y FROM (atest5 a FULL JOIN atest5 b(one,x,y,z) USING (one)); -- fail
-SELECT b.y FROM (atest5 a FULL JOIN atest5 b(one,x,y,z) USING (one)); -- fail
 SELECT 1 FROM atest5 WHERE two = 2; -- fail
 SELECT * FROM atest1, atest5; -- fail
 SELECT atest1.* FROM atest1, atest5; -- ok
@@ -420,44 +374,6 @@ UPDATE t1 SET c3 = 10; -- fail, but see columns with SELECT rights, or being mod
 SET SESSION AUTHORIZATION regress_priv_user1;
 DROP TABLE t1;
 
--- check error reporting with column privs on a partitioned table
-CREATE TABLE errtst(a text, b text NOT NULL, c text, secret1 text, secret2 text) PARTITION BY LIST (a);
-CREATE TABLE errtst_part_1(secret2 text, c text, a text, b text NOT NULL, secret1 text);
-CREATE TABLE errtst_part_2(secret1 text, secret2 text, a text, c text, b text NOT NULL);
-
-ALTER TABLE errtst ATTACH PARTITION errtst_part_1 FOR VALUES IN ('aaa');
-ALTER TABLE errtst ATTACH PARTITION errtst_part_2 FOR VALUES IN ('aaaa');
-
-GRANT SELECT (a, b, c) ON TABLE errtst TO regress_priv_user2;
-GRANT UPDATE (a, b, c) ON TABLE errtst TO regress_priv_user2;
-GRANT INSERT (a, b, c) ON TABLE errtst TO regress_priv_user2;
-
-INSERT INTO errtst_part_1 (a, b, c, secret1, secret2)
-VALUES ('aaa', 'bbb', 'ccc', 'the body', 'is in the attic');
-
-SET SESSION AUTHORIZATION regress_priv_user2;
-
--- Perform a few updates that violate the NOT NULL constraint. Make sure
--- the error messages don't leak the secret fields.
-
--- simple insert.
-INSERT INTO errtst (a, b) VALUES ('aaa', NULL);
--- simple update.
-UPDATE errtst SET b = NULL;
--- partitioning key is updated, doesn't move the row.
-UPDATE errtst SET a = 'aaa', b = NULL;
--- row is moved to another partition.
-UPDATE errtst SET a = 'aaaa', b = NULL;
-
--- row is moved to another partition. This differs from the previous case in
--- that the new partition is excluded by constraint exclusion, so its
--- ResultRelInfo is not created at ExecInitModifyTable, but needs to be
--- constructed on the fly when the updated tuple is routed to it.
-UPDATE errtst SET a = 'aaaa', b = NULL WHERE a = 'aaa';
-
-SET SESSION AUTHORIZATION regress_priv_user1;
-DROP TABLE errtst;
-
 -- test column-level privileges when involved with DELETE
 SET SESSION AUTHORIZATION regress_priv_user1;
 ALTER TABLE atest6 ADD COLUMN three integer;
@@ -491,47 +407,27 @@ DELETE FROM atest5 WHERE two = 2; -- ok
 
 -- check inheritance cases
 SET SESSION AUTHORIZATION regress_priv_user1;
-CREATE TABLE atestp1 (f1 int, f2 int);
-CREATE TABLE atestp2 (fx int, fy int);
+CREATE TABLE atestp1 (f1 int, f2 int) WITH OIDS;
+CREATE TABLE atestp2 (fx int, fy int) WITH OIDS;
 CREATE TABLE atestc (fz int) INHERITS (atestp1, atestp2);
-GRANT SELECT(fx,fy,tableoid) ON atestp2 TO regress_priv_user2;
+GRANT SELECT(fx,fy,oid) ON atestp2 TO regress_priv_user2;
 GRANT SELECT(fx) ON atestc TO regress_priv_user2;
 
 SET SESSION AUTHORIZATION regress_priv_user2;
 SELECT fx FROM atestp2; -- ok
 SELECT fy FROM atestp2; -- ok
 SELECT atestp2 FROM atestp2; -- ok
-SELECT tableoid FROM atestp2; -- ok
+SELECT oid FROM atestp2; -- ok
 SELECT fy FROM atestc; -- fail
 
 SET SESSION AUTHORIZATION regress_priv_user1;
-GRANT SELECT(fy,tableoid) ON atestc TO regress_priv_user2;
+GRANT SELECT(fy,oid) ON atestc TO regress_priv_user2;
 
 SET SESSION AUTHORIZATION regress_priv_user2;
 SELECT fx FROM atestp2; -- still ok
 SELECT fy FROM atestp2; -- ok
 SELECT atestp2 FROM atestp2; -- ok
-SELECT tableoid FROM atestp2; -- ok
-
--- child's permissions do not apply when operating on parent
-SET SESSION AUTHORIZATION regress_priv_user1;
-REVOKE ALL ON atestc FROM regress_priv_user2;
-GRANT ALL ON atestp1 TO regress_priv_user2;
-SET SESSION AUTHORIZATION regress_priv_user2;
-SELECT f2 FROM atestp1; -- ok
-SELECT f2 FROM atestc; -- fail
-DELETE FROM atestp1; -- ok
-DELETE FROM atestc; -- fail
-UPDATE atestp1 SET f1 = 1; -- ok
-UPDATE atestc SET f1 = 1; -- fail
-TRUNCATE atestp1; -- ok
-TRUNCATE atestc; -- fail
-BEGIN;
-LOCK atestp1;
-END;
-BEGIN;
-LOCK atestc;
-END;
+SELECT oid FROM atestp2; -- ok
 
 -- privileges on functions, languages
 
@@ -599,7 +495,7 @@ GRANT ALL PRIVILEGES ON LANGUAGE sql TO PUBLIC;
 BEGIN;
 SELECT '{1}'::int4[]::int8[];
 REVOKE ALL ON FUNCTION int8(integer) FROM PUBLIC;
-SELECT '{1}'::int4[]::int8[]; --superuser, succeed
+SELECT '{1}'::int4[]::int8[]; --superuser, suceed
 SET SESSION AUTHORIZATION regress_priv_user4;
 SELECT '{1}'::int4[]::int8[]; --other user, fail
 ROLLBACK;
@@ -836,7 +732,6 @@ select has_column_privilege('mytable','........pg.dropped.2........','select');
 select has_column_privilege('mytable',2::int2,'select');
 revoke select on table mytable from regress_priv_user3;
 select has_column_privilege('mytable',2::int2,'select');
-drop table mytable;
 
 -- Grant options
 
@@ -863,40 +758,6 @@ SELECT has_table_privilege('regress_priv_user2', 'atest4', 'SELECT'); -- true
 SELECT has_table_privilege('regress_priv_user3', 'atest4', 'SELECT'); -- false
 
 SELECT has_table_privilege('regress_priv_user1', 'atest4', 'SELECT WITH GRANT OPTION'); -- true
-
-
--- security-restricted operations
-\c -
-CREATE ROLE regress_sro_user;
-
-SET SESSION AUTHORIZATION regress_sro_user;
-CREATE FUNCTION unwanted_grant() RETURNS void LANGUAGE sql AS
-	'GRANT regress_priv_group2 TO regress_sro_user';
-CREATE FUNCTION mv_action() RETURNS bool LANGUAGE sql AS
-	'DECLARE c CURSOR WITH HOLD FOR SELECT unwanted_grant(); SELECT true';
--- REFRESH of this MV will queue a GRANT at end of transaction
-CREATE MATERIALIZED VIEW sro_mv AS SELECT mv_action() WITH NO DATA;
-REFRESH MATERIALIZED VIEW sro_mv;
-\c -
-REFRESH MATERIALIZED VIEW sro_mv;
-
-SET SESSION AUTHORIZATION regress_sro_user;
--- INSERT to this table will queue a GRANT at end of transaction
-CREATE TABLE sro_trojan_table ();
-CREATE FUNCTION sro_trojan() RETURNS trigger LANGUAGE plpgsql AS
-	'BEGIN PERFORM unwanted_grant(); RETURN NULL; END';
-CREATE CONSTRAINT TRIGGER t AFTER INSERT ON sro_trojan_table
-    INITIALLY DEFERRED FOR EACH ROW EXECUTE PROCEDURE sro_trojan();
--- Now, REFRESH will issue such an INSERT, queueing the GRANT
-CREATE OR REPLACE FUNCTION mv_action() RETURNS bool LANGUAGE sql AS
-	'INSERT INTO sro_trojan_table DEFAULT VALUES; SELECT true';
-REFRESH MATERIALIZED VIEW sro_mv;
-\c -
-REFRESH MATERIALIZED VIEW sro_mv;
-BEGIN; SET CONSTRAINTS ALL IMMEDIATE; REFRESH MATERIALIZED VIEW sro_mv; COMMIT;
-
-DROP OWNED BY regress_sro_user;
-DROP ROLE regress_sro_user;
 
 
 -- Admin options
@@ -1042,8 +903,7 @@ CREATE TABLE testns.acltest1 (x int);
 SELECT has_table_privilege('regress_priv_user1', 'testns.acltest1', 'SELECT'); -- no
 SELECT has_table_privilege('regress_priv_user1', 'testns.acltest1', 'INSERT'); -- no
 
--- placeholder for test with duplicated schema and role names
-ALTER DEFAULT PRIVILEGES IN SCHEMA testns,testns GRANT SELECT ON TABLES TO public,public;
+ALTER DEFAULT PRIVILEGES IN SCHEMA testns GRANT SELECT ON TABLES TO public;
 
 SELECT has_table_privilege('regress_priv_user1', 'testns.acltest1', 'SELECT'); -- no
 SELECT has_table_privilege('regress_priv_user1', 'testns.acltest1', 'INSERT'); -- no
@@ -1074,13 +934,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE regress_priv_user1 REVOKE EXECUTE ON FUNCTIONS
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA testns GRANT USAGE ON SCHEMAS TO regress_priv_user2; -- error
 
---
--- Testing blanket default grants is very hazardous since it might change
--- the privileges attached to objects created by concurrent regression tests.
--- To avoid that, be sure to revoke the privileges again before committing.
---
-BEGIN;
-
 ALTER DEFAULT PRIVILEGES GRANT USAGE ON SCHEMAS TO regress_priv_user2;
 
 CREATE SCHEMA testns2;
@@ -1103,8 +956,6 @@ SELECT has_schema_privilege('regress_priv_user2', 'testns4', 'USAGE'); -- yes
 SELECT has_schema_privilege('regress_priv_user2', 'testns4', 'CREATE'); -- yes
 
 ALTER DEFAULT PRIVILEGES REVOKE ALL ON SCHEMAS FROM regress_priv_user2;
-
-COMMIT;
 
 CREATE SCHEMA testns5;
 
@@ -1213,7 +1064,9 @@ SELECT has_function_privilege('regress_priv_user1', 'testns.priv_testfunc(int)',
 SELECT has_function_privilege('regress_priv_user1', 'testns.priv_testagg(int)', 'EXECUTE'); -- true
 SELECT has_function_privilege('regress_priv_user1', 'testns.priv_testproc(int)', 'EXECUTE'); -- true
 
+\set VERBOSITY terse \\ -- suppress cascade details
 DROP SCHEMA testns CASCADE;
+\set VERBOSITY default
 
 
 -- Change owner of the schema & and rename of new schema owner
@@ -1232,7 +1085,9 @@ ALTER ROLE regress_schemauser2 RENAME TO regress_schemauser_renamed;
 SELECT nspname, rolname FROM pg_namespace, pg_roles WHERE pg_namespace.nspname = 'testns' AND pg_namespace.nspowner = pg_roles.oid;
 
 set session role regress_schemauser_renamed;
+\set VERBOSITY terse \\ -- suppress cascade details
 DROP SCHEMA testns CASCADE;
+\set VERBOSITY default
 
 -- clean up
 \c -

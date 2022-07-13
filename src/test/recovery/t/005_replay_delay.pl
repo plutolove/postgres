@@ -25,7 +25,7 @@ my $delay        = 3;
 $node_standby->init_from_backup($node_master, $backup_name,
 	has_streaming => 1);
 $node_standby->append_conf(
-	'postgresql.conf', qq(
+	'recovery.conf', qq(
 recovery_min_apply_delay = '${delay}s'
 ));
 $node_standby->start;

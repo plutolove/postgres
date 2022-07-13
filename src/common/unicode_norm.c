@@ -1,11 +1,11 @@
 /*-------------------------------------------------------------------------
  * unicode_norm.c
- *		Normalize a Unicode string
+ *		Normalize a Unicode string to NFKC form
  *
  * This implements Unicode normalization, per the documentation at
- * https://www.unicode.org/reports/tr15/.
+ * http://www.unicode.org/reports/tr15/.
  *
- * Portions Copyright (c) 2017-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2017-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/common/unicode_norm.c
@@ -20,9 +20,6 @@
 
 #include "common/unicode_norm.h"
 #include "common/unicode_norm_table.h"
-#ifndef FRONTEND
-#include "common/unicode_normprops_table.h"
-#endif
 
 #ifndef FRONTEND
 #define ALLOC(size) palloc(size)
@@ -62,7 +59,7 @@ static pg_unicode_decomposition *
 get_code_entry(pg_wchar code)
 {
 	return bsearch(&(code),
-				   UnicodeDecompMain,
+				   (void *) UnicodeDecompMain,
 				   lengthof(UnicodeDecompMain),
 				   sizeof(pg_unicode_decomposition),
 				   conv_compare);
@@ -101,7 +98,7 @@ get_code_decomposition(pg_unicode_decomposition *entry, int *dec_size)
  * are, in turn, decomposable.
  */
 static int
-get_decomposed_size(pg_wchar code, bool compat)
+get_decomposed_size(pg_wchar code)
 {
 	pg_unicode_decomposition *entry;
 	int			size = 0;
@@ -112,8 +109,8 @@ get_decomposed_size(pg_wchar code, bool compat)
 	/*
 	 * Fast path for Hangul characters not stored in tables to save memory as
 	 * decomposition is algorithmic. See
-	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details
-	 * on the matter.
+	 * http://unicode.org/reports/tr15/tr15-18.html, annex 10 for details on
+	 * the matter.
 	 */
 	if (code >= SBASE && code < SBASE + SCOUNT)
 	{
@@ -134,8 +131,7 @@ get_decomposed_size(pg_wchar code, bool compat)
 	 * Just count current code if no other decompositions.  A NULL entry is
 	 * equivalent to a character with class 0 and no decompositions.
 	 */
-	if (entry == NULL || DECOMPOSITION_SIZE(entry) == 0 ||
-		(!compat && DECOMPOSITION_IS_COMPAT(entry)))
+	if (entry == NULL || DECOMPOSITION_SIZE(entry) == 0)
 		return 1;
 
 	/*
@@ -147,7 +143,7 @@ get_decomposed_size(pg_wchar code, bool compat)
 	{
 		uint32		lcode = decomp[i];
 
-		size += get_decomposed_size(lcode, compat);
+		size += get_decomposed_size(lcode);
 	}
 
 	return size;
@@ -182,7 +178,7 @@ recompose_code(uint32 start, uint32 code, uint32 *result)
 			 ((start - SBASE) % TCOUNT) == 0 &&
 			 code >= TBASE && code < (TBASE + TCOUNT))
 	{
-		/* make syllable of form LVT */
+		/* make syllable of from LVT */
 		uint32		tindex = code - TBASE;
 
 		*result = start + tindex;
@@ -228,7 +224,7 @@ recompose_code(uint32 start, uint32 code, uint32 *result)
  * in the array result.
  */
 static void
-decompose_code(pg_wchar code, bool compat, pg_wchar **result, int *current)
+decompose_code(pg_wchar code, pg_wchar **result, int *current)
 {
 	pg_unicode_decomposition *entry;
 	int			i;
@@ -238,8 +234,8 @@ decompose_code(pg_wchar code, bool compat, pg_wchar **result, int *current)
 	/*
 	 * Fast path for Hangul characters not stored in tables to save memory as
 	 * decomposition is algorithmic. See
-	 * https://www.unicode.org/reports/tr15/tr15-18.html, annex 10 for details
-	 * on the matter.
+	 * http://unicode.org/reports/tr15/tr15-18.html, annex 10 for details on
+	 * the matter.
 	 */
 	if (code >= SBASE && code < SBASE + SCOUNT)
 	{
@@ -276,8 +272,7 @@ decompose_code(pg_wchar code, bool compat, pg_wchar **result, int *current)
 	 * character with class 0 and no decompositions, so just leave also in
 	 * this case.
 	 */
-	if (entry == NULL || DECOMPOSITION_SIZE(entry) == 0 ||
-		(!compat && DECOMPOSITION_IS_COMPAT(entry)))
+	if (entry == NULL || DECOMPOSITION_SIZE(entry) == 0)
 	{
 		pg_wchar   *res = *result;
 
@@ -295,24 +290,22 @@ decompose_code(pg_wchar code, bool compat, pg_wchar **result, int *current)
 		pg_wchar	lcode = (pg_wchar) decomp[i];
 
 		/* Leave if no more decompositions */
-		decompose_code(lcode, compat, result, current);
+		decompose_code(lcode, result, current);
 	}
 }
 
 /*
- * unicode_normalize - Normalize a Unicode string to the specified form.
+ * unicode_normalize_kc - Normalize a Unicode string to NFKC form.
  *
  * The input is a 0-terminated array of codepoints.
  *
  * In frontend, returns a 0-terminated array of codepoints, allocated with
- * malloc. Or NULL if we run out of memory. In backend, the returned
+ * malloc. Or NULL if we run out of memory. In frontend, the returned
  * string is palloc'd instead, and OOM is reported with ereport().
  */
 pg_wchar *
-unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
+unicode_normalize_kc(const pg_wchar *input)
 {
-	bool		compat = (form == UNICODE_NFKC || form == UNICODE_NFKD);
-	bool		recompose = (form == UNICODE_NFC || form == UNICODE_NFKC);
 	pg_wchar   *decomp_chars;
 	pg_wchar   *recomp_chars;
 	int			decomp_size,
@@ -333,7 +326,7 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 	 */
 	decomp_size = 0;
 	for (p = input; *p; p++)
-		decomp_size += get_decomposed_size(*p, compat);
+		decomp_size += get_decomposed_size(*p);
 
 	decomp_chars = (pg_wchar *) ALLOC((decomp_size + 1) * sizeof(pg_wchar));
 	if (decomp_chars == NULL)
@@ -345,7 +338,7 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 	 */
 	current_size = 0;
 	for (p = input; *p; p++)
-		decompose_code(*p, compat, &decomp_chars, &current_size);
+		decompose_code(*p, &decomp_chars, &current_size);
 	decomp_chars[decomp_size] = '\0';
 	Assert(decomp_size == current_size);
 
@@ -369,8 +362,8 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 			continue;
 
 		/*
-		 * Per Unicode (https://www.unicode.org/reports/tr15/tr15-18.html)
-		 * annex 4, a sequence of two adjacent characters in a string is an
+		 * Per Unicode (http://unicode.org/reports/tr15/tr15-18.html) annex 4,
+		 * a sequence of two adjacent characters in a string is an
 		 * exchangeable pair if the combining class (from the Unicode
 		 * Character Database) for the first character is greater than the
 		 * combining class for the second, and the second is not a starter.  A
@@ -392,14 +385,11 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 			count -= 2;
 	}
 
-	if (!recompose)
-		return decomp_chars;
-
 	/*
-	 * The last phase of NFC and NFKC is the recomposition of the reordered
-	 * Unicode string using combining classes. The recomposed string cannot be
-	 * longer than the decomposed one, so make the allocation of the output
-	 * string based on that assumption.
+	 * The last phase of NFKC is the recomposition of the reordered Unicode
+	 * string using combining classes. The recomposed string cannot be longer
+	 * than the decomposed one, so make the allocation of the output string
+	 * based on that assumption.
 	 */
 	recomp_chars = (pg_wchar *) ALLOC((decomp_size + 1) * sizeof(pg_wchar));
 	if (!recomp_chars)
@@ -445,110 +435,3 @@ unicode_normalize(UnicodeNormalizationForm form, const pg_wchar *input)
 
 	return recomp_chars;
 }
-
-/*
- * Normalization "quick check" algorithm; see
- * <http://www.unicode.org/reports/tr15/#Detecting_Normalization_Forms>
- */
-
-/* We only need this in the backend. */
-#ifndef FRONTEND
-
-static uint8
-get_canonical_class(pg_wchar ch)
-{
-	pg_unicode_decomposition *entry = get_code_entry(ch);
-
-	if (!entry)
-		return 0;
-	else
-		return entry->comb_class;
-}
-
-static int
-qc_compare(const void *p1, const void *p2)
-{
-	uint32		v1,
-				v2;
-
-	v1 = ((const pg_unicode_normprops *) p1)->codepoint;
-	v2 = ((const pg_unicode_normprops *) p2)->codepoint;
-	return (v1 - v2);
-}
-
-/*
- * Look up the normalization quick check character property
- */
-static UnicodeNormalizationQC
-qc_is_allowed(UnicodeNormalizationForm form, pg_wchar ch)
-{
-	pg_unicode_normprops key;
-	pg_unicode_normprops *found = NULL;
-
-	key.codepoint = ch;
-
-	switch (form)
-	{
-		case UNICODE_NFC:
-			found = bsearch(&key,
-							UnicodeNormProps_NFC_QC,
-							lengthof(UnicodeNormProps_NFC_QC),
-							sizeof(pg_unicode_normprops),
-							qc_compare);
-			break;
-		case UNICODE_NFKC:
-			found = bsearch(&key,
-							UnicodeNormProps_NFKC_QC,
-							lengthof(UnicodeNormProps_NFKC_QC),
-							sizeof(pg_unicode_normprops),
-							qc_compare);
-			break;
-		default:
-			Assert(false);
-			break;
-	}
-
-	if (found)
-		return found->quickcheck;
-	else
-		return UNICODE_NORM_QC_YES;
-}
-
-UnicodeNormalizationQC
-unicode_is_normalized_quickcheck(UnicodeNormalizationForm form, const pg_wchar *input)
-{
-	uint8		lastCanonicalClass = 0;
-	UnicodeNormalizationQC result = UNICODE_NORM_QC_YES;
-
-	/*
-	 * For the "D" forms, we don't run the quickcheck.  We don't include the
-	 * lookup tables for those because they are huge, checking for these
-	 * particular forms is less common, and running the slow path is faster
-	 * for the "D" forms than the "C" forms because you don't need to
-	 * recompose, which is slow.
-	 */
-	if (form == UNICODE_NFD || form == UNICODE_NFKD)
-		return UNICODE_NORM_QC_MAYBE;
-
-	for (const pg_wchar *p = input; *p; p++)
-	{
-		pg_wchar	ch = *p;
-		uint8		canonicalClass;
-		UnicodeNormalizationQC check;
-
-		canonicalClass = get_canonical_class(ch);
-		if (lastCanonicalClass > canonicalClass && canonicalClass != 0)
-			return UNICODE_NORM_QC_NO;
-
-		check = qc_is_allowed(form, ch);
-		if (check == UNICODE_NORM_QC_NO)
-			return UNICODE_NORM_QC_NO;
-		else if (check == UNICODE_NORM_QC_MAYBE)
-			result = UNICODE_NORM_QC_MAYBE;
-
-		lastCanonicalClass = canonicalClass;
-	}
-	return result;
-}
-
-#endif							/* !FRONTEND */

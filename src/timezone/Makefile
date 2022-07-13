@@ -16,21 +16,17 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 
 # files to build into backend
-OBJS = \
-	localtime.o \
-	pgtz.o \
-	strftime.o
+OBJS= localtime.o strftime.o pgtz.o
 
 # files needed to build zic utility program
-ZICOBJS = \
-	$(WIN32RES) \
-	zic.o
+ZICOBJS= zic.o $(WIN32RES)
 
 # we now distribute the timezone data as a single file
 TZDATAFILES = $(srcdir)/data/tzdata.zi
 
-# any custom options you might want to pass to zic while installing data files
-ZIC_OPTIONS =
+# which zone should determine the DST rules (not the specific UTC offset!)
+# for POSIX-style timezone specs
+POSIXRULES = US/Eastern
 
 # use system timezone data?
 ifneq (,$(with_system_tzdata))
@@ -56,14 +52,13 @@ zic: $(ZICOBJS) | submake-libpgport
 
 install: all installdirs
 ifeq (,$(with_system_tzdata))
-	$(ZIC) -d '$(DESTDIR)$(datadir)/timezone' $(ZIC_OPTIONS) $(TZDATAFILES)
+	$(ZIC) -d '$(DESTDIR)$(datadir)/timezone' -p '$(POSIXRULES)' $(TZDATAFILES)
 endif
 	$(MAKE) -C tznames $@
 
-# Note: -P code currently depends on '-b fat'.  Not worth fixing right now.
 abbrevs.txt: zic $(TZDATAFILES)
 	mkdir junkdir
-	$(ZIC) -P -b fat -d junkdir $(TZDATAFILES) | LANG=C sort | uniq >abbrevs.txt
+	$(ZIC) -P -d junkdir -p '$(POSIXRULES)' $(TZDATAFILES) | LANG=C sort | uniq >abbrevs.txt
 	rm -rf junkdir
 
 installdirs:

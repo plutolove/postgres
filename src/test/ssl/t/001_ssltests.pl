@@ -3,17 +3,12 @@ use warnings;
 use PostgresNode;
 use TestLib;
 use Test::More;
-
+use ServerSetup;
 use File::Copy;
-
-use FindBin;
-use lib $FindBin::RealBin;
-
-use SSLServer;
 
 if ($ENV{with_openssl} eq 'yes')
 {
-	plan tests => 93;
+	plan tests => 64;
 }
 else
 {
@@ -26,37 +21,22 @@ else
 # hostname, because the server certificate is always for the domain
 # postgresql-ssl-regression.test.
 my $SERVERHOSTADDR = '127.0.0.1';
-# This is the pattern to use in pg_hba.conf to match incoming connections.
-my $SERVERHOSTCIDR = '127.0.0.1/32';
 
 # Allocation of base connection string shared among multiple tests.
 my $common_connstr;
 
 # The client's private key must not be world-readable, so take a copy
 # of the key stored in the code tree and update its permissions.
-#
-# This changes ssl/client.key to ssl/client_tmp.key etc for the rest
-# of the tests.
-my @keys = (
-	"client",     "client-revoked",
-	"client-der", "client-encrypted-pem",
-	"client-encrypted-der");
-foreach my $key (@keys)
-{
-	copy("ssl/${key}.key", "ssl/${key}_tmp.key")
-	  or die
-	  "couldn't copy ssl/${key}.key to ssl/${key}_tmp.key for permissions change: $!";
-	chmod 0600, "ssl/${key}_tmp.key"
-	  or die "failed to change permissions on ssl/${key}_tmp.key: $!";
-}
+copy("ssl/client.key", "ssl/client_tmp.key");
+chmod 0600, "ssl/client_tmp.key";
+copy("ssl/client-revoked.key", "ssl/client-revoked_tmp.key");
+chmod 0600, "ssl/client-revoked_tmp.key";
 
 # Also make a copy of that explicitly world-readable.  We can't
 # necessarily rely on the file in the source tree having those
-# permissions.  Add it to @keys to include it in the final clean
-# up phase.
+# permissions.
 copy("ssl/client.key", "ssl/client_wrongperms_tmp.key");
 chmod 0644, "ssl/client_wrongperms_tmp.key";
-push @keys, 'client_wrongperms';
 
 #### Set up the server.
 
@@ -69,13 +49,7 @@ $node->init;
 $ENV{PGHOST} = $node->host;
 $ENV{PGPORT} = $node->port;
 $node->start;
-
-# Run this before we lock down access below.
-my $result = $node->safe_psql('postgres', "SHOW ssl_library");
-is($result, 'OpenSSL', 'ssl_library parameter');
-
-configure_test_server_for_ssl($node, $SERVERHOSTADDR, $SERVERHOSTCIDR,
-	'trust');
+configure_test_server_for_ssl($node, $SERVERHOSTADDR, 'trust');
 
 note "testing password-protected keys";
 
@@ -102,24 +76,6 @@ command_ok(
 	[ 'pg_ctl', '-D', $node->data_dir, '-l', $node->logfile, 'restart' ],
 	'restart succeeds with password-protected key file');
 $node->_update_pid(1);
-
-# Test compatibility of SSL protocols.
-# TLSv1.1 is lower than TLSv1.2, so it won't work.
-$node->append_conf(
-	'postgresql.conf',
-	qq{ssl_min_protocol_version='TLSv1.2'
-ssl_max_protocol_version='TLSv1.1'});
-command_fails(
-	[ 'pg_ctl', '-D', $node->data_dir, '-l', $node->logfile, 'restart' ],
-	'restart fails with incorrect SSL protocol bounds');
-# Go back to the defaults, this works.
-$node->append_conf(
-	'postgresql.conf',
-	qq{ssl_min_protocol_version='TLSv1.2'
-ssl_max_protocol_version=''});
-command_ok(
-	[ 'pg_ctl', '-D', $node->data_dir, '-l', $node->logfile, 'restart' ],
-	'restart succeeds with correct SSL protocol bounds');
 
 ### Run client-side tests.
 ###
@@ -348,41 +304,6 @@ test_connect_fails(
 	qr/SSL error/,
 	"does not connect with client-side CRL");
 
-# pg_stat_ssl
-command_like(
-	[
-		'psql',                                '-X',
-		'-A',                                  '-F',
-		',',                                   '-P',
-		'null=_null_',                         '-d',
-		"$common_connstr sslrootcert=invalid", '-c',
-		"SELECT * FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
-	],
-	qr{^pid,ssl,version,cipher,bits,compression,client_dn,client_serial,issuer_dn\r?\n
-				^\d+,t,TLSv[\d.]+,[\w-]+,\d+,f,_null_,_null_,_null_\r?$}mx,
-	'pg_stat_ssl view without client certificate');
-
-# Test min/max SSL protocol versions.
-test_connect_ok(
-	$common_connstr,
-	"sslrootcert=ssl/root+server_ca.crt sslmode=require ssl_min_protocol_version=TLSv1.2 ssl_max_protocol_version=TLSv1.2",
-	"connection success with correct range of TLS protocol versions");
-test_connect_fails(
-	$common_connstr,
-	"sslrootcert=ssl/root+server_ca.crt sslmode=require ssl_min_protocol_version=TLSv1.2 ssl_max_protocol_version=TLSv1.1",
-	qr/invalid SSL protocol version range/,
-	"connection failure with incorrect range of TLS protocol versions");
-test_connect_fails(
-	$common_connstr,
-	"sslrootcert=ssl/root+server_ca.crt sslmode=require ssl_min_protocol_version=incorrect_tls",
-	qr/invalid ssl_min_protocol_version value/,
-	"connection failure with an incorrect SSL protocol minimum bound");
-test_connect_fails(
-	$common_connstr,
-	"sslrootcert=ssl/root+server_ca.crt sslmode=require ssl_max_protocol_version=incorrect_tls",
-	qr/invalid ssl_max_protocol_version value/,
-	"connection failure with an incorrect SSL protocol maximum bound");
-
 ### Server-side tests.
 ###
 ### Test certificate authorization.
@@ -399,97 +320,18 @@ test_connect_fails(
 	qr/connection requires a valid client certificate/,
 	"certificate authorization fails without client cert");
 
-# correct client cert in unencrypted PEM
+# correct client cert
 test_connect_ok(
 	$common_connstr,
 	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client_tmp.key",
-	"certificate authorization succeeds with correct client cert in PEM format"
-);
-
-# correct client cert in unencrypted DER
-test_connect_ok(
-	$common_connstr,
-	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-der_tmp.key",
-	"certificate authorization succeeds with correct client cert in DER format"
-);
-
-# correct client cert in encrypted PEM
-test_connect_ok(
-	$common_connstr,
-	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-encrypted-pem_tmp.key sslpassword='dUmmyP^#+'",
-	"certificate authorization succeeds with correct client cert in encrypted PEM format"
-);
-
-# correct client cert in encrypted DER
-test_connect_ok(
-	$common_connstr,
-	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-encrypted-der_tmp.key sslpassword='dUmmyP^#+'",
-	"certificate authorization succeeds with correct client cert in encrypted DER format"
-);
-
-# correct client cert in encrypted PEM with wrong password
-test_connect_fails(
-	$common_connstr,
-	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-encrypted-pem_tmp.key sslpassword='wrong'",
-	qr!\Qprivate key file "ssl/client-encrypted-pem_tmp.key": bad decrypt\E!,
-	"certificate authorization fails with correct client cert and wrong password in encrypted PEM format"
-);
-
-TODO:
-{
-	# these tests are left here waiting on us to get better pty support
-	# so they don't hang. For now they are not performed.
-
-	todo_skip "Need Pty support", 4;
-
-	# correct client cert in encrypted PEM with empty password
-	test_connect_fails(
-		$common_connstr,
-		"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-encrypted-pem_tmp.key sslpassword=''",
-		qr!\Qprivate key file "ssl/client-encrypted-pem_tmp.key": processing error\E!,
-		"certificate authorization fails with correct client cert and empty password in encrypted PEM format"
-	);
-
-	# correct client cert in encrypted PEM with no password
-	test_connect_fails(
-		$common_connstr,
-		"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client-encrypted-pem_tmp.key",
-		qr!\Qprivate key file "ssl/client-encrypted-pem_tmp.key": processing error\E!,
-		"certificate authorization fails with correct client cert and no password in encrypted PEM format"
-	);
-
-}
-
-# pg_stat_ssl
-command_like(
-	[
-		'psql',
-		'-X',
-		'-A',
-		'-F',
-		',',
-		'-P',
-		'null=_null_',
-		'-d',
-		"$common_connstr user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client_tmp.key",
-		'-c',
-		"SELECT * FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
-	],
-	qr{^pid,ssl,version,cipher,bits,compression,client_dn,client_serial,issuer_dn\r?\n
-				^\d+,t,TLSv[\d.]+,[\w-]+,\d+,f,/CN=ssltestuser,1,\Q/CN=Test CA for PostgreSQL SSL regression test client certs\E\r?$}mx,
-	'pg_stat_ssl with client certificate');
+	"certificate authorization succeeds with correct client cert");
 
 # client key with wrong permissions
-SKIP:
-{
-	skip "Permissions check not enforced on Windows", 2 if ($windows_os);
-
-	test_connect_fails(
-		$common_connstr,
-		"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client_wrongperms_tmp.key",
-		qr!\Qprivate key file "ssl/client_wrongperms_tmp.key" has group or world access\E!,
-		"certificate authorization fails because of file permissions");
-}
+test_connect_fails(
+	$common_connstr,
+	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client_wrongperms_tmp.key",
+	qr!\Qprivate key file "ssl/client_wrongperms_tmp.key" has group or world access\E!,
+	"certificate authorization fails because of file permissions");
 
 # client cert belonging to another user
 test_connect_fails(
@@ -506,33 +348,6 @@ test_connect_fails(
 	qr/SSL error/,
 	"certificate authorization fails with revoked client cert");
 
-# Check that connecting with auth-option verify-full in pg_hba:
-# works, iff username matches Common Name
-# fails, iff username doesn't match Common Name.
-$common_connstr =
-  "sslrootcert=ssl/root+server_ca.crt sslmode=require dbname=verifydb hostaddr=$SERVERHOSTADDR";
-
-test_connect_ok(
-	$common_connstr,
-	"user=ssltestuser sslcert=ssl/client.crt sslkey=ssl/client_tmp.key",
-	"auth_option clientcert=verify-full succeeds with matching username and Common Name"
-);
-
-test_connect_fails(
-	$common_connstr,
-	"user=anotheruser sslcert=ssl/client.crt sslkey=ssl/client_tmp.key",
-	qr/FATAL/,
-	"auth_option clientcert=verify-full fails with mismatching username and Common Name"
-);
-
-# Check that connecting with auth-optionverify-ca in pg_hba :
-# works, when username doesn't match Common Name
-test_connect_ok(
-	$common_connstr,
-	"user=yetanotheruser sslcert=ssl/client.crt sslkey=ssl/client_tmp.key",
-	"auth_option clientcert=verify-ca succeeds with mismatching username and Common Name"
-);
-
 # intermediate client_ca.crt is provided by client, and isn't in server's ssl_ca_file
 switch_server_cert($node, 'server-cn-only', 'root_ca');
 $common_connstr =
@@ -546,7 +361,5 @@ test_connect_fails($common_connstr, "sslmode=require sslcert=ssl/client.crt",
 	qr/SSL error/, "intermediate client certificate is missing");
 
 # clean up
-foreach my $key (@keys)
-{
-	unlink("ssl/${key}_tmp.key");
-}
+unlink("ssl/client_tmp.key", "ssl/client_wrongperms_tmp.key",
+	"ssl/client-revoked_tmp.key");

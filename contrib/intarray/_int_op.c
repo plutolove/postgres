@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+
 #include "_int.h"
 
 PG_MODULE_MAGIC;
@@ -45,9 +46,13 @@ _int_contains(PG_FUNCTION_ARGS)
 Datum
 _int_different(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_BOOL(!DatumGetBool(DirectFunctionCall2(_int_same,
+	PG_RETURN_BOOL(!DatumGetBool(
+								 DirectFunctionCall2(
+													 _int_same,
 													 PointerGetDatum(PG_GETARG_POINTER(0)),
-													 PointerGetDatum(PG_GETARG_POINTER(1)))));
+													 PointerGetDatum(PG_GETARG_POINTER(1))
+													 )
+								 ));
 }
 
 Datum

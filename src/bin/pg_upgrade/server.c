@@ -3,15 +3,16 @@
  *
  *	database server functions
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/server.c
  */
 
 #include "postgres_fe.h"
 
-#include "common/connect.h"
+#include "fe_utils/connect.h"
 #include "fe_utils/string_utils.h"
 #include "pg_upgrade.h"
+
 
 static PGconn *get_db_conn(ClusterInfo *cluster, const char *db_name);
 
@@ -164,11 +165,11 @@ get_major_server_version(ClusterInfo *cluster)
 	snprintf(ver_filename, sizeof(ver_filename), "%s/PG_VERSION",
 			 cluster->pgdata);
 	if ((version_fd = fopen(ver_filename, "r")) == NULL)
-		pg_fatal("could not open version file \"%s\": %m\n", ver_filename);
+		pg_fatal("could not open version file: %s\n", ver_filename);
 
 	if (fscanf(version_fd, "%63s", cluster->major_version_str) == 0 ||
 		sscanf(cluster->major_version_str, "%d.%d", &v1, &v2) < 1)
-		pg_fatal("could not parse version file \"%s\"\n", ver_filename);
+		pg_fatal("could not parse PG_VERSION file from %s\n", cluster->pgdata);
 
 	fclose(version_fd);
 
@@ -210,7 +211,7 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 
 	socket_string[0] = '\0';
 
-#if defined(HAVE_UNIX_SOCKETS) && !defined(WIN32)
+#ifdef HAVE_UNIX_SOCKETS
 	/* prevent TCP/IP connections, restrict socket access */
 	strcat(socket_string,
 		   " -c listen_addresses='' -c unix_socket_permissions=0700");
@@ -220,7 +221,7 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 		snprintf(socket_string + strlen(socket_string),
 				 sizeof(socket_string) - strlen(socket_string),
 				 " -c %s='%s'",
-				 (GET_MAJOR_VERSION(cluster->major_version) <= 902) ?
+				 (GET_MAJOR_VERSION(cluster->major_version) < 903) ?
 				 "unix_socket_directory" : "unix_socket_directories",
 				 cluster->sockdir);
 #endif
@@ -239,9 +240,6 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 	 * we only modify the new cluster, so only use it there.  If there is a
 	 * crash, the new cluster has to be recreated anyway.  fsync=off is a big
 	 * win on ext4.
-	 *
-	 * Force vacuum_defer_cleanup_age to 0 on the new cluster, so that
-	 * vacuumdb --freeze actually freezes the tuples.
 	 */
 	snprintf(cmd, sizeof(cmd),
 			 "\"%s/pg_ctl\" -w -l \"%s\" -D \"%s\" -o \"-p %d%s%s %s%s\" start",
@@ -250,7 +248,7 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 			  BINARY_UPGRADE_SERVER_FLAG_CAT_VER) ? " -b" :
 			 " -c autovacuum=off -c autovacuum_freeze_max_age=2000000000",
 			 (cluster == &new_cluster) ?
-			 " -c synchronous_commit=off -c fsync=off -c full_page_writes=off -c vacuum_defer_cleanup_age=0" : "",
+			 " -c synchronous_commit=off -c fsync=off -c full_page_writes=off" : "",
 			 cluster->pgopts ? cluster->pgopts : "", socket_string);
 
 	/*

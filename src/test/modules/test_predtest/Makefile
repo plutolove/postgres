@@ -1,9 +1,7 @@
 # src/test/modules/test_predtest/Makefile
 
 MODULE_big = test_predtest
-OBJS = \
-	$(WIN32RES) \
-	test_predtest.o
+OBJS = test_predtest.o $(WIN32RES)
 PGFILEDESC = "test_predtest - test code for optimizer/util/predtest.c"
 
 EXTENSION = test_predtest

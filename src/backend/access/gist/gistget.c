@@ -4,7 +4,7 @@
  *	  fetch tuples from a GiST scan.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,15 +14,15 @@
  */
 #include "postgres.h"
 
-#include "access/genam.h"
 #include "access/gist_private.h"
 #include "access/relscan.h"
-#include "lib/pairingheap.h"
+#include "catalog/pg_type.h"
 #include "miscadmin.h"
-#include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
-#include "utils/float.h"
+#include "pgstat.h"
+#include "lib/pairingheap.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -74,7 +74,7 @@ gistkillitems(IndexScanDesc scan)
 
 	/*
 	 * Mark all killedItems as dead. We need no additional recheck, because,
-	 * if page was modified, curPageLSN must have changed.
+	 * if page was modified, pageLSN must have changed.
 	 */
 	for (i = 0; i < so->numKilled; i++)
 	{
@@ -134,7 +134,7 @@ gistindex_keytest(IndexScanDesc scan,
 	GISTSTATE  *giststate = so->giststate;
 	ScanKey		key = scan->keyData;
 	int			keySize = scan->numberOfKeys;
-	IndexOrderByDistance *distance_p;
+	double	   *distance_p;
 	Relation	r = scan->indexRelation;
 
 	*recheck_p = false;
@@ -152,10 +152,7 @@ gistindex_keytest(IndexScanDesc scan,
 		if (GistPageIsLeaf(page))	/* shouldn't happen */
 			elog(ERROR, "invalid GiST tuple found on leaf page");
 		for (i = 0; i < scan->numberOfOrderBys; i++)
-		{
-			so->distances[i].value = -get_float8_infinity();
-			so->distances[i].isnull = false;
-		}
+			so->distances[i] = -get_float8_infinity();
 		return true;
 	}
 
@@ -167,7 +164,7 @@ gistindex_keytest(IndexScanDesc scan,
 
 		datum = index_getattr(tuple,
 							  key->sk_attno,
-							  giststate->leafTupdesc,
+							  giststate->tupdesc,
 							  &isNull);
 
 		if (key->sk_flags & SK_ISNULL)
@@ -247,14 +244,13 @@ gistindex_keytest(IndexScanDesc scan,
 
 		datum = index_getattr(tuple,
 							  key->sk_attno,
-							  giststate->leafTupdesc,
+							  giststate->tupdesc,
 							  &isNull);
 
 		if ((key->sk_flags & SK_ISNULL) || isNull)
 		{
-			/* Assume distance computes as null */
-			distance_p->value = 0.0;
-			distance_p->isnull = true;
+			/* Assume distance computes as null and sorts to the end */
+			*distance_p = get_float8_infinity();
 		}
 		else
 		{
@@ -291,8 +287,7 @@ gistindex_keytest(IndexScanDesc scan,
 									 ObjectIdGetDatum(key->sk_subtype),
 									 PointerGetDatum(&recheck));
 			*recheck_distances_p |= recheck;
-			distance_p->value = DatumGetFloat8(dist);
-			distance_p->isnull = false;
+			*distance_p = DatumGetFloat8(dist);
 		}
 
 		key++;
@@ -326,8 +321,8 @@ gistindex_keytest(IndexScanDesc scan,
  * sibling will be processed next.
  */
 static void
-gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
-			 IndexOrderByDistance *myDistances, TIDBitmap *tbm, int64 *ntids)
+gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
+			 TIDBitmap *tbm, int64 *ntids)
 {
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
 	GISTSTATE  *giststate = so->giststate;
@@ -375,25 +370,11 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 		/* Insert it into the queue using same distances as for this page */
 		memcpy(item->distances, myDistances,
-			   sizeof(item->distances[0]) * scan->numberOfOrderBys);
+			   sizeof(double) * scan->numberOfOrderBys);
 
 		pairingheap_add(so->queue, &item->phNode);
 
 		MemoryContextSwitchTo(oldcxt);
-	}
-
-	/*
-	 * Check if the page was deleted after we saw the downlink. There's
-	 * nothing of interest on a deleted page. Note that we must do this after
-	 * checking the NSN for concurrent splits! It's possible that the page
-	 * originally contained some tuples that are visible to us, but was split
-	 * so that all the visible tuples were moved to another page, and then
-	 * this page was deleted.
-	 */
-	if (GistPageIsDeleted(page))
-	{
-		UnlockReleaseBuffer(buffer);
-		return;
 	}
 
 	so->nPageData = so->curPageData = 0;
@@ -484,7 +465,6 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 			 * search.
 			 */
 			GISTSearchItem *item;
-			int			nOrderBys = scan->numberOfOrderBys;
 
 			oldcxt = MemoryContextSwitchTo(so->queueCxt);
 
@@ -520,7 +500,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 			/* Insert it into the queue using new distance data */
 			memcpy(item->distances, so->distances,
-				   sizeof(item->distances[0]) * nOrderBys);
+				   sizeof(double) * scan->numberOfOrderBys);
 
 			pairingheap_add(so->queue, &item->phNode);
 
@@ -563,6 +543,7 @@ getNextNearest(IndexScanDesc scan)
 {
 	GISTScanOpaque so = (GISTScanOpaque) scan->opaque;
 	bool		res = false;
+	int			i;
 
 	if (scan->xs_hitup)
 	{
@@ -581,12 +562,47 @@ getNextNearest(IndexScanDesc scan)
 		if (GISTSearchItemIsHeap(*item))
 		{
 			/* found a heap item at currently minimal distance */
-			scan->xs_heaptid = item->data.heap.heapPtr;
+			scan->xs_ctup.t_self = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
-
-			index_store_float8_orderby_distances(scan, so->orderByTypes,
-												 item->distances,
-												 item->data.heap.recheckDistances);
+			scan->xs_recheckorderby = item->data.heap.recheckDistances;
+			for (i = 0; i < scan->numberOfOrderBys; i++)
+			{
+				if (so->orderByTypes[i] == FLOAT8OID)
+				{
+#ifndef USE_FLOAT8_BYVAL
+					/* must free any old value to avoid memory leakage */
+					if (!scan->xs_orderbynulls[i])
+						pfree(DatumGetPointer(scan->xs_orderbyvals[i]));
+#endif
+					scan->xs_orderbyvals[i] = Float8GetDatum(item->distances[i]);
+					scan->xs_orderbynulls[i] = false;
+				}
+				else if (so->orderByTypes[i] == FLOAT4OID)
+				{
+					/* convert distance function's result to ORDER BY type */
+#ifndef USE_FLOAT4_BYVAL
+					/* must free any old value to avoid memory leakage */
+					if (!scan->xs_orderbynulls[i])
+						pfree(DatumGetPointer(scan->xs_orderbyvals[i]));
+#endif
+					scan->xs_orderbyvals[i] = Float4GetDatum((float4) item->distances[i]);
+					scan->xs_orderbynulls[i] = false;
+				}
+				else
+				{
+					/*
+					 * If the ordering operator's return value is anything
+					 * else, we don't know how to convert the float8 bound
+					 * calculated by the distance function to that.  The
+					 * executor won't actually need the order by values we
+					 * return here, if there are no lossy results, so only
+					 * insist on converting if the *recheck flag is set.
+					 */
+					if (scan->xs_recheckorderby)
+						elog(ERROR, "GiST operator family's FOR ORDER BY operator must return float8 or float4 if the distance function is lossy");
+					scan->xs_orderbynulls[i] = true;
+				}
+			}
 
 			/* in an index-only scan, also return the reconstructed tuple. */
 			if (scan->xs_want_itup)
@@ -670,7 +686,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 							so->pageData[so->curPageData - 1].offnum;
 				}
 				/* continuing to return tuples from a leaf page */
-				scan->xs_heaptid = so->pageData[so->curPageData].heapPtr;
+				scan->xs_ctup.t_self = so->pageData[so->curPageData].heapPtr;
 				scan->xs_recheck = so->pageData[so->curPageData].recheck;
 
 				/* in an index-only scan, also return the reconstructed tuple */
@@ -683,7 +699,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 			}
 
 			/*
-			 * Check the last returned tuple and add it to killedItems if
+			 * Check the last returned tuple and add it to killitems if
 			 * necessary
 			 */
 			if (scan->kill_prior_tuple
@@ -789,13 +805,11 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
  *
  * Opclasses that implement a fetch function support index-only scans.
  * Opclasses without compression functions also support index-only scans.
- * Included attributes always can be fetched for index-only scans.
  */
 bool
 gistcanreturn(Relation index, int attno)
 {
-	if (attno > IndexRelationGetNumberOfKeyAttributes(index) ||
-		OidIsValid(index_getprocid(index, attno, GIST_FETCH_PROC)) ||
+	if (OidIsValid(index_getprocid(index, attno, GIST_FETCH_PROC)) ||
 		!OidIsValid(index_getprocid(index, attno, GIST_COMPRESS_PROC)))
 		return true;
 	else

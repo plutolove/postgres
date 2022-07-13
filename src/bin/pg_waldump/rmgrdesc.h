@@ -8,7 +8,6 @@
 #ifndef RMGRDESC_H
 #define RMGRDESC_H
 
-#include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
 typedef struct RmgrDescData

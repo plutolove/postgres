@@ -4,7 +4,7 @@
  *	  delete & vacuum routines for the postgres GIN
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -117,8 +117,7 @@ typedef struct DataPageDeleteStack
 	struct DataPageDeleteStack *parent;
 
 	BlockNumber blkno;			/* current block number */
-	Buffer		leftBuffer;		/* pinned and locked rightest non-deleted page
-								 * on left */
+	BlockNumber leftBlkno;		/* rightest non-deleted page on left */
 	bool		isRoot;
 } DataPageDeleteStack;
 
@@ -140,8 +139,11 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	/*
 	 * This function MUST be called only if someone of parent pages hold
 	 * exclusive cleanup lock. This guarantees that no insertions currently
-	 * happen in this subtree. Caller also acquires Exclusive locks on
-	 * deletable, parent and left pages.
+	 * happen in this subtree. Caller also acquire Exclusive lock on deletable
+	 * page and is acquiring and releasing exclusive lock on left page before.
+	 * Left page was locked and released. Then parent and this page are
+	 * locked. We acquire left page lock here only to mark page dirty after
+	 * changing right pointer.
 	 */
 	lBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, leftBlkno,
 								 RBM_NORMAL, gvs->strategy);
@@ -149,6 +151,8 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 								 RBM_NORMAL, gvs->strategy);
 	pBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, parentBlkno,
 								 RBM_NORMAL, gvs->strategy);
+
+	LockBuffer(lBuffer, GIN_EXCLUSIVE);
 
 	page = BufferGetPage(dBuffer);
 	rightlink = GinPageGetOpaque(page)->rightlink;
@@ -183,13 +187,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	 * we shouldn't change rightlink field to save workability of running
 	 * search scan
 	 */
-
-	/*
-	 * Mark page as deleted, and remember last xid which could know its
-	 * address.
-	 */
-	GinPageSetDeleted(page);
-	GinPageSetDeleteXid(page, ReadNewTransactionId());
+	GinPageGetOpaque(page)->flags = GIN_DELETED;
 
 	MarkBufferDirty(pBuffer);
 	MarkBufferDirty(lBuffer);
@@ -215,7 +213,6 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 
 		data.parentOffset = myoff;
 		data.rightLink = GinPageGetOpaque(page)->rightlink;
-		data.deleteXid = GinPageGetDeleteXid(page);
 
 		XLogRegisterData((char *) &data, sizeof(ginxlogDeletePage));
 
@@ -226,7 +223,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	}
 
 	ReleaseBuffer(pBuffer);
-	ReleaseBuffer(lBuffer);
+	UnlockReleaseBuffer(lBuffer);
 	ReleaseBuffer(dBuffer);
 
 	END_CRIT_SECTION();
@@ -236,11 +233,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 
 
 /*
- * Scans posting tree and deletes empty pages.  Caller must lock root page for
- * cleanup.  During scan path from root to current page is kept exclusively
- * locked.  Also keep left page exclusively locked, because ginDeletePage()
- * needs it.  If we try to relock left page later, it could deadlock with
- * ginStepRight().
+ * scans posting tree and deletes empty pages
  */
 static bool
 ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
@@ -263,7 +256,7 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 			me = (DataPageDeleteStack *) palloc0(sizeof(DataPageDeleteStack));
 			me->parent = parent;
 			parent->child = me;
-			me->leftBuffer = InvalidBuffer;
+			me->leftBlkno = InvalidBlockNumber;
 		}
 		else
 			me = parent->child;
@@ -291,12 +284,6 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 			if (ginScanToDelete(gvs, PostingItemGetBlockNumber(pitem), false, me, i))
 				i--;
 		}
-
-		if (GinPageRightMost(page) && BufferIsValid(me->child->leftBuffer))
-		{
-			UnlockReleaseBuffer(me->child->leftBuffer);
-			me->child->leftBuffer = InvalidBuffer;
-		}
 	}
 
 	if (GinPageIsLeaf(page))
@@ -307,143 +294,143 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 	if (isempty)
 	{
 		/* we never delete the left- or rightmost branch */
-		if (BufferIsValid(me->leftBuffer) && !GinPageRightMost(page))
+		if (me->leftBlkno != InvalidBlockNumber && !GinPageRightMost(page))
 		{
 			Assert(!isRoot);
-			ginDeletePage(gvs, blkno, BufferGetBlockNumber(me->leftBuffer),
-						  me->parent->blkno, myoff, me->parent->isRoot);
+			ginDeletePage(gvs, blkno, me->leftBlkno, me->parent->blkno, myoff, me->parent->isRoot);
 			meDelete = true;
 		}
 	}
 
+	if (!isRoot)
+		LockBuffer(buffer, GIN_UNLOCK);
+
+	ReleaseBuffer(buffer);
+
 	if (!meDelete)
-	{
-		if (BufferIsValid(me->leftBuffer))
-			UnlockReleaseBuffer(me->leftBuffer);
-		me->leftBuffer = buffer;
-	}
-	else
-	{
-		if (!isRoot)
-			LockBuffer(buffer, GIN_UNLOCK);
-
-		ReleaseBuffer(buffer);
-	}
-
-	if (isRoot)
-		ReleaseBuffer(buffer);
+		me->leftBlkno = blkno;
 
 	return meDelete;
 }
 
 
 /*
- * Scan through posting tree leafs, delete empty tuples.  Returns true if there
- * is at least one empty page.
+ * Scan through posting tree, delete empty tuples from leaf pages.
+ * Also, this function collects empty subtrees (with all empty leafs).
+ * For parents of these subtrees CleanUp lock is taken, then we call
+ * ScanToDelete. This is done for every inner page, which points to
+ * empty subtree.
  */
 static bool
-ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
+ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 {
 	Buffer		buffer;
 	Page		page;
 	bool		hasVoidPage = false;
 	MemoryContext oldCxt;
 
-	/* Find leftmost leaf page of posting tree and lock it in exclusive mode */
-	while (true)
-	{
-		PostingItem *pitem;
+	buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
+								RBM_NORMAL, gvs->strategy);
+	page = BufferGetPage(buffer);
 
-		buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
-									RBM_NORMAL, gvs->strategy);
-		LockBuffer(buffer, GIN_SHARE);
-		page = BufferGetPage(buffer);
+	ginTraverseLock(buffer, false);
 
-		Assert(GinPageIsData(page));
+	Assert(GinPageIsData(page));
 
-		if (GinPageIsLeaf(page))
-		{
-			LockBuffer(buffer, GIN_UNLOCK);
-			LockBuffer(buffer, GIN_EXCLUSIVE);
-			break;
-		}
-
-		Assert(PageGetMaxOffsetNumber(page) >= FirstOffsetNumber);
-
-		pitem = GinDataPageGetPostingItem(page, FirstOffsetNumber);
-		blkno = PostingItemGetBlockNumber(pitem);
-		Assert(blkno != InvalidBlockNumber);
-
-		UnlockReleaseBuffer(buffer);
-	}
-
-	/* Iterate all posting tree leaves using rightlinks and vacuum them */
-	while (true)
+	if (GinPageIsLeaf(page))
 	{
 		oldCxt = MemoryContextSwitchTo(gvs->tmpCxt);
 		ginVacuumPostingTreeLeaf(gvs->index, buffer, gvs);
 		MemoryContextSwitchTo(oldCxt);
 		MemoryContextReset(gvs->tmpCxt);
 
+		/* if root is a leaf page, we don't desire further processing */
 		if (GinDataLeafPageIsEmpty(page))
 			hasVoidPage = true;
 
-		blkno = GinPageGetOpaque(page)->rightlink;
+		UnlockReleaseBuffer(buffer);
+
+		return hasVoidPage;
+	}
+	else
+	{
+		OffsetNumber i;
+		bool		hasEmptyChild = false;
+		bool		hasNonEmptyChild = false;
+		OffsetNumber maxoff = GinPageGetOpaque(page)->maxoff;
+		BlockNumber *children = palloc(sizeof(BlockNumber) * (maxoff + 1));
+
+		/*
+		 * Read all children BlockNumbers. Not sure it is safe if there are
+		 * many concurrent vacuums.
+		 */
+
+		for (i = FirstOffsetNumber; i <= maxoff; i++)
+		{
+			PostingItem *pitem = GinDataPageGetPostingItem(page, i);
+
+			children[i] = PostingItemGetBlockNumber(pitem);
+		}
 
 		UnlockReleaseBuffer(buffer);
 
-		if (blkno == InvalidBlockNumber)
-			break;
+		for (i = FirstOffsetNumber; i <= maxoff; i++)
+		{
+			if (ginVacuumPostingTreeLeaves(gvs, children[i], false))
+				hasEmptyChild = true;
+			else
+				hasNonEmptyChild = true;
+		}
 
-		buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
-									RBM_NORMAL, gvs->strategy);
-		LockBuffer(buffer, GIN_EXCLUSIVE);
-		page = BufferGetPage(buffer);
+		pfree(children);
+
+		vacuum_delay_point();
+
+		/*
+		 * All subtree is empty - just return true to indicate that parent
+		 * must do a cleanup, unless we are ROOT and there is way to go upper.
+		 */
+
+		if (hasEmptyChild && !hasNonEmptyChild && !isRoot)
+			return true;
+
+		if (hasEmptyChild)
+		{
+			DataPageDeleteStack root,
+					   *ptr,
+					   *tmp;
+
+			buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
+										RBM_NORMAL, gvs->strategy);
+			LockBufferForCleanup(buffer);
+
+			memset(&root, 0, sizeof(DataPageDeleteStack));
+			root.leftBlkno = InvalidBlockNumber;
+			root.isRoot = true;
+
+			ginScanToDelete(gvs, blkno, true, &root, InvalidOffsetNumber);
+
+			ptr = root.child;
+
+			while (ptr)
+			{
+				tmp = ptr->child;
+				pfree(ptr);
+				ptr = tmp;
+			}
+
+			UnlockReleaseBuffer(buffer);
+		}
+
+		/* Here we have deleted all empty subtrees */
+		return false;
 	}
-
-	return hasVoidPage;
 }
 
 static void
 ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 {
-	if (ginVacuumPostingTreeLeaves(gvs, rootBlkno))
-	{
-		/*
-		 * There is at least one empty page.  So we have to rescan the tree
-		 * deleting empty pages.
-		 */
-		Buffer		buffer;
-		DataPageDeleteStack root,
-				   *ptr,
-				   *tmp;
-
-		buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, rootBlkno,
-									RBM_NORMAL, gvs->strategy);
-
-		/*
-		 * Lock posting tree root for cleanup to ensure there are no
-		 * concurrent inserts.
-		 */
-		LockBufferForCleanup(buffer);
-
-		memset(&root, 0, sizeof(DataPageDeleteStack));
-		root.leftBuffer = InvalidBuffer;
-		root.isRoot = true;
-
-		ginScanToDelete(gvs, rootBlkno, true, &root, InvalidOffsetNumber);
-
-		ptr = root.child;
-
-		while (ptr)
-		{
-			tmp = ptr->child;
-			pfree(ptr);
-			ptr = tmp;
-		}
-
-		UnlockReleaseBuffer(buffer);
-	}
+	ginVacuumPostingTreeLeaves(gvs, rootBlkno, true);
 }
 
 /*
@@ -755,7 +742,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		LockBuffer(buffer, GIN_SHARE);
 		page = (Page) BufferGetPage(buffer);
 
-		if (GinPageIsRecyclable(page))
+		if (PageIsNew(page) || GinPageIsDeleted(page))
 		{
 			Assert(blkno != GIN_ROOT_BLKNO);
 			RecordFreeIndexPage(index, blkno);
@@ -778,7 +765,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 
 	/* Update the metapage with accurate page and entry counts */
 	idxStat.nTotalPages = npages;
-	ginUpdateStats(info->index, &idxStat, false);
+	ginUpdateStats(info->index, &idxStat);
 
 	/* Finally, vacuum the FSM */
 	IndexFreeSpaceMapVacuum(info->index);

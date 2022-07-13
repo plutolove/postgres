@@ -13,7 +13,7 @@
  * estimates are already available in pg_statistic.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -27,35 +27,21 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_statistic_ext.h"
-#include "catalog/pg_statistic_ext_data.h"
-#include "lib/stringinfo.h"
-#include "statistics/extended_stats_internal.h"
-#include "statistics/statistics.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
+#include "lib/stringinfo.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#include "statistics/extended_stats_internal.h"
+#include "statistics/statistics.h"
+
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-										HeapTuple *rows, VacAttrStats **stats,
-										int k, int *combination);
+						  HeapTuple *rows, VacAttrStats **stats,
+						  int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
-
-/* size of the struct header fields (magic, type, nitems) */
-#define SizeOfHeader		(3 * sizeof(uint32))
-
-/* size of a serialized ndistinct item (coefficient, natts, atts) */
-#define SizeOfItem(natts) \
-	(sizeof(double) + sizeof(int) + (natts) * sizeof(AttrNumber))
-
-/* minimal size of a ndistinct item (with two attributes) */
-#define MinSizeOfItem	SizeOfItem(2)
-
-/* minimal size of mvndistinct, when all items are minimal */
-#define MinSizeOfItems(nitems)	\
-	(SizeOfHeader + (nitems) * MinSizeOfItem)
 
 /* Combination generator API */
 
@@ -145,15 +131,15 @@ statext_ndistinct_load(Oid mvoid)
 	Datum		ndist;
 	HeapTuple	htup;
 
-	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(mvoid));
+	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
-	ndist = SysCacheGetAttr(STATEXTDATASTXOID, htup,
-							Anum_pg_statistic_ext_data_stxdndistinct, &isnull);
+	ndist = SysCacheGetAttr(STATEXTOID, htup,
+							Anum_pg_statistic_ext_stxndistinct, &isnull);
 	if (isnull)
 		elog(ERROR,
-			 "requested statistics kind \"%c\" is not yet built for statistics object %u",
+			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
 			 STATS_EXT_NDISTINCT, mvoid);
 
 	result = statext_ndistinct_deserialize(DatumGetByteaPP(ndist));
@@ -182,7 +168,8 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	 * Base size is size of scalar fields in the struct, plus one base struct
 	 * for each item, including number of items for each.
 	 */
-	len = VARHDRSZ + SizeOfHeader;
+	len = VARHDRSZ + SizeOfMVNDistinct +
+		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) + sizeof(int));
 
 	/* and also include space for the actual attribute numbers */
 	for (i = 0; i < ndistinct->nitems; i++)
@@ -191,8 +178,7 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 
 		nmembers = bms_num_members(ndistinct->items[i].attrs);
 		Assert(nmembers >= 2);
-
-		len += SizeOfItem(nmembers);
+		len += sizeof(AttrNumber) * nmembers;
 	}
 
 	output = (bytea *) palloc(len);
@@ -209,7 +195,8 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	tmp += sizeof(uint32);
 
 	/*
-	 * store number of attributes and attribute numbers for each entry
+	 * store number of attributes and attribute numbers for each ndistinct
+	 * entry
 	 */
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
@@ -231,12 +218,8 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 			tmp += sizeof(AttrNumber);
 		}
 
-		/* protect against overflows */
 		Assert(tmp <= ((char *) output + len));
 	}
-
-	/* check we used exactly the expected space */
-	Assert(tmp == ((char *) output + len));
 
 	return output;
 }
@@ -258,9 +241,9 @@ statext_ndistinct_deserialize(bytea *data)
 		return NULL;
 
 	/* we expect at least the basic fields of MVNDistinct struct */
-	if (VARSIZE_ANY_EXHDR(data) < SizeOfHeader)
+	if (VARSIZE_ANY_EXHDR(data) < SizeOfMVNDistinct)
 		elog(ERROR, "invalid MVNDistinct size %zd (expected at least %zd)",
-			 VARSIZE_ANY_EXHDR(data), SizeOfHeader);
+			 VARSIZE_ANY_EXHDR(data), SizeOfMVNDistinct);
 
 	/* initialize pointer to the data part (skip the varlena header) */
 	tmp = VARDATA_ANY(data);
@@ -274,25 +257,35 @@ statext_ndistinct_deserialize(bytea *data)
 	tmp += sizeof(uint32);
 
 	if (ndist.magic != STATS_NDISTINCT_MAGIC)
-		elog(ERROR, "invalid ndistinct magic %08x (expected %08x)",
-			 ndist.magic, STATS_NDISTINCT_MAGIC);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid ndistinct magic %08x (expected %08x)",
+						ndist.magic, STATS_NDISTINCT_MAGIC)));
 	if (ndist.type != STATS_NDISTINCT_TYPE_BASIC)
-		elog(ERROR, "invalid ndistinct type %d (expected %d)",
-			 ndist.type, STATS_NDISTINCT_TYPE_BASIC);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid ndistinct type %d (expected %d)",
+						ndist.type, STATS_NDISTINCT_TYPE_BASIC)));
 	if (ndist.nitems == 0)
-		elog(ERROR, "invalid zero-length item array in MVNDistinct");
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid zero-length item array in MVNDistinct")));
 
 	/* what minimum bytea size do we expect for those parameters */
-	minimum_size = MinSizeOfItems(ndist.nitems);
+	minimum_size = (SizeOfMVNDistinct +
+					ndist.nitems * (SizeOfMVNDistinctItem +
+									sizeof(AttrNumber) * 2));
 	if (VARSIZE_ANY_EXHDR(data) < minimum_size)
-		elog(ERROR, "invalid MVNDistinct size %zd (expected at least %zd)",
-			 VARSIZE_ANY_EXHDR(data), minimum_size);
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid MVNDistinct size %zd (expected at least %zd)",
+						VARSIZE_ANY_EXHDR(data), minimum_size)));
 
 	/*
 	 * Allocate space for the ndistinct items (no space for each item's
 	 * attnos: those live in bitmapsets allocated separately)
 	 */
-	ndistinct = palloc0(MAXALIGN(offsetof(MVNDistinct, items)) +
+	ndistinct = palloc0(MAXALIGN(SizeOfMVNDistinct) +
 						(ndist.nitems * sizeof(MVNDistinctItem)));
 	ndistinct->magic = ndist.magic;
 	ndistinct->type = ndist.type;
@@ -338,7 +331,7 @@ statext_ndistinct_deserialize(bytea *data)
  *		input routine for type pg_ndistinct
  *
  * pg_ndistinct is real enough to be a table column, but it has no
- * operations of its own, and disallows input (just like pg_node_tree).
+ * operations of its own, and disallows input (jus like pg_node_tree).
  */
 Datum
 pg_ndistinct_in(PG_FUNCTION_ARGS)
@@ -461,9 +454,6 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	/*
 	 * For each dimension, set up sort-support and fill in the values from the
 	 * sample data.
-	 *
-	 * We use the column data types' default sort operators and collations;
-	 * perhaps at some point it'd be worth using column-specific collations?
 	 */
 	for (i = 0; i < k; i++)
 	{
@@ -476,7 +466,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 				 colstat->attrtypid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
+		multi_sort_add_dimension(mss, i, type->lt_opr);
 
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
@@ -576,7 +566,15 @@ n_choose_k(int n, int k)
 static int
 num_combinations(int n)
 {
-	return (1 << n) - (n + 1);
+	int			k;
+	int			ncombs = 1;
+
+	for (k = 1; k <= n; k++)
+		ncombs *= 2;
+
+	ncombs -= (n + 1);
+
+	return ncombs;
 }
 
 /*

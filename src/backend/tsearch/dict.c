@@ -3,7 +3,7 @@
  * dict.c
  *		Standard interface to dictionary
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -73,7 +73,7 @@ ts_lexize(PG_FUNCTION_ARGS)
 						TEXTOID,
 						-1,
 						false,
-						TYPALIGN_INT);
+						'i');
 
 	ptr = res;
 	while (ptr->lexeme)

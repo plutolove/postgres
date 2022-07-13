@@ -1,7 +1,7 @@
 <!-- doc/src/sgml/pltcl.sgml -->
 
  <chapter id="pltcl">
-  <title>PL/Tcl &mdash; Tcl Procedural Language</title>
+  <title>PL/Tcl - Tcl Procedural Language</title>
 
   <indexterm zone="pltcl">
    <primary>PL/Tcl</primary>
@@ -14,9 +14,9 @@
   <para>
    PL/Tcl is a loadable procedural language for the
    <productname>PostgreSQL</productname> database system
-   that enables the <ulink url="https://www.tcl.tk/">
+   that enables the <ulink url="http://www.tcl.tk/">
    Tcl language</ulink> to be used to write
-   <productname>PostgreSQL</productname> functions and procedures.
+   <productname>PostgreSQL</productname> functions.
   </para>
 
   <!-- **** PL/Tcl overview **** -->
@@ -466,6 +466,24 @@ $$ LANGUAGE pltcl;
         through to <function>spi_prepare</function> as-is, and not replaced by Tcl
         variable substitution.
 
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>
+       <function>spi_lastoid</function>
+       <indexterm>
+        <primary>spi_lastoid</primary>
+        <secondary>in PL/Tcl</secondary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Returns the OID of the row inserted by the last
+        <function>spi_exec</function> or <function>spi_execp</function>, if the
+        command was a single-row <command>INSERT</command> and the modified
+        table contained OIDs.  (If not, you get zero.)
        </para>
       </listitem>
      </varlistentry>

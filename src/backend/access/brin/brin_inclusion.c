@@ -16,7 +16,7 @@
  * writing is the INET type, where IPv6 values cannot be merged with IPv4
  * values.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -82,9 +82,9 @@ typedef struct InclusionOpaque
 } InclusionOpaque;
 
 static FmgrInfo *inclusion_get_procinfo(BrinDesc *bdesc, uint16 attno,
-										uint16 procnum);
+					   uint16 procnum);
 static FmgrInfo *inclusion_get_strategy_procinfo(BrinDesc *bdesc, uint16 attno,
-												 Oid subtype, uint16 strategynum);
+								Oid subtype, uint16 strategynum);
 
 
 /*
@@ -235,14 +235,8 @@ brin_inclusion_add_value(PG_FUNCTION_ARGS)
 	Assert(finfo != NULL);
 	result = FunctionCall2Coll(finfo, colloid,
 							   column->bv_values[INCLUSION_UNION], newval);
-	if (!attr->attbyval &&
-		DatumGetPointer(result) != DatumGetPointer(column->bv_values[INCLUSION_UNION]))
-	{
+	if (!attr->attbyval)
 		pfree(DatumGetPointer(column->bv_values[INCLUSION_UNION]));
-
-		if (result == newval)
-			result = datumCopy(result, attr->attbyval, attr->attlen);
-	}
 	column->bv_values[INCLUSION_UNION] = result;
 
 	PG_RETURN_BOOL(true);
@@ -438,7 +432,7 @@ brin_inclusion_consistent(PG_FUNCTION_ARGS)
 			 * It is straightforward to support the equality strategies with
 			 * the contains operator.  Generally, inequality strategies do not
 			 * make much sense for the types which will be used with the
-			 * inclusion BRIN family of opclasses, but it is possible to
+			 * inclusion BRIN family of opclasses, but is possible to
 			 * implement them with logical negation of the left-of and
 			 * right-of operators.
 			 *
@@ -580,14 +574,8 @@ brin_inclusion_union(PG_FUNCTION_ARGS)
 	result = FunctionCall2Coll(finfo, colloid,
 							   col_a->bv_values[INCLUSION_UNION],
 							   col_b->bv_values[INCLUSION_UNION]);
-	if (!attr->attbyval &&
-		DatumGetPointer(result) != DatumGetPointer(col_a->bv_values[INCLUSION_UNION]))
-	{
+	if (!attr->attbyval)
 		pfree(DatumGetPointer(col_a->bv_values[INCLUSION_UNION]));
-
-		if (result == col_b->bv_values[INCLUSION_UNION])
-			result = datumCopy(result, attr->attbyval, attr->attlen);
-	}
 	col_a->bv_values[INCLUSION_UNION] = result;
 
 	PG_RETURN_VOID();

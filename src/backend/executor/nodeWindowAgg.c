@@ -23,7 +23,7 @@
  * aggregate function over all rows in the current row's window frame.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -41,13 +41,12 @@
 #include "executor/nodeWindowAgg.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/clauses.h"
 #include "parser/parse_agg.h"
 #include "parser/parse_coerce.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
-#include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/regproc.h"
@@ -94,7 +93,7 @@ typedef struct WindowStatePerFuncData
 	bool		resulttypeByVal;
 
 	bool		plain_agg;		/* is it just a plain aggregate function? */
-	int			aggno;			/* if so, index of its WindowStatePerAggData */
+	int			aggno;			/* if so, index of its PerAggData */
 
 	WindowObject winobj;		/* object used in window function API */
 }			WindowStatePerFuncData;
@@ -143,7 +142,7 @@ typedef struct WindowStatePerAggData
 				resulttypeByVal,
 				transtypeByVal;
 
-	int			wfuncno;		/* index of associated WindowStatePerFuncData */
+	int			wfuncno;		/* index of associated PerFuncData */
 
 	/* Context holding transition value and possibly other subsidiary data */
 	MemoryContext aggcontext;	/* may be private, or winstate->aggcontext */
@@ -159,43 +158,43 @@ typedef struct WindowStatePerAggData
 } WindowStatePerAggData;
 
 static void initialize_windowaggregate(WindowAggState *winstate,
-									   WindowStatePerFunc perfuncstate,
-									   WindowStatePerAgg peraggstate);
+						   WindowStatePerFunc perfuncstate,
+						   WindowStatePerAgg peraggstate);
 static void advance_windowaggregate(WindowAggState *winstate,
-									WindowStatePerFunc perfuncstate,
-									WindowStatePerAgg peraggstate);
+						WindowStatePerFunc perfuncstate,
+						WindowStatePerAgg peraggstate);
 static bool advance_windowaggregate_base(WindowAggState *winstate,
-										 WindowStatePerFunc perfuncstate,
-										 WindowStatePerAgg peraggstate);
+							 WindowStatePerFunc perfuncstate,
+							 WindowStatePerAgg peraggstate);
 static void finalize_windowaggregate(WindowAggState *winstate,
-									 WindowStatePerFunc perfuncstate,
-									 WindowStatePerAgg peraggstate,
-									 Datum *result, bool *isnull);
+						 WindowStatePerFunc perfuncstate,
+						 WindowStatePerAgg peraggstate,
+						 Datum *result, bool *isnull);
 
 static void eval_windowaggregates(WindowAggState *winstate);
 static void eval_windowfunction(WindowAggState *winstate,
-								WindowStatePerFunc perfuncstate,
-								Datum *result, bool *isnull);
+					WindowStatePerFunc perfuncstate,
+					Datum *result, bool *isnull);
 
 static void begin_partition(WindowAggState *winstate);
 static void spool_tuples(WindowAggState *winstate, int64 pos);
 static void release_partition(WindowAggState *winstate);
 
-static int	row_is_in_frame(WindowAggState *winstate, int64 pos,
-							TupleTableSlot *slot);
+static int row_is_in_frame(WindowAggState *winstate, int64 pos,
+				TupleTableSlot *slot);
 static void update_frameheadpos(WindowAggState *winstate);
 static void update_frametailpos(WindowAggState *winstate);
 static void update_grouptailpos(WindowAggState *winstate);
 
 static WindowStatePerAggData *initialize_peragg(WindowAggState *winstate,
-												WindowFunc *wfunc,
-												WindowStatePerAgg peraggstate);
+				  WindowFunc *wfunc,
+				  WindowStatePerAgg peraggstate);
 static Datum GetAggInitVal(Datum textInitVal, Oid transtype);
 
 static bool are_peers(WindowAggState *winstate, TupleTableSlot *slot1,
-					  TupleTableSlot *slot2);
+		  TupleTableSlot *slot2);
 static bool window_gettupleslot(WindowObject winobj, int64 pos,
-								TupleTableSlot *slot);
+					TupleTableSlot *slot);
 
 
 /*
@@ -242,9 +241,10 @@ advance_windowaggregate(WindowAggState *winstate,
 						WindowStatePerFunc perfuncstate,
 						WindowStatePerAgg peraggstate)
 {
-	LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
 	WindowFuncExprState *wfuncstate = perfuncstate->wfuncstate;
 	int			numArguments = perfuncstate->numArguments;
+	FunctionCallInfoData fcinfodata;
+	FunctionCallInfo fcinfo = &fcinfodata;
 	Datum		newVal;
 	ListCell   *arg;
 	int			i;
@@ -273,8 +273,8 @@ advance_windowaggregate(WindowAggState *winstate,
 	{
 		ExprState  *argstate = (ExprState *) lfirst(arg);
 
-		fcinfo->args[i].value = ExecEvalExpr(argstate, econtext,
-											 &fcinfo->args[i].isnull);
+		fcinfo->arg[i] = ExecEvalExpr(argstate, econtext,
+									  &fcinfo->argnull[i]);
 		i++;
 	}
 
@@ -287,7 +287,7 @@ advance_windowaggregate(WindowAggState *winstate,
 		 */
 		for (i = 1; i <= numArguments; i++)
 		{
-			if (fcinfo->args[i].isnull)
+			if (fcinfo->argnull[i])
 			{
 				MemoryContextSwitchTo(oldContext);
 				return;
@@ -306,7 +306,7 @@ advance_windowaggregate(WindowAggState *winstate,
 		if (peraggstate->transValueCount == 0 && peraggstate->transValueIsNull)
 		{
 			MemoryContextSwitchTo(peraggstate->aggcontext);
-			peraggstate->transValue = datumCopy(fcinfo->args[1].value,
+			peraggstate->transValue = datumCopy(fcinfo->arg[1],
 												peraggstate->transtypeByVal,
 												peraggstate->transtypeLen);
 			peraggstate->transValueIsNull = false;
@@ -339,8 +339,8 @@ advance_windowaggregate(WindowAggState *winstate,
 							 numArguments + 1,
 							 perfuncstate->winCollation,
 							 (void *) winstate, NULL);
-	fcinfo->args[0].value = peraggstate->transValue;
-	fcinfo->args[0].isnull = peraggstate->transValueIsNull;
+	fcinfo->arg[0] = peraggstate->transValue;
+	fcinfo->argnull[0] = peraggstate->transValueIsNull;
 	winstate->curaggcontext = peraggstate->aggcontext;
 	newVal = FunctionCallInvoke(fcinfo);
 	winstate->curaggcontext = NULL;
@@ -418,9 +418,10 @@ advance_windowaggregate_base(WindowAggState *winstate,
 							 WindowStatePerFunc perfuncstate,
 							 WindowStatePerAgg peraggstate)
 {
-	LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
 	WindowFuncExprState *wfuncstate = perfuncstate->wfuncstate;
 	int			numArguments = perfuncstate->numArguments;
+	FunctionCallInfoData fcinfodata;
+	FunctionCallInfo fcinfo = &fcinfodata;
 	Datum		newVal;
 	ListCell   *arg;
 	int			i;
@@ -449,8 +450,8 @@ advance_windowaggregate_base(WindowAggState *winstate,
 	{
 		ExprState  *argstate = (ExprState *) lfirst(arg);
 
-		fcinfo->args[i].value = ExecEvalExpr(argstate, econtext,
-											 &fcinfo->args[i].isnull);
+		fcinfo->arg[i] = ExecEvalExpr(argstate, econtext,
+									  &fcinfo->argnull[i]);
 		i++;
 	}
 
@@ -463,7 +464,7 @@ advance_windowaggregate_base(WindowAggState *winstate,
 		 */
 		for (i = 1; i <= numArguments; i++)
 		{
-			if (fcinfo->args[i].isnull)
+			if (fcinfo->argnull[i])
 			{
 				MemoryContextSwitchTo(oldContext);
 				return true;
@@ -509,8 +510,8 @@ advance_windowaggregate_base(WindowAggState *winstate,
 							 numArguments + 1,
 							 perfuncstate->winCollation,
 							 (void *) winstate, NULL);
-	fcinfo->args[0].value = peraggstate->transValue;
-	fcinfo->args[0].isnull = peraggstate->transValueIsNull;
+	fcinfo->arg[0] = peraggstate->transValue;
+	fcinfo->argnull[0] = peraggstate->transValueIsNull;
 	winstate->curaggcontext = peraggstate->aggcontext;
 	newVal = FunctionCallInvoke(fcinfo);
 	winstate->curaggcontext = NULL;
@@ -590,31 +591,30 @@ finalize_windowaggregate(WindowAggState *winstate,
 	 */
 	if (OidIsValid(peraggstate->finalfn_oid))
 	{
-		LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
 		int			numFinalArgs = peraggstate->numFinalArgs;
+		FunctionCallInfoData fcinfo;
 		bool		anynull;
 		int			i;
 
-		InitFunctionCallInfoData(fcinfodata.fcinfo, &(peraggstate->finalfn),
+		InitFunctionCallInfoData(fcinfo, &(peraggstate->finalfn),
 								 numFinalArgs,
 								 perfuncstate->winCollation,
 								 (void *) winstate, NULL);
-		fcinfo->args[0].value =
-			MakeExpandedObjectReadOnly(peraggstate->transValue,
-									   peraggstate->transValueIsNull,
-									   peraggstate->transtypeLen);
-		fcinfo->args[0].isnull = peraggstate->transValueIsNull;
+		fcinfo.arg[0] = MakeExpandedObjectReadOnly(peraggstate->transValue,
+												   peraggstate->transValueIsNull,
+												   peraggstate->transtypeLen);
+		fcinfo.argnull[0] = peraggstate->transValueIsNull;
 		anynull = peraggstate->transValueIsNull;
 
 		/* Fill any remaining argument positions with nulls */
 		for (i = 1; i < numFinalArgs; i++)
 		{
-			fcinfo->args[i].value = (Datum) 0;
-			fcinfo->args[i].isnull = true;
+			fcinfo.arg[i] = (Datum) 0;
+			fcinfo.argnull[i] = true;
 			anynull = true;
 		}
 
-		if (fcinfo->flinfo->fn_strict && anynull)
+		if (fcinfo.flinfo->fn_strict && anynull)
 		{
 			/* don't call a strict function with NULL inputs */
 			*result = (Datum) 0;
@@ -623,9 +623,9 @@ finalize_windowaggregate(WindowAggState *winstate,
 		else
 		{
 			winstate->curaggcontext = peraggstate->aggcontext;
-			*result = FunctionCallInvoke(fcinfo);
+			*result = FunctionCallInvoke(&fcinfo);
 			winstate->curaggcontext = NULL;
-			*isnull = fcinfo->isnull;
+			*isnull = fcinfo.isnull;
 		}
 	}
 	else
@@ -1032,7 +1032,7 @@ static void
 eval_windowfunction(WindowAggState *winstate, WindowStatePerFunc perfuncstate,
 					Datum *result, bool *isnull)
 {
-	LOCAL_FCINFO(fcinfo, FUNC_MAX_ARGS);
+	FunctionCallInfoData fcinfo;
 	MemoryContext oldContext;
 
 	oldContext = MemoryContextSwitchTo(winstate->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
@@ -1043,25 +1043,24 @@ eval_windowfunction(WindowAggState *winstate, WindowStatePerFunc perfuncstate,
 	 * implementations to support varying numbers of arguments.  The real info
 	 * goes through the WindowObject, which is passed via fcinfo->context.
 	 */
-	InitFunctionCallInfoData(*fcinfo, &(perfuncstate->flinfo),
+	InitFunctionCallInfoData(fcinfo, &(perfuncstate->flinfo),
 							 perfuncstate->numArguments,
 							 perfuncstate->winCollation,
 							 (void *) perfuncstate->winobj, NULL);
 	/* Just in case, make all the regular argument slots be null */
-	for (int argno = 0; argno < perfuncstate->numArguments; argno++)
-		fcinfo->args[argno].isnull = true;
+	memset(fcinfo.argnull, true, perfuncstate->numArguments);
 	/* Window functions don't have a current aggregate context, either */
 	winstate->curaggcontext = NULL;
 
-	*result = FunctionCallInvoke(fcinfo);
-	*isnull = fcinfo->isnull;
+	*result = FunctionCallInvoke(&fcinfo);
+	*isnull = fcinfo.isnull;
 
 	/*
 	 * Make sure pass-by-ref data is allocated in the appropriate context. (We
 	 * need this in case the function returns a pointer into some short-lived
 	 * tuple, as is entirely possible.)
 	 */
-	if (!perfuncstate->resulttypeByVal && !fcinfo->isnull &&
+	if (!perfuncstate->resulttypeByVal && !fcinfo.isnull &&
 		!MemoryContextContains(CurrentMemoryContext,
 							   DatumGetPointer(*result)))
 		*result = datumCopy(*result,
@@ -2317,25 +2316,16 @@ ExecInitWindowAgg(WindowAgg *node, EState *estate, int eflags)
 	 * initialize source tuple type (which is also the tuple type that we'll
 	 * store in the tuplestore and use in all our working slots).
 	 */
-	ExecCreateScanSlotFromOuterPlan(estate, &winstate->ss, &TTSOpsMinimalTuple);
+	ExecCreateScanSlotFromOuterPlan(estate, &winstate->ss);
 	scanDesc = winstate->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-
-	/* the outer tuple isn't the child's tuple, but always a minimal tuple */
-	winstate->ss.ps.outeropsset = true;
-	winstate->ss.ps.outerops = &TTSOpsMinimalTuple;
-	winstate->ss.ps.outeropsfixed = true;
 
 	/*
 	 * tuple table initialization
 	 */
-	winstate->first_part_slot = ExecInitExtraTupleSlot(estate, scanDesc,
-													   &TTSOpsMinimalTuple);
-	winstate->agg_row_slot = ExecInitExtraTupleSlot(estate, scanDesc,
-													&TTSOpsMinimalTuple);
-	winstate->temp_slot_1 = ExecInitExtraTupleSlot(estate, scanDesc,
-												   &TTSOpsMinimalTuple);
-	winstate->temp_slot_2 = ExecInitExtraTupleSlot(estate, scanDesc,
-												   &TTSOpsMinimalTuple);
+	winstate->first_part_slot = ExecInitExtraTupleSlot(estate, scanDesc);
+	winstate->agg_row_slot = ExecInitExtraTupleSlot(estate, scanDesc);
+	winstate->temp_slot_1 = ExecInitExtraTupleSlot(estate, scanDesc);
+	winstate->temp_slot_2 = ExecInitExtraTupleSlot(estate, scanDesc);
 
 	/*
 	 * create frame head and tail slots only if needed (must create slots in
@@ -2349,19 +2339,17 @@ ExecInitWindowAgg(WindowAgg *node, EState *estate, int eflags)
 		if (((frameOptions & FRAMEOPTION_START_CURRENT_ROW) &&
 			 node->ordNumCols != 0) ||
 			(frameOptions & FRAMEOPTION_START_OFFSET))
-			winstate->framehead_slot = ExecInitExtraTupleSlot(estate, scanDesc,
-															  &TTSOpsMinimalTuple);
+			winstate->framehead_slot = ExecInitExtraTupleSlot(estate, scanDesc);
 		if (((frameOptions & FRAMEOPTION_END_CURRENT_ROW) &&
 			 node->ordNumCols != 0) ||
 			(frameOptions & FRAMEOPTION_END_OFFSET))
-			winstate->frametail_slot = ExecInitExtraTupleSlot(estate, scanDesc,
-															  &TTSOpsMinimalTuple);
+			winstate->frametail_slot = ExecInitExtraTupleSlot(estate, scanDesc);
 	}
 
 	/*
 	 * Initialize result slot, type and projection.
 	 */
-	ExecInitResultTupleSlotTL(&winstate->ss.ps, &TTSOpsVirtual);
+	ExecInitResultTupleSlotTL(estate, &winstate->ss.ps);
 	ExecAssignProjectionInfo(&winstate->ss.ps, NULL);
 
 	/* Set up data for comparing tuples */
@@ -2371,7 +2359,6 @@ ExecInitWindowAgg(WindowAgg *node, EState *estate, int eflags)
 								   node->partNumCols,
 								   node->partColIdx,
 								   node->partOperators,
-								   node->partCollations,
 								   &winstate->ss.ps);
 
 	if (node->ordNumCols > 0)
@@ -2380,7 +2367,6 @@ ExecInitWindowAgg(WindowAgg *node, EState *estate, int eflags)
 								   node->ordNumCols,
 								   node->ordColIdx,
 								   node->ordOperators,
-								   node->ordCollations,
 								   &winstate->ss.ps);
 
 	/*

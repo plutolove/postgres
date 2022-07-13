@@ -8,13 +8,15 @@
 
 #include "postgres.h"
 
+#include <float.h>
 #include <math.h>
 
 #include "access/gist.h"
 #include "access/stratnum.h"
-#include "cubedata.h"
 #include "utils/array.h"
-#include "utils/float.h"
+#include "utils/builtins.h"
+
+#include "cubedata.h"
 
 PG_MODULE_MAGIC;
 
@@ -99,7 +101,7 @@ bool		g_cube_leaf_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
 bool		g_cube_internal_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
 
 /*
-** Auxiliary functions
+** Auxiliary funxtions
 */
 static double distance_1D(double a1, double a2, double b1, double b2);
 static bool cube_is_point_internal(NDBOX *cube);
@@ -155,7 +157,7 @@ cube_a_f8_f8(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("can't extend cube"),
 				 errdetail("A cube cannot have more than %d dimensions.",
-						   CUBE_MAX_DIM)));
+							   CUBE_MAX_DIM)));
 
 	if (ARRNELEMS(ll) != dim)
 		ereport(ERROR,
@@ -219,7 +221,7 @@ cube_a_f8(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("array is too long"),
 				 errdetail("A cube cannot have more than %d dimensions.",
-						   CUBE_MAX_DIM)));
+							   CUBE_MAX_DIM)));
 
 	dur = ARRPTR(ur);
 
@@ -259,7 +261,7 @@ cube_subset(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("array is too long"),
 				 errdetail("A cube cannot have more than %d dimensions.",
-						   CUBE_MAX_DIM)));
+							   CUBE_MAX_DIM)));
 
 	size = IS_POINT(c) ? POINT_SIZE(dim) : CUBE_SIZE(dim);
 	result = (NDBOX *) palloc0(size);
@@ -589,7 +591,7 @@ g_cube_picksplit(PG_FUNCTION_ARGS)
 			v->spl_nright++;
 		}
 	}
-	*left = *right = FirstOffsetNumber; /* sentinel value */
+	*left = *right = FirstOffsetNumber; /* sentinel value, see dosplit() */
 
 	v->spl_ldatum = PointerGetDatum(datum_l);
 	v->spl_rdatum = PointerGetDatum(datum_r);
@@ -717,10 +719,14 @@ cube_union_v0(NDBOX *a, NDBOX *b)
 	/* First compute the union of the dimensions present in both args */
 	for (i = 0; i < DIM(b); i++)
 	{
-		result->x[i] = Min(Min(LL_COORD(a, i), UR_COORD(a, i)),
-						   Min(LL_COORD(b, i), UR_COORD(b, i)));
-		result->x[i + DIM(a)] = Max(Max(LL_COORD(a, i), UR_COORD(a, i)),
-									Max(LL_COORD(b, i), UR_COORD(b, i)));
+		result->x[i] = Min(
+						   Min(LL_COORD(a, i), UR_COORD(a, i)),
+						   Min(LL_COORD(b, i), UR_COORD(b, i))
+			);
+		result->x[i + DIM(a)] = Max(
+									Max(LL_COORD(a, i), UR_COORD(a, i)),
+									Max(LL_COORD(b, i), UR_COORD(b, i))
+			);
 	}
 	/* continue on the higher dimensions only present in 'a' */
 	for (; i < DIM(a); i++)
@@ -792,10 +798,14 @@ cube_inter(PG_FUNCTION_ARGS)
 	/* First compute intersection of the dimensions present in both args */
 	for (i = 0; i < DIM(b); i++)
 	{
-		result->x[i] = Max(Min(LL_COORD(a, i), UR_COORD(a, i)),
-						   Min(LL_COORD(b, i), UR_COORD(b, i)));
-		result->x[i + DIM(a)] = Min(Max(LL_COORD(a, i), UR_COORD(a, i)),
-									Max(LL_COORD(b, i), UR_COORD(b, i)));
+		result->x[i] = Max(
+						   Min(LL_COORD(a, i), UR_COORD(a, i)),
+						   Min(LL_COORD(b, i), UR_COORD(b, i))
+			);
+		result->x[i + DIM(a)] = Min(
+									Max(LL_COORD(a, i), UR_COORD(a, i)),
+									Max(LL_COORD(b, i), UR_COORD(b, i))
+			);
 	}
 	/* continue on the higher dimensions only present in 'a' */
 	for (; i < DIM(a); i++)
@@ -1771,7 +1781,7 @@ cube_c_f8(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("can't extend cube"),
 				 errdetail("A cube cannot have more than %d dimensions.",
-						   CUBE_MAX_DIM)));
+							   CUBE_MAX_DIM)));
 
 	if (IS_POINT(cube))
 	{
@@ -1819,7 +1829,7 @@ cube_c_f8_f8(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("can't extend cube"),
 				 errdetail("A cube cannot have more than %d dimensions.",
-						   CUBE_MAX_DIM)));
+							   CUBE_MAX_DIM)));
 
 	if (IS_POINT(cube) && (x1 == x2))
 	{

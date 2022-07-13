@@ -3,20 +3,19 @@
  * dropcmds.c
  *	  handle various "DROP" operations
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
  * IDENTIFICATION
- *	  src/backend/commands/dropcmds.c
+ *	  src/backend/catalog/dropcmds.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/htup_details.h"
-#include "access/table.h"
-#include "access/xact.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
@@ -26,20 +25,19 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
-#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 
 static void does_not_exist_skipping(ObjectType objtype,
-									Node *object);
+						Node *object);
 static bool owningrel_does_not_exist_skipping(List *object,
-											  const char **msg, char **name);
+								  const char **msg, char **name);
 static bool schema_does_not_exist_skipping(List *object,
-										   const char **msg, char **name);
+							   const char **msg, char **name);
 static bool type_in_list_does_not_exist_skipping(List *typenames,
-												 const char **msg, char **name);
+									 const char **msg, char **name);
 
 
 /*
@@ -109,16 +107,9 @@ RemoveObjects(DropStmt *stmt)
 			check_object_ownership(GetUserId(), stmt->removeType, address,
 								   object, relation);
 
-		/*
-		 * Make note if a temporary namespace has been accessed in this
-		 * transaction.
-		 */
-		if (OidIsValid(namespaceId) && isTempNamespace(namespaceId))
-			MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPNAMESPACE;
-
 		/* Release any relcache reference count, but keep lock until commit. */
 		if (relation)
-			table_close(relation, NoLock);
+			heap_close(relation, NoLock);
 
 		add_exact_object_address(&address, objects);
 	}

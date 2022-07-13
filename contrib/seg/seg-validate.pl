@@ -1,7 +1,6 @@
 #!/usr/bin/perl
 
 use strict;
-use warnings;
 
 my $integer = '[+-]?[0-9]+';
 my $real    = '[+-]?[0-9]+\.[0-9]+';

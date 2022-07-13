@@ -50,6 +50,9 @@ void	   *px_realloc(void *p, size_t s);
 void		px_free(void *p);
 #endif
 
+/* max len of 'type' parms */
+#define PX_MAX_NAMELEN		128
+
 /* max salt returned */
 #define PX_MAX_SALT_LEN		128
 

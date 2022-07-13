@@ -4,7 +4,7 @@
  *	  POSTGRES free space map for quickly finding free space in relations
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -105,12 +105,12 @@ static uint8 fsm_space_needed_to_cat(Size needed);
 static Size fsm_space_cat_to_avail(uint8 cat);
 
 /* workhorse functions for various operations */
-static int	fsm_set_and_search(Relation rel, FSMAddress addr, uint16 slot,
-							   uint8 newValue, uint8 minValue);
+static int fsm_set_and_search(Relation rel, FSMAddress addr, uint16 slot,
+				   uint8 newValue, uint8 minValue);
 static BlockNumber fsm_search(Relation rel, uint8 min_cat);
 static uint8 fsm_vacuum_page(Relation rel, FSMAddress addr,
-							 BlockNumber start, BlockNumber end,
-							 bool *eof);
+				BlockNumber start, BlockNumber end,
+				bool *eof);
 
 
 /******** Public API ********/
@@ -223,7 +223,7 @@ XLogRecordPageWithFreeSpace(RelFileNode rnode, BlockNumber heapBlk,
 }
 
 /*
- * GetRecordedFreeSpace - return the amount of free space on a particular page,
+ * GetRecordedFreePage - return the amount of free space on a particular page,
  *		according to the FSM.
  */
 Size
@@ -247,18 +247,16 @@ GetRecordedFreeSpace(Relation rel, BlockNumber heapBlk)
 }
 
 /*
- * FreeSpaceMapPrepareTruncateRel - prepare for truncation of a relation.
+ * FreeSpaceMapTruncateRel - adjust for truncation of a relation.
+ *
+ * The caller must hold AccessExclusiveLock on the relation, to ensure that
+ * other backends receive the smgr invalidation event that this function sends
+ * before they access the FSM again.
  *
  * nblocks is the new size of the heap.
- *
- * Return the number of blocks of new FSM.
- * If it's InvalidBlockNumber, there is nothing to truncate;
- * otherwise the caller is responsible for calling smgrtruncate()
- * to truncate the FSM pages, and FreeSpaceMapVacuumRange()
- * to update upper-level pages in the FSM.
  */
-BlockNumber
-FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
+void
+FreeSpaceMapTruncateRel(Relation rel, BlockNumber nblocks)
 {
 	BlockNumber new_nfsmblocks;
 	FSMAddress	first_removed_address;
@@ -272,7 +270,7 @@ FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
 	 * truncate.
 	 */
 	if (!smgrexists(rel->rd_smgr, FSM_FORKNUM))
-		return InvalidBlockNumber;
+		return;
 
 	/* Get the location in the FSM of the first removed heap block */
 	first_removed_address = fsm_get_location(nblocks, &first_removed_slot);
@@ -287,8 +285,7 @@ FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
 	{
 		buf = fsm_readbuf(rel, first_removed_address, false);
 		if (!BufferIsValid(buf))
-			return InvalidBlockNumber;	/* nothing to do; the FSM was already
-										 * smaller */
+			return;				/* nothing to do; the FSM was already smaller */
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 		/* NO EREPORT(ERROR) from here till changes are logged */
@@ -318,11 +315,28 @@ FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
 	{
 		new_nfsmblocks = fsm_logical_to_physical(first_removed_address);
 		if (smgrnblocks(rel->rd_smgr, FSM_FORKNUM) <= new_nfsmblocks)
-			return InvalidBlockNumber;	/* nothing to do; the FSM was already
-										 * smaller */
+			return;				/* nothing to do; the FSM was already smaller */
 	}
 
-	return new_nfsmblocks;
+	/* Truncate the unused FSM pages, and send smgr inval message */
+	smgrtruncate(rel->rd_smgr, FSM_FORKNUM, new_nfsmblocks);
+
+	/*
+	 * We might as well update the local smgr_fsm_nblocks setting.
+	 * smgrtruncate sent an smgr cache inval message, which will cause other
+	 * backends to invalidate their copy of smgr_fsm_nblocks, and this one too
+	 * at the next command boundary.  But this ensures it isn't outright wrong
+	 * until then.
+	 */
+	if (rel->rd_smgr)
+		rel->rd_smgr->smgr_fsm_nblocks = new_nfsmblocks;
+
+	/*
+	 * Update upper-level FSM pages to account for the truncation.  This is
+	 * important because the just-truncated pages were likely marked as
+	 * all-free, and would be preferentially selected.
+	 */
+	FreeSpaceMapVacuumRange(rel, nblocks, InvalidBlockNumber);
 }
 
 /*
@@ -403,7 +417,7 @@ fsm_space_cat_to_avail(uint8 cat)
 
 /*
  * Which category does a page need to have, to accommodate x bytes of data?
- * While fsm_space_avail_to_cat() rounds down, this needs to round up.
+ * While fsm_size_to_avail_cat() rounds down, this needs to round up.
  */
 static uint8
 fsm_space_needed_to_cat(Size needed)

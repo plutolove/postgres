@@ -3,7 +3,7 @@
  * array_typanalyze.c
  *	  Functions for gathering statistics from array columns
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -14,7 +14,8 @@
  */
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/tuptoaster.h"
+#include "catalog/pg_collation.h"
 #include "commands/vacuum.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -38,7 +39,6 @@ typedef struct
 	/* Information about array element type */
 	Oid			type_id;		/* element type's OID */
 	Oid			eq_opr;			/* default equality operator's OID */
-	Oid			coll_id;		/* collation to use */
 	bool		typbyval;		/* physical properties of element type */
 	int16		typlen;
 	char		typalign;
@@ -81,7 +81,7 @@ typedef struct
 } DECountItem;
 
 static void compute_array_stats(VacAttrStats *stats,
-								AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
+					AnalyzeAttrFetchFunc fetchfunc, int samplerows, double totalrows);
 static void prune_element_hashtable(HTAB *elements_tab, int b_current);
 static uint32 element_hash(const void *key, Size keysize);
 static int	element_match(const void *key1, const void *key2, Size keysize);
@@ -135,7 +135,6 @@ array_typanalyze(PG_FUNCTION_ARGS)
 	extra_data = (ArrayAnalyzeExtraData *) palloc(sizeof(ArrayAnalyzeExtraData));
 	extra_data->type_id = typentry->type_id;
 	extra_data->eq_opr = typentry->eq_opr;
-	extra_data->coll_id = stats->attrcollid;	/* collation we should use */
 	extra_data->typbyval = typentry->typbyval;
 	extra_data->typlen = typentry->typlen;
 	extra_data->typalign = typentry->typalign;
@@ -561,7 +560,6 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 
 			stats->stakind[slot_idx] = STATISTIC_KIND_MCELEM;
 			stats->staop[slot_idx] = extra_data->eq_opr;
-			stats->stacoll[slot_idx] = extra_data->coll_id;
 			stats->stanumbers[slot_idx] = mcelem_freqs;
 			/* See above comment about extra stanumber entries */
 			stats->numnumbers[slot_idx] = num_mcelem + 3;
@@ -663,7 +661,6 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 
 			stats->stakind[slot_idx] = STATISTIC_KIND_DECHIST;
 			stats->staop[slot_idx] = extra_data->eq_opr;
-			stats->stacoll[slot_idx] = extra_data->coll_id;
 			stats->stanumbers[slot_idx] = hist;
 			stats->numnumbers[slot_idx] = num_hist + 1;
 			slot_idx++;
@@ -706,7 +703,7 @@ prune_element_hashtable(HTAB *elements_tab, int b_current)
 /*
  * Hash function for elements.
  *
- * We use the element type's default hash opclass, and the column collation
+ * We use the element type's default hash opclass, and the default collation
  * if the type is collation-sensitive.
  */
 static uint32
@@ -715,9 +712,7 @@ element_hash(const void *key, Size keysize)
 	Datum		d = *((const Datum *) key);
 	Datum		h;
 
-	h = FunctionCall1Coll(array_extra_data->hash,
-						  array_extra_data->coll_id,
-						  d);
+	h = FunctionCall1Coll(array_extra_data->hash, DEFAULT_COLLATION_OID, d);
 	return DatumGetUInt32(h);
 }
 
@@ -734,7 +729,7 @@ element_match(const void *key1, const void *key2, Size keysize)
 /*
  * Comparison function for elements.
  *
- * We use the element type's default btree opclass, and the column collation
+ * We use the element type's default btree opclass, and the default collation
  * if the type is collation-sensitive.
  *
  * XXX consider using SortSupport infrastructure
@@ -746,9 +741,7 @@ element_compare(const void *key1, const void *key2)
 	Datum		d2 = *((const Datum *) key2);
 	Datum		c;
 
-	c = FunctionCall2Coll(array_extra_data->cmp,
-						  array_extra_data->coll_id,
-						  d1, d2);
+	c = FunctionCall2Coll(array_extra_data->cmp, DEFAULT_COLLATION_OID, d1, d2);
 	return DatumGetInt32(c);
 }
 

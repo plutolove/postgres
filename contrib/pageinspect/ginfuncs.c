@@ -2,12 +2,14 @@
  * ginfuncs.c
  *		Functions to investigate the content of GIN indexes
  *
- * Copyright (c) 2014-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		contrib/pageinspect/ginfuncs.c
  */
 #include "postgres.h"
+
+#include "pageinspect.h"
 
 #include "access/gin.h"
 #include "access/gin_private.h"
@@ -16,7 +18,6 @@
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "pageinspect.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
@@ -45,7 +46,7 @@ gin_metapage_info(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	page = get_page_from_raw(raw_page);
 
@@ -103,7 +104,7 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	page = get_page_from_raw(raw_page);
 
@@ -144,8 +145,7 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 	values[0] = Int64GetDatum(opaq->rightlink);
 	values[1] = Int32GetDatum(opaq->maxoff);
 	values[2] = PointerGetDatum(construct_array(flags, nflags,
-												TEXTOID,
-												-1, false, TYPALIGN_INT));
+												TEXTOID, -1, false, 'i'));
 
 	/* Build and return the result tuple. */
 	resultTuple = heap_form_tuple(tupdesc, values, nulls);
@@ -170,7 +170,7 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	if (SRF_IS_FIRSTCALL())
 	{
@@ -248,7 +248,7 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 													ndecoded,
 													TIDOID,
 													sizeof(ItemPointerData),
-													false, TYPALIGN_SHORT));
+													false, 's'));
 		pfree(tids_datum);
 		pfree(tids);
 
@@ -260,6 +260,6 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 
 		SRF_RETURN_NEXT(fctx, result);
 	}
-
-	SRF_RETURN_DONE(fctx);
+	else
+		SRF_RETURN_DONE(fctx);
 }

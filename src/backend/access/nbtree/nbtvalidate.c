@@ -3,7 +3,7 @@
  * nbtvalidate.c
  *	  Opclass validator for btree.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -103,13 +103,6 @@ btvalidate(Oid opclassoid)
 											procform->amproclefttype,
 											procform->amprocrighttype,
 											BOOLOID, BOOLOID);
-				break;
-			case BTEQUALIMAGE_PROC:
-				ok = check_amproc_signature(procform->amproc, BOOLOID, true,
-											1, 1, OIDOID);
-				break;
-			case BTOPTIONS_PROC:
-				ok = check_amoptsproc_signature(procform->amproc);
 				break;
 			default:
 				ereport(INFO,
@@ -218,8 +211,8 @@ btvalidate(Oid opclassoid)
 
 		/*
 		 * Complain if there seems to be an incomplete set of either operators
-		 * or support functions for this datatype pair.  The sortsupport,
-		 * in_range, and equalimage functions are considered optional.
+		 * or support functions for this datatype pair.  The only things
+		 * considered optional are the sortsupport and in_range functions.
 		 */
 		if (thisgroup->operatorset !=
 			((1 << BTLessStrategyNumber) |

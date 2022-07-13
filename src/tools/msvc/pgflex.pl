@@ -3,8 +3,6 @@
 # src/tools/msvc/pgflex.pl
 
 use strict;
-use warnings;
-
 use File::Basename;
 
 # silence flex bleatings about file path style
@@ -12,7 +10,7 @@ $ENV{CYGWIN} = 'nodosfilewarning';
 
 # assume we are in the postgres source root
 
-do './src/tools/msvc/buildenv.pl' if -e 'src/tools/msvc/buildenv.pl';
+do 'src/tools/msvc/buildenv.pl' if -e 'src/tools/msvc/buildenv.pl';
 
 my ($flexver) = `flex -V`;    # grab first line
 $flexver = (split(/\s+/, $flexver))[1];

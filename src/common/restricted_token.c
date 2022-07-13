@@ -4,7 +4,7 @@
  *		helper routine to ensure restricted token on Windows
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,7 +20,6 @@
 
 #include "postgres_fe.h"
 
-#include "common/logging.h"
 #include "common/restricted_token.h"
 
 #ifdef WIN32
@@ -40,11 +39,11 @@ typedef BOOL (WINAPI * __CreateRestrictedToken) (HANDLE, DWORD, DWORD, PSID_AND_
  *
  * Returns restricted token on success and 0 on failure.
  *
- * On any system not containing the required functions, do nothing
- * but still report an error.
+ * On NT4, or any other system not containing the required functions, will
+ * NOT execute anything.
  */
 HANDLE
-CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
+CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo, const char *progname)
 {
 	BOOL		b;
 	STARTUPINFO si;
@@ -52,36 +51,30 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
 	HANDLE		restrictedToken;
 	SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
 	SID_AND_ATTRIBUTES dropSids[2];
-	__CreateRestrictedToken _CreateRestrictedToken;
+	__CreateRestrictedToken _CreateRestrictedToken = NULL;
 	HANDLE		Advapi32Handle;
 
 	ZeroMemory(&si, sizeof(si));
 	si.cb = sizeof(si);
 
 	Advapi32Handle = LoadLibrary("ADVAPI32.DLL");
-	if (Advapi32Handle == NULL)
+	if (Advapi32Handle != NULL)
 	{
-		pg_log_error("could not load library \"%s\": error code %lu",
-					 "ADVAPI32.DLL", GetLastError());
-		return 0;
+		_CreateRestrictedToken = (__CreateRestrictedToken) GetProcAddress(Advapi32Handle, "CreateRestrictedToken");
 	}
-
-	_CreateRestrictedToken = (__CreateRestrictedToken) GetProcAddress(Advapi32Handle, "CreateRestrictedToken");
 
 	if (_CreateRestrictedToken == NULL)
 	{
-		pg_log_error("cannot create restricted tokens on this platform: error code %lu",
-					 GetLastError());
-		FreeLibrary(Advapi32Handle);
+		fprintf(stderr, _("%s: WARNING: cannot create restricted tokens on this platform\n"), progname);
+		if (Advapi32Handle != NULL)
+			FreeLibrary(Advapi32Handle);
 		return 0;
 	}
 
 	/* Open the current token to use as a base for the restricted one */
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &origToken))
 	{
-		pg_log_error("could not open process token: error code %lu",
-					 GetLastError());
-		FreeLibrary(Advapi32Handle);
+		fprintf(stderr, _("%s: could not open process token: error code %lu\n"), progname, GetLastError());
 		return 0;
 	}
 
@@ -94,10 +87,8 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
 								  SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_POWER_USERS, 0, 0, 0, 0, 0,
 								  0, &dropSids[1].Sid))
 	{
-		pg_log_error("could not allocate SIDs: error code %lu",
-					 GetLastError());
-		CloseHandle(origToken);
-		FreeLibrary(Advapi32Handle);
+		fprintf(stderr, _("%s: could not allocate SIDs: error code %lu\n"),
+				progname, GetLastError());
 		return 0;
 	}
 
@@ -116,7 +107,8 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
 
 	if (!b)
 	{
-		pg_log_error("could not create restricted token: error code %lu", GetLastError());
+		fprintf(stderr, _("%s: could not create restricted token: error code %lu\n"),
+				progname, GetLastError());
 		return 0;
 	}
 
@@ -137,7 +129,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
 							 processInfo))
 
 	{
-		pg_log_error("could not start process for command \"%s\": error code %lu", cmd, GetLastError());
+		fprintf(stderr, _("%s: could not start process for command \"%s\": error code %lu\n"), progname, cmd, GetLastError());
 		return 0;
 	}
 
@@ -151,7 +143,7 @@ CreateRestrictedProcess(char *cmd, PROCESS_INFORMATION *processInfo)
  * On other platforms do nothing.
  */
 void
-get_restricted_token(void)
+get_restricted_token(const char *progname)
 {
 #ifdef WIN32
 	HANDLE		restrictedToken;
@@ -173,15 +165,15 @@ get_restricted_token(void)
 
 		putenv("PG_RESTRICT_EXEC=1");
 
-		if ((restrictedToken = CreateRestrictedProcess(cmdline, &pi)) == 0)
+		if ((restrictedToken = CreateRestrictedProcess(cmdline, &pi, progname)) == 0)
 		{
-			pg_log_error("could not re-execute with restricted token: error code %lu", GetLastError());
+			fprintf(stderr, _("%s: could not re-execute with restricted token: error code %lu\n"), progname, GetLastError());
 		}
 		else
 		{
 			/*
-			 * Successfully re-executed. Now wait for child process to capture
-			 * the exit code.
+			 * Successfully re-execed. Now wait for child process to capture
+			 * exitcode.
 			 */
 			DWORD		x;
 
@@ -191,12 +183,11 @@ get_restricted_token(void)
 
 			if (!GetExitCodeProcess(pi.hProcess, &x))
 			{
-				pg_log_error("could not get exit code from subprocess: error code %lu", GetLastError());
+				fprintf(stderr, _("%s: could not get exit code from subprocess: error code %lu\n"), progname, GetLastError());
 				exit(1);
 			}
 			exit(x);
 		}
-		pg_free(cmdline);
 	}
 #endif
 }

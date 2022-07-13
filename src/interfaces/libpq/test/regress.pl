@@ -1,7 +1,6 @@
-#!/usr/bin/perl
+#!/usr/bin/perl -w
 
 use strict;
-use warnings;
 
 # use of SRCDIR/SUBDIR is required for supporting VPath builds
 my $srcdir = $ENV{'SRCDIR'} or die 'SRCDIR environment variable is not set';

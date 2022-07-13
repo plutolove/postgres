@@ -6,7 +6,12 @@
 
 exec sql include ../regression;
 
-exec sql include ../printf_hack;
+
+/*
+
+NOTE: This file has a different expect file for regression tests on MinGW32
+
+*/
 
 
 char* nums[] = { "2E394", "-2", ".794", "3.44", "592.49E21", "-32.84e4",
@@ -103,9 +108,7 @@ main(void)
 
 			r = PGTYPESnumeric_to_double(num, &d);
 			if (r) check_errno();
-			printf("num[%d,10]: ", i);
-			print_double(r ? 0.0 : d);
-			printf(" (r: %d)\n", r);
+			printf("num[%d,10]: %g (r: %d)\n", i, r?0.0:d, r);
 		}
 
 		/* do not test double to numeric because

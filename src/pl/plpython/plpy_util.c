@@ -7,10 +7,14 @@
 #include "postgres.h"
 
 #include "mb/pg_wchar.h"
-#include "plpy_elog.h"
-#include "plpy_util.h"
-#include "plpython.h"
 #include "utils/memutils.h"
+
+#include "plpython.h"
+
+#include "plpy_util.h"
+
+#include "plpy_elog.h"
+
 
 /*
  * Convert a Python unicode object to a Python string/bytes object in

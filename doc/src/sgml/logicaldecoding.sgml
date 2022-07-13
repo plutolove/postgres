@@ -92,9 +92,9 @@ postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NU
 (0 rows)
 
 postgres=# BEGIN;
-postgres=*# INSERT INTO data(data) VALUES('1');
-postgres=*# INSERT INTO data(data) VALUES('2');
-postgres=*# COMMIT;
+postgres=# INSERT INTO data(data) VALUES('1');
+postgres=# INSERT INTO data(data) VALUES('2');
+postgres=# COMMIT;
 
 postgres=# SELECT * FROM pg_logical_slot_get_changes('regression_slot', NULL, NULL);
     lsn    |  xid  |                          data                           
@@ -223,7 +223,7 @@ $ pg_recvlogical -d postgres --slot=test --drop-slot
      A logical slot will emit each change just once in normal operation.
      The current position of each slot is persisted only at checkpoint, so in
      the case of a crash the slot may return to an earlier LSN, which will
-     then cause recent changes to be sent again when the server restarts.
+     then cause recent changes to be resent when the server restarts.
      Logical decoding clients are responsible for avoiding ill effects from
      handling the same message more than once.  Clients may wish to record
      the last LSN they saw when decoding and skip over any repeated data or
@@ -347,8 +347,7 @@ $ pg_recvlogical -d postgres --slot=test --drop-slot
    <para>
     The <link linkend="view-pg-replication-slots"><structname>pg_replication_slots</structname></link>
     view and the
-    <link linkend="monitoring-pg-stat-replication-view">
-    <structname>pg_stat_replication</structname></link>
+    <link linkend="pg-stat-replication-view"><structname>pg_stat_replication</structname></link>
     view provide information about the current state of replication slots and
     streaming replication connections respectively. These views apply to both physical and
     logical replication.
@@ -419,7 +418,7 @@ CREATE TABLE another_catalog_table(data text) WITH (user_catalog_table = true);
 </programlisting>
      Any actions leading to transaction ID assignment are prohibited. That, among others,
      includes writing to tables, performing DDL changes, and
-     calling <literal>pg_current_xact_id()</literal>.
+     calling <literal>txid_current()</literal>.
     </para>
    </sect2>
 

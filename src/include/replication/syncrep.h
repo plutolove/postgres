@@ -3,7 +3,7 @@
  * syncrep.h
  *	  Exports from replication/syncrep.c.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/include/replication/syncrep.h
@@ -35,24 +35,6 @@
 /* syncrep_method of SyncRepConfigData */
 #define SYNC_REP_PRIORITY		0
 #define SYNC_REP_QUORUM		1
-
-/*
- * SyncRepGetCandidateStandbys returns an array of these structs,
- * one per candidate synchronous walsender.
- */
-typedef struct SyncRepStandbyData
-{
-	/* Copies of relevant fields from WalSnd shared-memory struct */
-	pid_t		pid;
-	XLogRecPtr	write;
-	XLogRecPtr	flush;
-	XLogRecPtr	apply;
-	int			sync_standby_priority;
-	/* Index of this walsender in the WalSnd shared-memory array */
-	int			walsnd_index;
-	/* This flag indicates whether this struct is about our own process */
-	bool		is_me;
-} SyncRepStandbyData;
 
 /*
  * Struct for the configuration of synchronous replication.
@@ -92,7 +74,7 @@ extern void SyncRepInitConfig(void);
 extern void SyncRepReleaseWaiters(void);
 
 /* called by wal sender and user backend */
-extern int	SyncRepGetCandidateStandbys(SyncRepStandbyData **standbys);
+extern List *SyncRepGetSyncStandbys(bool *am_sync);
 
 /* called by checkpointer */
 extern void SyncRepUpdateSyncStandbysDefined(void);

@@ -24,7 +24,7 @@
  * caller many authoritative lookups, such as expensive probes of a much larger
  * on-disk structure.
  *
- * Copyright (c) 2018-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/lib/bloomfilter.c
@@ -35,9 +35,8 @@
 
 #include <math.h>
 
-#include "common/hashfn.h"
+#include "access/hash.h"
 #include "lib/bloomfilter.h"
-#include "port/pg_bitutils.h"
 
 #define MAX_HASH_FUNCS		10
 
@@ -54,7 +53,7 @@ struct bloom_filter
 static int	my_bloom_power(uint64 target_bitset_bits);
 static int	optimal_k(uint64 bitset_bits, int64 total_elems);
 static void k_hashes(bloom_filter *filter, uint32 *hashes, unsigned char *elem,
-					 size_t len);
+		 size_t len);
 static inline uint32 mod_m(uint32 a, uint64 m);
 
 /*
@@ -188,7 +187,19 @@ double
 bloom_prop_bits_set(bloom_filter *filter)
 {
 	int			bitset_bytes = filter->m / BITS_PER_BYTE;
-	uint64		bits_set = pg_popcount((char *) filter->bitset, bitset_bytes);
+	uint64		bits_set = 0;
+	int			i;
+
+	for (i = 0; i < bitset_bytes; i++)
+	{
+		unsigned char byte = filter->bitset[i];
+
+		while (byte)
+		{
+			bits_set++;
+			byte &= (byte - 1);
+		}
+	}
 
 	return bits_set / (double) filter->m;
 }

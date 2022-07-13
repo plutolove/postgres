@@ -15,7 +15,6 @@
 /features-supported.sgml
 /features-unsupported.sgml
 /errcodes-table.sgml
-/keywords-table.sgml
 /version.sgml
 # Assorted byproducts from building the above
 /postgres.xml

@@ -389,7 +389,7 @@ next(struct vars *v)
 					{
 						v->now++;
 						INTOCON(L_BRE);
-						RETV('}', 1);
+						RET('}');
 					}
 					else
 						FAILW(REG_BADBR);
@@ -994,7 +994,7 @@ brenext(struct vars *v,
 		case CHR('*'):
 			if (LASTTYPE(EMPTY) || LASTTYPE('(') || LASTTYPE('^'))
 				RETV(PLAIN, c);
-			RETV('*', 1);
+			RET('*');
 			break;
 		case CHR('['):
 			if (HAVE(6) && *(v->now + 0) == CHR('[') &&

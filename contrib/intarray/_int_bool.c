@@ -3,9 +3,10 @@
  */
 #include "postgres.h"
 
-#include "_int.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
+
+#include "_int.h"
 
 PG_FUNCTION_INFO_V1(bqarr_in);
 PG_FUNCTION_INFO_V1(bqarr_out);
@@ -232,7 +233,7 @@ typedef struct
  * is there value 'val' in (sorted) array or not ?
  */
 static bool
-checkcondition_arr(void *checkval, ITEM *item, void *options)
+checkcondition_arr(void *checkval, ITEM *item)
 {
 	int32	   *StopLow = ((CHKVAL *) checkval)->arrb;
 	int32	   *StopHigh = ((CHKVAL *) checkval)->arre;
@@ -254,42 +255,42 @@ checkcondition_arr(void *checkval, ITEM *item, void *options)
 }
 
 static bool
-checkcondition_bit(void *checkval, ITEM *item, void *siglen)
+checkcondition_bit(void *checkval, ITEM *item)
 {
-	return GETBIT(checkval, HASHVAL(item->val, (int) (intptr_t) siglen));
+	return GETBIT(checkval, HASHVAL(item->val));
 }
 
 /*
  * evaluate boolean expression, using chkcond() to test the primitive cases
  */
 static bool
-execute(ITEM *curitem, void *checkval, void *options, bool calcnot,
-		bool (*chkcond) (void *checkval, ITEM *item, void *options))
+execute(ITEM *curitem, void *checkval, bool calcnot,
+		bool (*chkcond) (void *checkval, ITEM *item))
 {
 	/* since this function recurses, it could be driven to stack overflow */
 	check_stack_depth();
 
 	if (curitem->type == VAL)
-		return (*chkcond) (checkval, curitem, options);
+		return (*chkcond) (checkval, curitem);
 	else if (curitem->val == (int32) '!')
 	{
 		return calcnot ?
-			((execute(curitem - 1, checkval, options, calcnot, chkcond)) ? false : true)
+			((execute(curitem - 1, checkval, calcnot, chkcond)) ? false : true)
 			: true;
 	}
 	else if (curitem->val == (int32) '&')
 	{
-		if (execute(curitem + curitem->left, checkval, options, calcnot, chkcond))
-			return execute(curitem - 1, checkval, options, calcnot, chkcond);
+		if (execute(curitem + curitem->left, checkval, calcnot, chkcond))
+			return execute(curitem - 1, checkval, calcnot, chkcond);
 		else
 			return false;
 	}
 	else
 	{							/* |-operator */
-		if (execute(curitem + curitem->left, checkval, options, calcnot, chkcond))
+		if (execute(curitem + curitem->left, checkval, calcnot, chkcond))
 			return true;
 		else
-			return execute(curitem - 1, checkval, options, calcnot, chkcond);
+			return execute(curitem - 1, checkval, calcnot, chkcond);
 	}
 }
 
@@ -297,10 +298,10 @@ execute(ITEM *curitem, void *checkval, void *options, bool calcnot,
  * signconsistent & execconsistent called by *_consistent
  */
 bool
-signconsistent(QUERYTYPE *query, BITVECP sign, int siglen, bool calcnot)
+signconsistent(QUERYTYPE *query, BITVEC sign, bool calcnot)
 {
 	return execute(GETQUERY(query) + query->size - 1,
-				   (void *) sign, (void *) (intptr_t) siglen, calcnot,
+				   (void *) sign, calcnot,
 				   checkcondition_bit);
 }
 
@@ -314,7 +315,7 @@ execconsistent(QUERYTYPE *query, ArrayType *array, bool calcnot)
 	chkval.arrb = ARRPTR(array);
 	chkval.arre = chkval.arrb + ARRNELEMS(array);
 	return execute(GETQUERY(query) + query->size - 1,
-				   (void *) &chkval, NULL, calcnot,
+				   (void *) &chkval, calcnot,
 				   checkcondition_arr);
 }
 
@@ -325,7 +326,7 @@ typedef struct
 } GinChkVal;
 
 static bool
-checkcondition_gin(void *checkval, ITEM *item, void *options)
+checkcondition_gin(void *checkval, ITEM *item)
 {
 	GinChkVal  *gcv = (GinChkVal *) checkval;
 
@@ -356,7 +357,7 @@ gin_bool_consistent(QUERYTYPE *query, bool *check)
 	}
 
 	return execute(GETQUERY(query) + query->size - 1,
-				   (void *) &gcv, NULL, true,
+				   (void *) &gcv, true,
 				   checkcondition_gin);
 }
 
@@ -428,7 +429,7 @@ boolop(PG_FUNCTION_ARGS)
 	chkval.arrb = ARRPTR(val);
 	chkval.arre = chkval.arrb + ARRNELEMS(val);
 	result = execute(GETQUERY(query) + query->size - 1,
-					 &chkval, NULL, true,
+					 &chkval, true,
 					 checkcondition_arr);
 	pfree(val);
 

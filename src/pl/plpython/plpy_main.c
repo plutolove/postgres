@@ -12,24 +12,28 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
-#include "plpy_elog.h"
-#include "plpy_exec.h"
-#include "plpy_main.h"
-#include "plpy_plpymodule.h"
-#include "plpy_procedure.h"
-#include "plpy_subxactobject.h"
-#include "plpython.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+
+#include "plpython.h"
+
+#include "plpy_main.h"
+
+#include "plpy_elog.h"
+#include "plpy_exec.h"
+#include "plpy_plpymodule.h"
+#include "plpy_procedure.h"
+#include "plpy_subxactobject.h"
+
 
 /*
  * exported functions
  */
 
 #if PY_MAJOR_VERSION >= 3
-/* Use separate names to reduce confusion */
+/* Use separate names to avoid clash in pg_pltemplate */
 #define plpython_validator plpython3_validator
 #define plpython_call_handler plpython3_call_handler
 #define plpython_inline_handler plpython3_inline_handler
@@ -295,8 +299,8 @@ plpython2_call_handler(PG_FUNCTION_ARGS)
 Datum
 plpython_inline_handler(PG_FUNCTION_ARGS)
 {
-	LOCAL_FCINFO(fake_fcinfo, 0);
 	InlineCodeBlock *codeblock = (InlineCodeBlock *) DatumGetPointer(PG_GETARG_DATUM(0));
+	FunctionCallInfoData fake_fcinfo;
 	FmgrInfo	flinfo;
 	PLyProcedure proc;
 	PLyExecutionContext *exec_ctx;
@@ -308,9 +312,9 @@ plpython_inline_handler(PG_FUNCTION_ARGS)
 	if (SPI_connect_ext(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC) != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
 
-	MemSet(fcinfo, 0, SizeForFunctionCallInfo(0));
+	MemSet(&fake_fcinfo, 0, sizeof(fake_fcinfo));
 	MemSet(&flinfo, 0, sizeof(flinfo));
-	fake_fcinfo->flinfo = &flinfo;
+	fake_fcinfo.flinfo = &flinfo;
 	flinfo.fn_oid = InvalidOid;
 	flinfo.fn_mcxt = CurrentMemoryContext;
 
@@ -348,7 +352,7 @@ plpython_inline_handler(PG_FUNCTION_ARGS)
 
 		PLy_procedure_compile(&proc, codeblock->source_text);
 		exec_ctx->curr_proc = &proc;
-		PLy_exec_function(fake_fcinfo, &proc);
+		PLy_exec_function(&fake_fcinfo, &proc);
 	}
 	PG_CATCH();
 	{
@@ -379,7 +383,9 @@ plpython2_inline_handler(PG_FUNCTION_ARGS)
 static bool
 PLy_procedure_is_trigger(Form_pg_proc procStruct)
 {
-	return (procStruct->prorettype == TRIGGEROID);
+	return (procStruct->prorettype == TRIGGEROID ||
+			(procStruct->prorettype == OPAQUEOID &&
+			 procStruct->pronargs == 0));
 }
 
 static void

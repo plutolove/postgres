@@ -4,5 +4,4 @@ default_version = '1.0'
 module_pathname = '$libdir/plpgsql'
 relocatable = false
 schema = pg_catalog
-superuser = true
-trusted = true
+superuser = false

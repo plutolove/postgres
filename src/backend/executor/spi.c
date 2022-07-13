@@ -3,7 +3,7 @@
  * spi.c
  *				Server Programming Interface
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -43,6 +43,7 @@
  * when entering/exiting a SPI nesting level.
  */
 uint64		SPI_processed = 0;
+Oid			SPI_lastoid = InvalidOid;
 SPITupleTable *SPI_tuptable = NULL;
 int			SPI_result = 0;
 
@@ -52,26 +53,26 @@ static int	_SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
 static int	_SPI_connected = -1;	/* current stack index */
 
 static Portal SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
-									   ParamListInfo paramLI, bool read_only);
+						 ParamListInfo paramLI, bool read_only);
 
 static void _SPI_prepare_plan(const char *src, SPIPlanPtr plan);
 
 static void _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan);
 
-static int	_SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
-							  Snapshot snapshot, Snapshot crosscheck_snapshot,
-							  bool read_only, bool fire_triggers, uint64 tcount);
+static int _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
+				  Snapshot snapshot, Snapshot crosscheck_snapshot,
+				  bool read_only, bool fire_triggers, uint64 tcount);
 
 static ParamListInfo _SPI_convert_params(int nargs, Oid *argtypes,
-										 Datum *Values, const char *Nulls);
+					Datum *Values, const char *Nulls);
 
 static int	_SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount);
 
 static void _SPI_error_callback(void *arg);
 
 static void _SPI_cursor_operation(Portal portal,
-								  FetchDirection direction, long count,
-								  DestReceiver *dest);
+					  FetchDirection direction, long count,
+					  DestReceiver *dest);
 
 static SPIPlanPtr _SPI_make_plan_non_temp(SPIPlanPtr plan);
 static SPIPlanPtr _SPI_save_plan(SPIPlanPtr plan);
@@ -127,6 +128,7 @@ SPI_connect_ext(int options)
 
 	_SPI_current = &(_SPI_stack[_SPI_connected]);
 	_SPI_current->processed = 0;
+	_SPI_current->lastoid = InvalidOid;
 	_SPI_current->tuptable = NULL;
 	_SPI_current->execSubid = InvalidSubTransactionId;
 	slist_init(&_SPI_current->tuptables);
@@ -137,6 +139,7 @@ SPI_connect_ext(int options)
 	_SPI_current->atomic = (options & SPI_OPT_NONATOMIC ? false : true);
 	_SPI_current->internal_xact = false;
 	_SPI_current->outer_processed = SPI_processed;
+	_SPI_current->outer_lastoid = SPI_lastoid;
 	_SPI_current->outer_tuptable = SPI_tuptable;
 	_SPI_current->outer_result = SPI_result;
 
@@ -166,6 +169,7 @@ SPI_connect_ext(int options)
 	 * depend on state of an outer caller.
 	 */
 	SPI_processed = 0;
+	SPI_lastoid = InvalidOid;
 	SPI_tuptable = NULL;
 	SPI_result = 0;
 
@@ -195,6 +199,7 @@ SPI_finish(void)
 	 * pointing at a just-deleted tuptable
 	 */
 	SPI_processed = _SPI_current->outer_processed;
+	SPI_lastoid = _SPI_current->outer_lastoid;
 	SPI_tuptable = _SPI_current->outer_tuptable;
 	SPI_result = _SPI_current->outer_result;
 
@@ -217,8 +222,8 @@ SPI_start_transaction(void)
 	MemoryContextSwitchTo(oldcontext);
 }
 
-static void
-_SPI_commit(bool chain)
+void
+SPI_commit(void)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
@@ -241,14 +246,6 @@ _SPI_commit(bool chain)
 				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 				 errmsg("cannot commit while a subtransaction is active")));
 
-	/*
-	 * Hold any pinned portals that any PLs might be using.  We have to do
-	 * this before changing transaction state, since this will run
-	 * user-defined code that might throw an error.
-	 */
-	HoldPinnedPortals();
-
-	/* Start the actual commit */
 	_SPI_current->internal_xact = true;
 
 	/*
@@ -258,36 +255,14 @@ _SPI_commit(bool chain)
 	while (ActiveSnapshotSet())
 		PopActiveSnapshot();
 
-	if (chain)
-		SaveTransactionCharacteristics();
-
 	CommitTransactionCommand();
-
-	if (chain)
-	{
-		StartTransactionCommand();
-		RestoreTransactionCharacteristics();
-	}
-
 	MemoryContextSwitchTo(oldcontext);
 
 	_SPI_current->internal_xact = false;
 }
 
 void
-SPI_commit(void)
-{
-	_SPI_commit(false);
-}
-
-void
-SPI_commit_and_chain(void)
-{
-	_SPI_commit(true);
-}
-
-static void
-_SPI_rollback(bool chain)
+SPI_rollback(void)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
@@ -302,43 +277,12 @@ _SPI_rollback(bool chain)
 				(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 				 errmsg("cannot roll back while a subtransaction is active")));
 
-	/*
-	 * Hold any pinned portals that any PLs might be using.  We have to do
-	 * this before changing transaction state, since this will run
-	 * user-defined code that might throw an error, and in any case couldn't
-	 * be run in an already-aborted transaction.
-	 */
-	HoldPinnedPortals();
-
-	/* Start the actual rollback */
 	_SPI_current->internal_xact = true;
 
-	if (chain)
-		SaveTransactionCharacteristics();
-
 	AbortCurrentTransaction();
-
-	if (chain)
-	{
-		StartTransactionCommand();
-		RestoreTransactionCharacteristics();
-	}
-
 	MemoryContextSwitchTo(oldcontext);
 
 	_SPI_current->internal_xact = false;
-}
-
-void
-SPI_rollback(void)
-{
-	_SPI_rollback(false);
-}
-
-void
-SPI_rollback_and_chain(void)
-{
-	_SPI_rollback(true);
 }
 
 /*
@@ -352,6 +296,7 @@ SPICleanup(void)
 	_SPI_connected = -1;
 	/* Reset API global variables, too */
 	SPI_processed = 0;
+	SPI_lastoid = InvalidOid;
 	SPI_tuptable = NULL;
 	SPI_result = 0;
 }
@@ -418,6 +363,7 @@ AtEOSubXact_SPI(bool isCommit, SubTransactionId mySubid)
 		 * be already gone.
 		 */
 		SPI_processed = connection->outer_processed;
+		SPI_lastoid = connection->outer_lastoid;
 		SPI_tuptable = connection->outer_tuptable;
 		SPI_result = connection->outer_result;
 
@@ -932,6 +878,8 @@ SPI_modifytuple(Relation rel, HeapTuple tuple, int natts, int *attnum,
 		mtuple->t_data->t_ctid = tuple->t_data->t_ctid;
 		mtuple->t_self = tuple->t_self;
 		mtuple->t_tableOid = tuple->t_tableOid;
+		if (rel->rd_att->tdhasoid)
+			HeapTupleSetOid(mtuple, HeapTupleGetOid(tuple));
 	}
 	else
 	{
@@ -951,7 +899,7 @@ int
 SPI_fnumber(TupleDesc tupdesc, const char *fname)
 {
 	int			res;
-	const FormData_pg_attribute *sysatt;
+	Form_pg_attribute sysatt;
 
 	for (res = 0; res < tupdesc->natts; res++)
 	{
@@ -962,7 +910,7 @@ SPI_fnumber(TupleDesc tupdesc, const char *fname)
 			return res + 1;
 	}
 
-	sysatt = SystemAttributeByName(fname);
+	sysatt = SystemAttributeByName(fname, true /* "oid" will be accepted */ );
 	if (sysatt != NULL)
 		return sysatt->attnum;
 
@@ -973,7 +921,7 @@ SPI_fnumber(TupleDesc tupdesc, const char *fname)
 char *
 SPI_fname(TupleDesc tupdesc, int fnumber)
 {
-	const FormData_pg_attribute *att;
+	Form_pg_attribute att;
 
 	SPI_result = 0;
 
@@ -987,7 +935,7 @@ SPI_fname(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		att = TupleDescAttr(tupdesc, fnumber - 1);
 	else
-		att = SystemAttributeDefinition(fnumber);
+		att = SystemAttributeDefinition(fnumber, true);
 
 	return pstrdup(NameStr(att->attname));
 }
@@ -1017,7 +965,7 @@ SPI_getvalue(HeapTuple tuple, TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		typoid = TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		typoid = (SystemAttributeDefinition(fnumber))->atttypid;
+		typoid = (SystemAttributeDefinition(fnumber, true))->atttypid;
 
 	getTypeOutputInfo(typoid, &foutoid, &typisvarlena);
 
@@ -1059,7 +1007,7 @@ SPI_gettype(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		typoid = TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		typoid = (SystemAttributeDefinition(fnumber))->atttypid;
+		typoid = (SystemAttributeDefinition(fnumber, true))->atttypid;
 
 	typeTuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typoid));
 
@@ -1095,7 +1043,7 @@ SPI_gettypeid(TupleDesc tupdesc, int fnumber)
 	if (fnumber > 0)
 		return TupleDescAttr(tupdesc, fnumber - 1)->atttypid;
 	else
-		return (SystemAttributeDefinition(fnumber))->atttypid;
+		return (SystemAttributeDefinition(fnumber, true))->atttypid;
 }
 
 char *
@@ -1338,7 +1286,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 				(errcode(ERRCODE_INVALID_CURSOR_DEFINITION),
 		/* translator: %s is name of a SQL command, eg INSERT */
 				 errmsg("cannot open %s query as cursor",
-						GetCommandTagName(plansource->commandTag))));
+						plansource->commandTag)));
 	}
 
 	Assert(list_length(plan->plancache_list) == 1);
@@ -1375,7 +1323,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	 * throws an error.
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, plansource->query_string);
+	spierrcontext.arg = (void *) plansource->query_string;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1450,13 +1398,14 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	portal->queryEnv = _SPI_current->queryEnv;
 
 	/*
-	 * If told to be read-only, we'd better check for read-only queries. This
-	 * can't be done earlier because we need to look at the finished, planned
-	 * queries.  (In particular, we don't want to do it between GetCachedPlan
-	 * and PortalDefineQuery, because throwing an error between those steps
-	 * would result in leaking our plancache refcount.)
+	 * If told to be read-only, or in parallel mode, verify that this query is
+	 * in fact read-only.  This can't be done earlier because we need to look
+	 * at the finished, planned queries.  (In particular, we don't want to do
+	 * it between GetCachedPlan and PortalDefineQuery, because throwing an
+	 * error between those steps would result in leaking our plancache
+	 * refcount.)
 	 */
-	if (read_only)
+	if (read_only || IsInParallelMode())
 	{
 		ListCell   *lc;
 
@@ -1465,11 +1414,16 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 			PlannedStmt *pstmt = lfirst_node(PlannedStmt, lc);
 
 			if (!CommandIsReadOnly(pstmt))
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				/* translator: %s is a SQL statement name */
-						 errmsg("%s is not allowed in a non-volatile function",
-								CreateCommandName((Node *) pstmt))));
+			{
+				if (read_only)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					/* translator: %s is a SQL statement name */
+							 errmsg("%s is not allowed in a non-volatile function",
+									CreateCommandTag((Node *) pstmt))));
+				else
+					PreventCommandIfParallelMode(CreateCommandTag((Node *) pstmt));
+			}
 		}
 	}
 
@@ -1808,7 +1762,7 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 
 	/* Setup error traceback support for ereport() */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, plansource->query_string);
+	spierrcontext.arg = (void *) plansource->query_string;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1866,9 +1820,8 @@ spi_dest_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	slist_push_head(&_SPI_current->tuptables, &tuptable->next);
 
 	/* set up initial allocations */
-	tuptable->alloced = 128;
+	tuptable->alloced = tuptable->free = 128;
 	tuptable->vals = (HeapTuple *) palloc(tuptable->alloced * sizeof(HeapTuple));
-	tuptable->numvals = 0;
 	tuptable->tupdesc = CreateTupleDescCopy(typeinfo);
 
 	MemoryContextSwitchTo(oldcxt);
@@ -1894,18 +1847,18 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
 
 	oldcxt = MemoryContextSwitchTo(tuptable->tuptabcxt);
 
-	if (tuptable->numvals >= tuptable->alloced)
+	if (tuptable->free == 0)
 	{
 		/* Double the size of the pointer array */
-		uint64		newalloced = tuptable->alloced * 2;
-
+		tuptable->free = tuptable->alloced;
+		tuptable->alloced += tuptable->free;
 		tuptable->vals = (HeapTuple *) repalloc_huge(tuptable->vals,
-													 newalloced * sizeof(HeapTuple));
-		tuptable->alloced = newalloced;
+													 tuptable->alloced * sizeof(HeapTuple));
 	}
 
-	tuptable->vals[tuptable->numvals] = ExecCopySlotHeapTuple(slot);
-	(tuptable->numvals)++;
+	tuptable->vals[tuptable->alloced - tuptable->free] =
+		ExecCopySlotTuple(slot);
+	(tuptable->free)--;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -1940,7 +1893,7 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, src);
+	spierrcontext.arg = (void *) src;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2045,7 +1998,7 @@ _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
 	 * Setup error traceback support for ereport()
 	 */
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, src);
+	spierrcontext.arg = (void *) src;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2098,6 +2051,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 {
 	int			my_res = 0;
 	uint64		my_processed = 0;
+	Oid			my_lastoid = InvalidOid;
 	SPITupleTable *my_tuptable = NULL;
 	int			res = 0;
 	bool		pushed_active_snap = false;
@@ -2156,7 +2110,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 		List	   *stmt_list;
 		ListCell   *lc2;
 
-		spierrcontext.arg = unconstify(char *, plansource->query_string);
+		spierrcontext.arg = (void *) plansource->query_string;
 
 		/*
 		 * If this is a one-shot plan, we still need to do parse analysis.
@@ -2229,6 +2183,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 			DestReceiver *dest;
 
 			_SPI_current->processed = 0;
+			_SPI_current->lastoid = InvalidOid;
 			_SPI_current->tuptable = NULL;
 
 			if (stmt->utilityStmt)
@@ -2255,7 +2210,10 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				/* translator: %s is a SQL statement name */
 						 errmsg("%s is not allowed in a non-volatile function",
-								CreateCommandName((Node *) stmt))));
+								CreateCommandTag((Node *) stmt))));
+
+			if (IsInParallelMode() && !CommandIsReadOnly(stmt))
+				PreventCommandIfParallelMode(CreateCommandTag((Node *) stmt));
 
 			/*
 			 * If not read-only mode, advance the command counter before each
@@ -2291,8 +2249,8 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 			}
 			else
 			{
+				char		completionTag[COMPLETION_TAG_BUFSIZE];
 				ProcessUtilityContext context;
-				QueryCompletion qc;
 
 				/*
 				 * If the SPI context is atomic, or we are asked to manage
@@ -2306,18 +2264,18 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 				else
 					context = PROCESS_UTILITY_QUERY_NONATOMIC;
 
-				InitializeQueryCompletion(&qc);
 				ProcessUtility(stmt,
 							   plansource->query_string,
 							   context,
 							   paramLI,
 							   _SPI_current->queryEnv,
 							   dest,
-							   &qc);
+							   completionTag);
 
 				/* Update "processed" if stmt returned tuples */
 				if (_SPI_current->tuptable)
-					_SPI_current->processed = _SPI_current->tuptable->numvals;
+					_SPI_current->processed = _SPI_current->tuptable->alloced -
+						_SPI_current->tuptable->free;
 
 				res = SPI_OK_UTILITY;
 
@@ -2329,8 +2287,9 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 				{
 					CreateTableAsStmt *ctastmt = (CreateTableAsStmt *) stmt->utilityStmt;
 
-					if (qc.commandTag == CMDTAG_SELECT)
-						_SPI_current->processed = qc.nprocessed;
+					if (strncmp(completionTag, "SELECT ", 7) == 0)
+						_SPI_current->processed =
+							pg_strtouint64(completionTag + 7, NULL, 10);
 					else
 					{
 						/*
@@ -2351,19 +2310,21 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 				}
 				else if (IsA(stmt->utilityStmt, CopyStmt))
 				{
-					Assert(qc.commandTag == CMDTAG_COPY);
-					_SPI_current->processed = qc.nprocessed;
+					Assert(strncmp(completionTag, "COPY ", 5) == 0);
+					_SPI_current->processed = pg_strtouint64(completionTag + 5,
+															 NULL, 10);
 				}
 			}
 
 			/*
 			 * The last canSetTag query sets the status values returned to the
 			 * caller.  Be careful to free any tuptables not returned, to
-			 * avoid intra-transaction memory leak.
+			 * avoid intratransaction memory leak.
 			 */
 			if (canSetTag)
 			{
 				my_processed = _SPI_current->processed;
+				my_lastoid = _SPI_current->lastoid;
 				SPI_freetuptable(my_tuptable);
 				my_tuptable = _SPI_current->tuptable;
 				my_res = res;
@@ -2411,6 +2372,7 @@ fail:
 
 	/* Save results for caller */
 	SPI_processed = my_processed;
+	SPI_lastoid = my_lastoid;
 	SPI_tuptable = my_tuptable;
 
 	/* tuptable now is caller's responsibility, not SPI's */
@@ -2438,9 +2400,20 @@ _SPI_convert_params(int nargs, Oid *argtypes,
 
 	if (nargs > 0)
 	{
-		paramLI = makeParamList(nargs);
+		int			i;
 
-		for (int i = 0; i < nargs; i++)
+		paramLI = (ParamListInfo) palloc(offsetof(ParamListInfoData, params) +
+										 nargs * sizeof(ParamExternData));
+		/* we have static list of params, so no hooks needed */
+		paramLI->paramFetch = NULL;
+		paramLI->paramFetchArg = NULL;
+		paramLI->paramCompile = NULL;
+		paramLI->paramCompileArg = NULL;
+		paramLI->parserSetup = NULL;
+		paramLI->parserSetupArg = NULL;
+		paramLI->numParams = nargs;
+
+		for (i = 0; i < nargs; i++)
 		{
 			ParamExternData *prm = &paramLI->params[i];
 
@@ -2511,6 +2484,7 @@ _SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount)
 	ExecutorRun(queryDesc, ForwardScanDirection, tcount, true);
 
 	_SPI_current->processed = queryDesc->estate->es_processed;
+	_SPI_current->lastoid = queryDesc->estate->es_lastoid;
 
 	if ((res == SPI_OK_SELECT || queryDesc->plannedstmt->hasReturning) &&
 		queryDesc->dest->mydest == DestSPI)
@@ -2593,7 +2567,7 @@ _SPI_cursor_operation(Portal portal, FetchDirection direction, long count,
 
 	/*
 	 * Think not to combine this store with the preceding function call. If
-	 * the portal contains calls to functions that use SPI, then _SPI_stack is
+	 * the portal contains calls to functions that use SPI, then SPI_stack is
 	 * likely to move around while the portal runs.  When control returns,
 	 * _SPI_current will point to the correct stack entry... but the pointer
 	 * may be different than it was beforehand. So we must be sure to re-fetch
@@ -2684,7 +2658,7 @@ _SPI_checktuples(void)
 
 	if (tuptable == NULL)		/* spi_dest_startup was not called */
 		failed = true;
-	else if (processed != tuptable->numvals)
+	else if (processed != (tuptable->alloced - tuptable->free))
 		failed = true;
 
 	return failed;
@@ -2723,7 +2697,7 @@ _SPI_make_plan_non_temp(SPIPlanPtr plan)
 									ALLOCSET_SMALL_SIZES);
 	oldcxt = MemoryContextSwitchTo(plancxt);
 
-	/* Copy the _SPI_plan struct and subsidiary data into the new context */
+	/* Copy the SPI_plan struct and subsidiary data into the new context */
 	newplan = (SPIPlanPtr) palloc0(sizeof(_SPI_plan));
 	newplan->magic = _SPI_PLAN_MAGIC;
 	newplan->plancxt = plancxt;

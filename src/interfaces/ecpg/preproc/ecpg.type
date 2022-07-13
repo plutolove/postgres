@@ -122,10 +122,12 @@
 %type <str> CSTRING
 %type <str> CPP_LINE
 %type <str> CVARIABLE
-%type <str> BCONST
+%type <str> DOLCONST
+%type <str> ECONST
+%type <str> NCONST
 %type <str> SCONST
-%type <str> XCONST
-%type <str> IDENT
+%type <str> UCONST
+%type <str> UIDENT
 
 %type  <struct_union> s_struct_union_symbol
 

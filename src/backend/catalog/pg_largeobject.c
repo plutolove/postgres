@@ -3,7 +3,7 @@
  * pg_largeobject.c
  *	  routines to support manipulation of the pg_largeobject relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -15,10 +15,9 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/sysattr.h"
-#include "access/table.h"
-#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_largeobject.h"
@@ -27,6 +26,7 @@
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 
 
 /*
@@ -45,8 +45,8 @@ LargeObjectCreate(Oid loid)
 	Datum		values[Natts_pg_largeobject_metadata];
 	bool		nulls[Natts_pg_largeobject_metadata];
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
-							RowExclusiveLock);
+	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
+						   RowExclusiveLock);
 
 	/*
 	 * Insert metadata of the largeobject
@@ -54,26 +54,21 @@ LargeObjectCreate(Oid loid)
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
 
-	if (OidIsValid(loid))
-		loid_new = loid;
-	else
-		loid_new = GetNewOidWithIndex(pg_lo_meta,
-									  LargeObjectMetadataOidIndexId,
-									  Anum_pg_largeobject_metadata_oid);
-
-	values[Anum_pg_largeobject_metadata_oid - 1] = ObjectIdGetDatum(loid_new);
 	values[Anum_pg_largeobject_metadata_lomowner - 1]
 		= ObjectIdGetDatum(GetUserId());
 	nulls[Anum_pg_largeobject_metadata_lomacl - 1] = true;
 
 	ntup = heap_form_tuple(RelationGetDescr(pg_lo_meta),
 						   values, nulls);
+	if (OidIsValid(loid))
+		HeapTupleSetOid(ntup, loid);
 
-	CatalogTupleInsert(pg_lo_meta, ntup);
+	loid_new = CatalogTupleInsert(pg_lo_meta, ntup);
+	Assert(!OidIsValid(loid) || loid == loid_new);
 
 	heap_freetuple(ntup);
 
-	table_close(pg_lo_meta, RowExclusiveLock);
+	heap_close(pg_lo_meta, RowExclusiveLock);
 
 	return loid_new;
 }
@@ -91,17 +86,17 @@ LargeObjectDrop(Oid loid)
 	SysScanDesc scan;
 	HeapTuple	tuple;
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
-							RowExclusiveLock);
+	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
+						   RowExclusiveLock);
 
-	pg_largeobject = table_open(LargeObjectRelationId,
-								RowExclusiveLock);
+	pg_largeobject = heap_open(LargeObjectRelationId,
+							   RowExclusiveLock);
 
 	/*
 	 * Delete an entry from pg_largeobject_metadata
 	 */
 	ScanKeyInit(&skey[0],
-				Anum_pg_largeobject_metadata_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(loid));
 
@@ -137,9 +132,9 @@ LargeObjectDrop(Oid loid)
 
 	systable_endscan(scan);
 
-	table_close(pg_largeobject, RowExclusiveLock);
+	heap_close(pg_largeobject, RowExclusiveLock);
 
-	table_close(pg_lo_meta, RowExclusiveLock);
+	heap_close(pg_lo_meta, RowExclusiveLock);
 }
 
 /*
@@ -164,12 +159,12 @@ LargeObjectExists(Oid loid)
 	bool		retval = false;
 
 	ScanKeyInit(&skey[0],
-				Anum_pg_largeobject_metadata_oid,
+				ObjectIdAttributeNumber,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(loid));
 
-	pg_lo_meta = table_open(LargeObjectMetadataRelationId,
-							AccessShareLock);
+	pg_lo_meta = heap_open(LargeObjectMetadataRelationId,
+						   AccessShareLock);
 
 	sd = systable_beginscan(pg_lo_meta,
 							LargeObjectMetadataOidIndexId, true,
@@ -181,7 +176,7 @@ LargeObjectExists(Oid loid)
 
 	systable_endscan(sd);
 
-	table_close(pg_lo_meta, AccessShareLock);
+	heap_close(pg_lo_meta, AccessShareLock);
 
 	return retval;
 }

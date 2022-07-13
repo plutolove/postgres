@@ -8,7 +8,6 @@
  */
 #include "postgres.h"
 
-#include "access/relation.h"
 #include "funcapi.h"
 #include "storage/freespace.h"
 

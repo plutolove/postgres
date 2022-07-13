@@ -3,7 +3,7 @@
  * origin.c
  *	  Logical replication progress tracking support.
  *
- * Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2018, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/origin.c
@@ -70,29 +70,32 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "access/genam.h"
-#include "access/htup_details.h"
-#include "access/table.h"
-#include "access/xact.h"
-#include "catalog/catalog.h"
-#include "catalog/indexing.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/htup_details.h"
+#include "access/xact.h"
+
+#include "catalog/indexing.h"
 #include "nodes/execnodes.h"
-#include "pgstat.h"
-#include "replication/logical.h"
+
 #include "replication/origin.h"
-#include "storage/condition_variable.h"
-#include "storage/copydir.h"
+#include "replication/logical.h"
+#include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/condition_variable.h"
+#include "storage/copydir.h"
+
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/tqual.h"
 
 /*
  * Replay progress of a single remote node.
@@ -122,7 +125,7 @@ typedef struct ReplicationState
 	int			acquired_by;
 
 	/*
-	 * Condition variable that's signaled when acquired_by changes.
+	 * Condition variable that's signalled when acquired_by changes.
 	 */
 	ConditionVariable origin_cv;
 
@@ -144,9 +147,7 @@ typedef struct ReplicationStateOnDisk
 
 typedef struct ReplicationStateCtl
 {
-	/* Tranche to use for per-origin LWLocks */
 	int			tranche_id;
-	/* Array of length max_replication_slots */
 	ReplicationState states[FLEXIBLE_ARRAY_MEMBER];
 } ReplicationStateCtl;
 
@@ -163,10 +164,6 @@ TimestampTz replorigin_session_origin_timestamp = 0;
  * max_replication_slots?
  */
 static ReplicationState *replication_states;
-
-/*
- * Actual shared memory block (replication_states[] is now part of this).
- */
 static ReplicationStateCtl *replication_states_ctl;
 
 /*
@@ -273,7 +270,7 @@ replorigin_create(char *roname)
 	 */
 	InitDirtySnapshot(SnapshotDirty);
 
-	rel = table_open(ReplicationOriginRelationId, ExclusiveLock);
+	rel = heap_open(ReplicationOriginRelationId, ExclusiveLock);
 
 	for (roident = InvalidOid + 1; roident < PG_UINT16_MAX; roident++)
 	{
@@ -316,7 +313,7 @@ replorigin_create(char *roname)
 	}
 
 	/* now release lock again,	*/
-	table_close(rel, ExclusiveLock);
+	heap_close(rel, ExclusiveLock);
 
 	if (tuple == NULL)
 		ereport(ERROR,
@@ -346,7 +343,7 @@ replorigin_drop(RepOriginId roident, bool nowait)
 	 * To interlock against concurrent drops, we hold ExclusiveLock on
 	 * pg_replication_origin throughout this function.
 	 */
-	rel = table_open(ReplicationOriginRelationId, ExclusiveLock);
+	rel = heap_open(ReplicationOriginRelationId, ExclusiveLock);
 
 	/*
 	 * First, clean up the slot state info, if there is any matching slot.
@@ -422,7 +419,7 @@ restart:
 	CommandCounterIncrement();
 
 	/* now release lock again */
-	table_close(rel, ExclusiveLock);
+	heap_close(rel, ExclusiveLock);
 }
 
 
@@ -482,7 +479,7 @@ ReplicationOriginShmemSize(void)
 	/*
 	 * XXX: max_replication_slots is arguably the wrong thing to use, as here
 	 * we keep the replay state of *remote* transactions. But for now it seems
-	 * sufficient to reuse it, rather than introduce a separate GUC.
+	 * sufficient to reuse it, lest we introduce a separate GUC.
 	 */
 	if (max_replication_slots == 0)
 		return size;
@@ -512,9 +509,9 @@ ReplicationOriginShmemInit(void)
 	{
 		int			i;
 
-		MemSet(replication_states_ctl, 0, ReplicationOriginShmemSize());
+		replication_states_ctl->tranche_id = LWTRANCHE_REPLICATION_ORIGIN;
 
-		replication_states_ctl->tranche_id = LWTRANCHE_REPLICATION_ORIGIN_STATE;
+		MemSet(replication_states, 0, ReplicationOriginShmemSize());
 
 		for (i = 0; i < max_replication_slots; i++)
 		{
@@ -523,6 +520,9 @@ ReplicationOriginShmemInit(void)
 			ConditionVariableInit(&replication_states[i].origin_cv);
 		}
 	}
+
+	LWLockRegisterTranche(replication_states_ctl->tranche_id,
+						  "replication_origin");
 }
 
 /* ---------------------------------------------------------------------------
@@ -579,9 +579,12 @@ CheckPointReplicationOrigin(void)
 	errno = 0;
 	if ((write(tmpfd, &magic, sizeof(magic))) != sizeof(magic))
 	{
+		int			save_errno = errno;
+
+		CloseTransientFile(tmpfd);
+
 		/* if write didn't set errno, assume problem is no disk space */
-		if (errno == 0)
-			errno = ENOSPC;
+		errno = save_errno ? save_errno : ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
@@ -621,9 +624,12 @@ CheckPointReplicationOrigin(void)
 		if ((write(tmpfd, &disk_state, sizeof(disk_state))) !=
 			sizeof(disk_state))
 		{
+			int			save_errno = errno;
+
+			CloseTransientFile(tmpfd);
+
 			/* if write didn't set errno, assume problem is no disk space */
-			if (errno == 0)
-				errno = ENOSPC;
+			errno = save_errno ? save_errno : ENOSPC;
 			ereport(PANIC,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m",
@@ -640,20 +646,19 @@ CheckPointReplicationOrigin(void)
 	errno = 0;
 	if ((write(tmpfd, &crc, sizeof(crc))) != sizeof(crc))
 	{
+		int			save_errno = errno;
+
+		CloseTransientFile(tmpfd);
+
 		/* if write didn't set errno, assume problem is no disk space */
-		if (errno == 0)
-			errno = ENOSPC;
+		errno = save_errno ? save_errno : ENOSPC;
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m",
 						tmppath)));
 	}
 
-	if (CloseTransientFile(tmpfd) != 0)
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m",
-						tmppath)));
+	CloseTransientFile(tmpfd);
 
 	/* fsync, rename to permanent file, fsync file and directory */
 	durable_rename(tmppath, path, PANIC);
@@ -710,18 +715,9 @@ StartupReplicationOrigin(void)
 	/* verify magic, that is written even if nothing was active */
 	readBytes = read(fd, &magic, sizeof(magic));
 	if (readBytes != sizeof(magic))
-	{
-		if (readBytes < 0)
-			ereport(PANIC,
-					(errcode_for_file_access(),
-					 errmsg("could not read file \"%s\": %m",
-							path)));
-		else
-			ereport(PANIC,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("could not read file \"%s\": read %d of %zu",
-							path, readBytes, sizeof(magic))));
-	}
+		ereport(PANIC,
+				(errmsg("could not read file \"%s\": %m",
+						path)));
 	COMP_CRC32C(crc, &magic, sizeof(magic));
 
 	if (magic != REPLICATION_STATE_MAGIC)
@@ -788,11 +784,7 @@ StartupReplicationOrigin(void)
 				 errmsg("replication slot checkpoint has wrong checksum %u, expected %u",
 						crc, file_crc)));
 
-	if (CloseTransientFile(fd) != 0)
-		ereport(PANIC,
-				(errcode_for_file_access(),
-				 errmsg("could not close file \"%s\": %m",
-						path)));
+	CloseTransientFile(fd);
 }
 
 void
@@ -1099,7 +1091,7 @@ replorigin_session_setup(RepOriginId node)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_IN_USE),
-					 errmsg("replication origin with OID %d is already active for PID %d",
+					 errmsg("replication identifier %d is already active for PID %d",
 							curstate->roident, curstate->acquired_by)));
 		}
 
@@ -1228,24 +1220,6 @@ pg_replication_origin_create(PG_FUNCTION_ARGS)
 	replorigin_check_prerequisites(false, false);
 
 	name = text_to_cstring((text *) DatumGetPointer(PG_GETARG_DATUM(0)));
-
-	/* Replication origins "pg_xxx" are reserved for internal use */
-	if (IsReservedName(name))
-		ereport(ERROR,
-				(errcode(ERRCODE_RESERVED_NAME),
-				 errmsg("replication origin name \"%s\" is reserved",
-						name),
-				 errdetail("Origin names starting with \"pg_\" are reserved.")));
-
-	/*
-	 * If built with appropriate switch, whine when regression-testing
-	 * conventions for replication origin names are violated.
-	 */
-#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
-	if (strncmp(name, "regress_", 8) != 0)
-		elog(WARNING, "replication origins created by regression test cases should have names starting with \"regress_\"");
-#endif
-
 	roident = replorigin_create(name);
 
 	pfree(name);

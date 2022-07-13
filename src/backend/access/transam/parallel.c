@@ -3,7 +3,7 @@
  * parallel.c
  *	  Infrastructure for launching parallel workers
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,7 +14,6 @@
 
 #include "postgres.h"
 
-#include "access/heapam.h"
 #include "access/nbtree.h"
 #include "access/parallel.h"
 #include "access/session.h"
@@ -22,18 +21,15 @@
 #include "access/xlog.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_enum.h"
-#include "catalog/storage.h"
 #include "commands/async.h"
 #include "executor/execParallel.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
 #include "libpq/pqmq.h"
 #include "miscadmin.h"
-#include "optimizer/optimizer.h"
+#include "optimizer/planmain.h"
 #include "pgstat.h"
 #include "storage/ipc.h"
-#include "storage/predicate.h"
 #include "storage/sinval.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
@@ -41,9 +37,10 @@
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
-#include "utils/relmapper.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
+
 
 /*
  * We don't want to waste a lot of memory on an error queue which, most of
@@ -72,10 +69,7 @@
 #define PARALLEL_KEY_TRANSACTION_STATE		UINT64CONST(0xFFFFFFFFFFFF0008)
 #define PARALLEL_KEY_ENTRYPOINT				UINT64CONST(0xFFFFFFFFFFFF0009)
 #define PARALLEL_KEY_SESSION_DSM			UINT64CONST(0xFFFFFFFFFFFF000A)
-#define PARALLEL_KEY_PENDING_SYNCS			UINT64CONST(0xFFFFFFFFFFFF000B)
-#define PARALLEL_KEY_REINDEX_STATE			UINT64CONST(0xFFFFFFFFFFFF000C)
-#define PARALLEL_KEY_RELMAPPER_STATE		UINT64CONST(0xFFFFFFFFFFFF000D)
-#define PARALLEL_KEY_ENUMBLACKLIST			UINT64CONST(0xFFFFFFFFFFFF000E)
+#define PARALLEL_KEY_REINDEX_STATE			UINT64CONST(0xFFFFFFFFFFFF000B)
 
 /* Fixed-size parallel state. */
 typedef struct FixedParallelState
@@ -94,7 +88,6 @@ typedef struct FixedParallelState
 	BackendId	parallel_master_backend_id;
 	TimestampTz xact_ts;
 	TimestampTz stmt_ts;
-	SerializableXactHandle serializable_xact_handle;
 
 	/* Mutex protects remaining fields. */
 	slock_t		mutex;
@@ -142,9 +135,6 @@ static const struct
 	},
 	{
 		"_bt_parallel_build_main", _bt_parallel_build_main
-	},
-	{
-		"parallel_vacuum_main", parallel_vacuum_main
 	}
 };
 
@@ -162,7 +152,7 @@ static void ParallelWorkerShutdown(int code, Datum arg);
  */
 ParallelContext *
 CreateParallelContext(const char *library_name, const char *function_name,
-					  int nworkers)
+					  int nworkers, bool serializable_okay)
 {
 	MemoryContext oldcontext;
 	ParallelContext *pcxt;
@@ -173,6 +163,23 @@ CreateParallelContext(const char *library_name, const char *function_name,
 	/* Number of workers should be non-negative. */
 	Assert(nworkers >= 0);
 
+	/*
+	 * If dynamic shared memory is not available, we won't be able to use
+	 * background workers.
+	 */
+	if (dynamic_shared_memory_type == DSM_IMPL_NONE)
+		nworkers = 0;
+
+	/*
+	 * If we are running under serializable isolation, we can't use parallel
+	 * workers, at least not until somebody enhances that mechanism to be
+	 * parallel-aware.  Utility statement callers may ask us to ignore this
+	 * restriction because they're always able to safely ignore the fact that
+	 * SIREAD locks do not work with parallelism.
+	 */
+	if (IsolationIsSerializable() && !serializable_okay)
+		nworkers = 0;
+
 	/* We might be running in a short-lived memory context. */
 	oldcontext = MemoryContextSwitchTo(TopTransactionContext);
 
@@ -180,7 +187,6 @@ CreateParallelContext(const char *library_name, const char *function_name,
 	pcxt = palloc0(sizeof(ParallelContext));
 	pcxt->subid = GetCurrentSubTransactionId();
 	pcxt->nworkers = nworkers;
-	pcxt->nworkers_to_launch = nworkers;
 	pcxt->library_name = pstrdup(library_name);
 	pcxt->function_name = pstrdup(function_name);
 	pcxt->error_context_stack = error_context_stack;
@@ -208,10 +214,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	Size		tsnaplen = 0;
 	Size		asnaplen = 0;
 	Size		tstatelen = 0;
-	Size		pendingsyncslen = 0;
 	Size		reindexlen = 0;
-	Size		relmapperlen = 0;
-	Size		enumblacklistlen = 0;
 	Size		segsize = 0;
 	int			i;
 	FixedParallelState *fps;
@@ -261,16 +264,10 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		tstatelen = EstimateTransactionStateSpace();
 		shm_toc_estimate_chunk(&pcxt->estimator, tstatelen);
 		shm_toc_estimate_chunk(&pcxt->estimator, sizeof(dsm_handle));
-		pendingsyncslen = EstimatePendingSyncsSpace();
-		shm_toc_estimate_chunk(&pcxt->estimator, pendingsyncslen);
 		reindexlen = EstimateReindexStateSpace();
 		shm_toc_estimate_chunk(&pcxt->estimator, reindexlen);
-		relmapperlen = EstimateRelationMapSpace();
-		shm_toc_estimate_chunk(&pcxt->estimator, relmapperlen);
-		enumblacklistlen = EstimateEnumBlacklistSpace();
-		shm_toc_estimate_chunk(&pcxt->estimator, enumblacklistlen);
 		/* If you add more chunks here, you probably need to add keys. */
-		shm_toc_estimate_keys(&pcxt->estimator, 11);
+		shm_toc_estimate_keys(&pcxt->estimator, 8);
 
 		/* Estimate space need for error queues. */
 		StaticAssertStmt(BUFFERALIGN(PARALLEL_ERROR_QUEUE_SIZE) ==
@@ -328,7 +325,6 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->parallel_master_backend_id = MyBackendId;
 	fps->xact_ts = GetCurrentTransactionStartTimestamp();
 	fps->stmt_ts = GetCurrentStatementStartTimestamp();
-	fps->serializable_xact_handle = ShareSerializableXact();
 	SpinLockInit(&fps->mutex);
 	fps->last_xlog_end = 0;
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
@@ -342,13 +338,10 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		char	   *tsnapspace;
 		char	   *asnapspace;
 		char	   *tstatespace;
-		char	   *pendingsyncsspace;
 		char	   *reindexspace;
-		char	   *relmapperspace;
 		char	   *error_queue_space;
 		char	   *session_dsm_handle_space;
 		char	   *entrypointstate;
-		char	   *enumblacklistspace;
 		Size		lnamelen;
 
 		/* Serialize shared libraries we have loaded. */
@@ -387,28 +380,10 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeTransactionState(tstatelen, tstatespace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_TRANSACTION_STATE, tstatespace);
 
-		/* Serialize pending syncs. */
-		pendingsyncsspace = shm_toc_allocate(pcxt->toc, pendingsyncslen);
-		SerializePendingSyncs(pendingsyncslen, pendingsyncsspace);
-		shm_toc_insert(pcxt->toc, PARALLEL_KEY_PENDING_SYNCS,
-					   pendingsyncsspace);
-
 		/* Serialize reindex state. */
 		reindexspace = shm_toc_allocate(pcxt->toc, reindexlen);
 		SerializeReindexState(reindexlen, reindexspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_REINDEX_STATE, reindexspace);
-
-		/* Serialize relmapper state. */
-		relmapperspace = shm_toc_allocate(pcxt->toc, relmapperlen);
-		SerializeRelationMap(relmapperlen, relmapperspace);
-		shm_toc_insert(pcxt->toc, PARALLEL_KEY_RELMAPPER_STATE,
-					   relmapperspace);
-
-		/* Serialize enum blacklist state. */
-		enumblacklistspace = shm_toc_allocate(pcxt->toc, enumblacklistlen);
-		SerializeEnumBlacklist(enumblacklistspace, enumblacklistlen);
-		shm_toc_insert(pcxt->toc, PARALLEL_KEY_ENUMBLACKLIST,
-					   enumblacklistspace);
 
 		/* Allocate space for worker information. */
 		pcxt->worker = palloc0(sizeof(ParallelWorkerInfo) * pcxt->nworkers);
@@ -504,23 +479,6 @@ ReinitializeParallelDSM(ParallelContext *pcxt)
 }
 
 /*
- * Reinitialize parallel workers for a parallel context such that we could
- * launch a different number of workers.  This is required for cases where
- * we need to reuse the same DSM segment, but the number of workers can
- * vary from run-to-run.
- */
-void
-ReinitializeParallelWorkers(ParallelContext *pcxt, int nworkers_to_launch)
-{
-	/*
-	 * The number of workers that need to be launched must be less than the
-	 * number of workers with which the parallel context is initialized.
-	 */
-	Assert(pcxt->nworkers >= nworkers_to_launch);
-	pcxt->nworkers_to_launch = nworkers_to_launch;
-}
-
-/*
  * Launch parallel workers.
  */
 void
@@ -532,7 +490,7 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	bool		any_registrations_failed = false;
 
 	/* Skip this if we have no workers. */
-	if (pcxt->nworkers == 0 || pcxt->nworkers_to_launch == 0)
+	if (pcxt->nworkers == 0)
 		return;
 
 	/* We need to be a lock group leader. */
@@ -567,7 +525,7 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	 * fails.  It wouldn't help much anyway, because registering the worker in
 	 * no way guarantees that it will start up and initialize successfully.
 	 */
-	for (i = 0; i < pcxt->nworkers_to_launch; ++i)
+	for (i = 0; i < pcxt->nworkers; ++i)
 	{
 		memcpy(worker.bgw_extra, &i, sizeof(int));
 		if (!any_registrations_failed &&
@@ -718,8 +676,12 @@ WaitForParallelWorkersToAttach(ParallelContext *pcxt)
 				 * just end up waiting for the same worker again.
 				 */
 				rc = WaitLatch(MyLatch,
-							   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+							   WL_LATCH_SET | WL_POSTMASTER_DEATH,
 							   -1, WAIT_EVENT_BGWORKER_STARTUP);
+
+				/* emergency bailout if postmaster has died */
+				if (rc & WL_POSTMASTER_DEATH)
+					proc_exit(1);
 
 				if (rc & WL_LATCH_SET)
 					ResetLatch(MyLatch);
@@ -837,8 +799,8 @@ WaitForParallelWorkersToFinish(ParallelContext *pcxt)
 			}
 		}
 
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1,
-						 WAIT_EVENT_PARALLEL_FINISH);
+		WaitLatch(MyLatch, WL_LATCH_SET, -1,
+				  WAIT_EVENT_PARALLEL_FINISH);
 		ResetLatch(MyLatch);
 	}
 
@@ -1254,10 +1216,7 @@ ParallelWorkerMain(Datum main_arg)
 	char	   *tsnapspace;
 	char	   *asnapspace;
 	char	   *tstatespace;
-	char	   *pendingsyncsspace;
 	char	   *reindexspace;
-	char	   *relmapperspace;
-	char	   *enumblacklistspace;
 	StringInfoData msgbuf;
 	char	   *session_dsm_handle_space;
 
@@ -1272,19 +1231,16 @@ ParallelWorkerMain(Datum main_arg)
 	Assert(ParallelWorkerNumber == -1);
 	memcpy(&ParallelWorkerNumber, MyBgworkerEntry->bgw_extra, sizeof(int));
 
-	/* Set up a memory context to work in, just for cleanliness. */
+	/* Set up a memory context and resource owner. */
+	Assert(CurrentResourceOwner == NULL);
+	CurrentResourceOwner = ResourceOwnerCreate(NULL, "parallel toplevel");
 	CurrentMemoryContext = AllocSetContextCreate(TopMemoryContext,
 												 "Parallel worker",
 												 ALLOCSET_DEFAULT_SIZES);
 
 	/*
-	 * Attach to the dynamic shared memory segment for the parallel query, and
-	 * find its table of contents.
-	 *
-	 * Note: at this point, we have not created any ResourceOwner in this
-	 * process.  This will result in our DSM mapping surviving until process
-	 * exit, which is fine.  If there were a ResourceOwner, it would acquire
-	 * ownership of the mapping, but we have no need for that.
+	 * Now that we have a resource owner, we can attach to the dynamic shared
+	 * memory segment and read the table of contents.
 	 */
 	seg = dsm_attach(DatumGetUInt32(main_arg));
 	if (seg == NULL)
@@ -1436,26 +1392,9 @@ ParallelWorkerMain(Datum main_arg)
 	SetTempNamespaceState(fps->temp_namespace_id,
 						  fps->temp_toast_namespace_id);
 
-	/* Restore pending syncs. */
-	pendingsyncsspace = shm_toc_lookup(toc, PARALLEL_KEY_PENDING_SYNCS,
-									   false);
-	RestorePendingSyncs(pendingsyncsspace);
-
 	/* Restore reindex state. */
 	reindexspace = shm_toc_lookup(toc, PARALLEL_KEY_REINDEX_STATE, false);
 	RestoreReindexState(reindexspace);
-
-	/* Restore relmapper state. */
-	relmapperspace = shm_toc_lookup(toc, PARALLEL_KEY_RELMAPPER_STATE, false);
-	RestoreRelationMap(relmapperspace);
-
-	/* Restore enum blacklist. */
-	enumblacklistspace = shm_toc_lookup(toc, PARALLEL_KEY_ENUMBLACKLIST,
-										false);
-	RestoreEnumBlacklist(enumblacklistspace);
-
-	/* Attach to the leader's serializable transaction, if SERIALIZABLE. */
-	AttachSerializableXact(fps->serializable_xact_handle);
 
 	/*
 	 * We've initialized all of our state now; nothing should change
@@ -1472,7 +1411,7 @@ ParallelWorkerMain(Datum main_arg)
 	/* Must exit parallel mode to pop active snapshot. */
 	ExitParallelMode();
 
-	/* Must pop active snapshot so snapmgr.c doesn't complain. */
+	/* Must pop active snapshot so resowner.c doesn't complain. */
 	PopActiveSnapshot();
 
 	/* Shut down the parallel-worker transaction. */

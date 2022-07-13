@@ -3,7 +3,7 @@
  * amapi.h
  *	  API for Postgres index access methods.
  *
- * Copyright (c) 2015-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2018, PostgreSQL Global Development Group
  *
  * src/include/access/amapi.h
  *
@@ -108,9 +108,6 @@ typedef bool (*amproperty_function) (Oid index_oid, int attno,
 									 IndexAMProperty prop, const char *propname,
 									 bool *res, bool *isnull);
 
-/* name of phase as used in progress reporting */
-typedef char *(*ambuildphasename_function) (int64 phasenum);
-
 /* validate definition of an opclass for this AM */
 typedef bool (*amvalidate_function) (Oid opclassoid);
 
@@ -171,8 +168,6 @@ typedef struct IndexAmRoutine
 	uint16		amstrategies;
 	/* total number of support functions that this AM uses */
 	uint16		amsupport;
-	/* opclass options support function number or 0 */
-	uint16		amoptsprocnum;
 	/* does AM support ORDER BY indexed column's value? */
 	bool		amcanorder;
 	/* does AM support ORDER BY result of an operator on indexed column? */
@@ -199,10 +194,6 @@ typedef struct IndexAmRoutine
 	bool		amcanparallel;
 	/* does AM support columns included with clause INCLUDE? */
 	bool		amcaninclude;
-	/* does AM use maintenance_work_mem? */
-	bool		amusemaintenanceworkmem;
-	/* OR of parallel vacuum flags.  See vacuum.h for flags. */
-	uint8		amparallelvacuumoptions;
 	/* type of data stored in index, or InvalidOid if variable */
 	Oid			amkeytype;
 
@@ -222,7 +213,6 @@ typedef struct IndexAmRoutine
 	amcostestimate_function amcostestimate;
 	amoptions_function amoptions;
 	amproperty_function amproperty; /* can be NULL */
-	ambuildphasename_function ambuildphasename; /* can be NULL */
 	amvalidate_function amvalidate;
 	ambeginscan_function ambeginscan;
 	amrescan_function amrescan;

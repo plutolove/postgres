@@ -4,7 +4,7 @@
  *	  local buffer manager. Fast buffer manager for temporary tables,
  *	  which never need to be WAL-logged or checkpointed, etc.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -54,17 +54,17 @@ static Block GetLocalBufferStorage(void);
 
 
 /*
- * PrefetchLocalBuffer -
+ * LocalPrefetchBuffer -
  *	  initiate asynchronous read of a block of a relation
  *
  * Do PrefetchBuffer's work for temporary relations.
  * No-op if prefetching isn't compiled in.
  */
-PrefetchBufferResult
-PrefetchLocalBuffer(SMgrRelation smgr, ForkNumber forkNum,
+void
+LocalPrefetchBuffer(SMgrRelation smgr, ForkNumber forkNum,
 					BlockNumber blockNum)
 {
-	PrefetchBufferResult result = {InvalidBuffer, false};
+#ifdef USE_PREFETCH
 	BufferTag	newTag;			/* identity of requested block */
 	LocalBufferLookupEnt *hresult;
 
@@ -81,18 +81,12 @@ PrefetchLocalBuffer(SMgrRelation smgr, ForkNumber forkNum,
 	if (hresult)
 	{
 		/* Yes, so nothing to do */
-		result.recent_buffer = -hresult->id - 1;
-	}
-	else
-	{
-#ifdef USE_PREFETCH
-		/* Not in buffers, so initiate prefetch */
-		smgrprefetch(smgr, forkNum, blockNum);
-		result.initiated_io = true;
-#endif							/* USE_PREFETCH */
+		return;
 	}
 
-	return result;
+	/* Not in buffers, so initiate prefetch */
+	smgrprefetch(smgr, forkNum, blockNum);
+#endif							/* USE_PREFETCH */
 }
 
 
@@ -367,7 +361,7 @@ DropRelFileNodeLocalBuffers(RelFileNode rnode, ForkNumber forkNum,
  *		This function removes from the buffer pool all pages of all forks
  *		of the specified relation.
  *
- *		See DropRelFileNodesAllBuffers in bufmgr.c for more notes.
+ *		See DropRelFileNodeAllBuffers in bufmgr.c for more notes.
  */
 void
 DropRelFileNodeAllLocalBuffers(RelFileNode rnode)
@@ -543,7 +537,7 @@ GetLocalBufferStorage(void)
 /*
  * CheckForLocalBufferLeaks - ensure this backend holds no local buffer pins
  *
- * This is just like CheckForBufferLeaks(), but for local buffers.
+ * This is just like CheckBufferLeaks(), but for local buffers.
  */
 static void
 CheckForLocalBufferLeaks(void)

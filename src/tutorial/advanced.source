@@ -1,7 +1,7 @@
 ---------------------------------------------------------------------------
 --
 -- advanced.sql-
---    Tutorial on advanced PostgreSQL features
+--    Tutorial on advanced more PostgreSQL features
 --
 --
 -- Copyright (c) 1994, Regents of the University of California
@@ -23,7 +23,7 @@
 CREATE TABLE cities (
 	name		text,
 	population	float8,
-	elevation	int		-- (in ft)
+	altitude	int		-- (in ft)
 );
 
 CREATE TABLE capitals (
@@ -42,17 +42,17 @@ SELECT * FROM cities;
 SELECT * FROM capitals;
 
 -- You can find all cities, including capitals, that
--- are located at an elevation of 500 ft or higher by:
+-- are located at an altitude of 500 ft or higher by:
 
-SELECT c.name, c.elevation
+SELECT c.name, c.altitude
 FROM cities c
-WHERE c.elevation > 500;
+WHERE c.altitude > 500;
 
 -- To scan rows of the parent table only, use ONLY:
 
-SELECT name, elevation
+SELECT name, altitude
 FROM ONLY cities
-WHERE elevation > 500;
+WHERE altitude > 500;
 
 
 -- clean up (you must remove the children first)

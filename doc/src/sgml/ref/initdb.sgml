@@ -34,7 +34,9 @@ PostgreSQL documentation
  </refsynopsisdiv>
 
  <refsect1 id="r1-app-initdb-1">
-  <title>Description</title>
+  <title>
+   Description
+  </title>
   <para>
    <command>initdb</command> creates a new
    <productname>PostgreSQL</productname> database cluster.  A database
@@ -86,7 +88,7 @@ PostgreSQL documentation
    <command>initdb</command> initializes the database cluster's default
    locale and character set encoding. The character set encoding,
    collation order (<literal>LC_COLLATE</literal>) and character set classes
-   (<literal>LC_CTYPE</literal>, e.g., upper, lower, digit) can be set separately
+   (<literal>LC_CTYPE</literal>, e.g. upper, lower, digit) can be set separately
    for a database when it is created. <command>initdb</command> determines
    those settings for the <literal>template1</literal> database, which will
    serve as the default for all other databases.
@@ -200,9 +202,7 @@ PostgreSQL documentation
       <listitem>
        <para>
         Allows users in the same group as the cluster owner to read all cluster
-        files created by <command>initdb</command>.  This option is ignored
-        on <productname>Windows</productname> as it does not support
-        <acronym>POSIX</acronym>-style group permissions.
+        files created by <command>initdb</command>.
        </para>
       </listitem>
      </varlistentry>
@@ -214,11 +214,9 @@ PostgreSQL documentation
        <para>
         Use checksums on data pages to help detect corruption by the
         I/O system that would otherwise be silent. Enabling checksums
-        may incur a noticeable performance penalty. If set, checksums
-        are calculated for all objects, in all databases. All checksum
-        failures will be reported in the
-        <link linkend="monitoring-pg-stat-database-view">
-        <structname>pg_stat_database</structname></link> view.
+        may incur a noticeable performance penalty. This option can only
+        be set during initialization, and cannot be changed later. If
+        set, checksums are calculated for all objects, in all databases.
        </para>
       </listitem>
      </varlistentry>
@@ -457,17 +455,6 @@ PostgreSQL documentation
      <para>
       Specifies the directory where the database cluster is to be
       stored; can be overridden using the <option>-D</option> option.
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><envar>PG_COLOR</envar></term>
-    <listitem>
-     <para>
-      Specifies whether to use color in diagnostic messages. Possible values
-      are <literal>always</literal>, <literal>auto</literal> and
-      <literal>never</literal>.
      </para>
     </listitem>
    </varlistentry>

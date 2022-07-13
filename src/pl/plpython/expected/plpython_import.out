@@ -21,7 +21,7 @@ CREATE FUNCTION import_succeed() returns text
   import re
   import string
   import time
-except Exception as ex:
+except Exception, ex:
 	plpy.notice("import failed -- %s" % str(ex))
 	return "failed, that wasn''t supposed to happen"
 return "succeeded, as expected"'

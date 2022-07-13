@@ -24,7 +24,7 @@
  * is used for.)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -94,7 +94,8 @@ directBoolConsistentFn(GinScanKey key)
 static GinTernaryValue
 directTriConsistentFn(GinScanKey key)
 {
-	return DatumGetGinTernaryValue(FunctionCall7Coll(key->triConsistentFmgrInfo,
+	return DatumGetGinTernaryValue(FunctionCall7Coll(
+													 key->triConsistentFmgrInfo,
 													 key->collation,
 													 PointerGetDatum(key->entryRes),
 													 UInt16GetDatum(key->strategy),
@@ -115,7 +116,8 @@ shimBoolConsistentFn(GinScanKey key)
 {
 	GinTernaryValue result;
 
-	result = DatumGetGinTernaryValue(FunctionCall7Coll(key->triConsistentFmgrInfo,
+	result = DatumGetGinTernaryValue(FunctionCall7Coll(
+													   key->triConsistentFmgrInfo,
 													   key->collation,
 													   PointerGetDatum(key->entryRes),
 													   UInt16GetDatum(key->strategy),

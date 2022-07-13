@@ -1,7 +1,7 @@
 /*
  * AM-callable functions for BRIN indexes
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -10,6 +10,7 @@
 #ifndef BRIN_H
 #define BRIN_H
 
+#include "fmgr.h"
 #include "nodes/execnodes.h"
 #include "utils/relcache.h"
 
@@ -37,15 +38,11 @@ typedef struct BrinStatsData
 
 #define BRIN_DEFAULT_PAGES_PER_RANGE	128
 #define BrinGetPagesPerRange(relation) \
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
-				 relation->rd_rel->relam == BRIN_AM_OID), \
-	 (relation)->rd_options ? \
+	((relation)->rd_options ? \
 	 ((BrinOptions *) (relation)->rd_options)->pagesPerRange : \
 	  BRIN_DEFAULT_PAGES_PER_RANGE)
 #define BrinGetAutoSummarize(relation) \
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
-				 relation->rd_rel->relam == BRIN_AM_OID), \
-	 (relation)->rd_options ? \
+	((relation)->rd_options ? \
 	 ((BrinOptions *) (relation)->rd_options)->autosummarize : \
 	  false)
 

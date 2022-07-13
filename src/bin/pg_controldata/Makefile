@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/pg_controldata
 #
-# Copyright (c) 1998-2020, PostgreSQL Global Development Group
+# Copyright (c) 1998-2018, PostgreSQL Global Development Group
 #
 # src/bin/pg_controldata/Makefile
 #
@@ -15,9 +15,7 @@ subdir = src/bin/pg_controldata
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	$(WIN32RES) \
-	pg_controldata.o
+OBJS= pg_controldata.o $(WIN32RES)
 
 all: pg_controldata
 

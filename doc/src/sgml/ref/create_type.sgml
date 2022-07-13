@@ -117,12 +117,9 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
    <para>
     The second form of <command>CREATE TYPE</command> creates an enumerated
     (enum) type, as described in <xref linkend="datatype-enum"/>.
-    Enum types take a list of quoted labels, each of which
+    Enum types take a list of one or more quoted labels, each of which
     must be less than <symbol>NAMEDATALEN</symbol> bytes long (64 bytes in a
-    standard <productname>PostgreSQL</productname> build).  (It is possible to
-    create an enumerated type with zero labels, but such a type cannot be used
-    to hold values before at least one label is added using <xref
-    linkend="sql-altertype"/>.)
+    standard <productname>PostgreSQL</productname> build).
    </para>
   </refsect2>
 
@@ -790,7 +787,7 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
    Before <productname>PostgreSQL</productname> version 8.3, the name of
    a generated array type was always exactly the element type's name with one
    underscore character (<literal>_</literal>) prepended.  (Type names were
-   therefore restricted in length to one fewer character than other names.)
+   therefore restricted in length to one less character than other names.)
    While this is still usually the case, the array type name may vary from
    this in case of maximum-length names or collisions with user type names
    that begin with underscore.  Writing code that depends on this convention
@@ -821,6 +818,18 @@ CREATE TYPE <replaceable class="parameter">name</replaceable>
    the catalogs with shell types as a result of simple typos in function
    definitions, a shell type will only be made this way when the input
    function is written in C.
+  </para>
+
+  <para>
+   In <productname>PostgreSQL</productname> versions before 7.3, it
+   was customary to avoid creating a shell type at all, by replacing the
+   functions' forward references to the type name with the placeholder
+   pseudo-type <type>opaque</type>.  The <type>cstring</type> arguments and
+   results also had to be declared as <type>opaque</type> before 7.3.  To
+   support loading of old dump files, <command>CREATE TYPE</command> will
+   accept I/O functions declared using <type>opaque</type>, but it will issue
+   a notice and change the function declarations to use the correct
+   types.
   </para>
 
  </refsect1>

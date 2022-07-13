@@ -3,7 +3,7 @@
  * timestamp.c
  *	  Functions for the built-in SQL types "timestamp" and "interval".
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,9 +17,11 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <float.h>
 #include <limits.h>
 #include <sys/time.h>
 
+#include "access/hash.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "common/int128.h"
@@ -28,13 +30,10 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/supportnodes.h"
 #include "parser/scansup.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
-#include "utils/date.h"
 #include "utils/datetime.h"
-#include "utils/float.h"
 
 /*
  * gcc's -ffast-math switch breaks routines that expect exact results from
@@ -71,6 +70,7 @@ typedef struct
 
 static TimeOffset time2t(const int hour, const int min, const int sec, const fsec_t fsec);
 static Timestamp dt2local(Timestamp dt, int timezone);
+static void AdjustTimestampForTypmod(Timestamp *time, int32 typmod);
 static void AdjustIntervalForTypmod(Interval *interval, int32 typmod);
 static TimestampTz timestamp2timestamptz(Timestamp timestamp);
 static Timestamp timestamptz2timestamp(TimestampTz timestamp);
@@ -188,6 +188,14 @@ timestamp_in(PG_FUNCTION_ARGS)
 			TIMESTAMP_NOBEGIN(result);
 			break;
 
+		case DTK_INVALID:
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("date/time value \"%s\" is no longer supported", str)));
+
+			TIMESTAMP_NOEND(result);
+			break;
+
 		default:
 			elog(ERROR, "unexpected dtype %d while parsing timestamp \"%s\"",
 				 dtype, str);
@@ -289,26 +297,15 @@ timestamptypmodout(PG_FUNCTION_ARGS)
 }
 
 
-/*
- * timestamp_support()
- *
- * Planner support function for the timestamp_scale() and timestamptz_scale()
- * length coercion functions (we need not distinguish them here).
+/* timestamp_transform()
+ * Flatten calls to timestamp_scale() and timestamptz_scale() that solely
+ * represent increases in allowed precision.
  */
 Datum
-timestamp_support(PG_FUNCTION_ARGS)
+timestamp_transform(PG_FUNCTION_ARGS)
 {
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
-	Node	   *ret = NULL;
-
-	if (IsA(rawreq, SupportRequestSimplify))
-	{
-		SupportRequestSimplify *req = (SupportRequestSimplify *) rawreq;
-
-		ret = TemporalSimplify(MAX_TIMESTAMP_PRECISION, (Node *) req->fcall);
-	}
-
-	PG_RETURN_POINTER(ret);
+	PG_RETURN_POINTER(TemporalTransform(MAX_TIMESTAMP_PRECISION,
+										(Node *) PG_GETARG_POINTER(0)));
 }
 
 /* timestamp_scale()
@@ -330,11 +327,11 @@ timestamp_scale(PG_FUNCTION_ARGS)
 }
 
 /*
- * AdjustTimestampForTypmodError --- round off a timestamp to suit given typmod
+ * AdjustTimestampForTypmod --- round off a timestamp to suit given typmod
  * Works for either timestamp or timestamptz.
  */
-bool
-AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
+static void
+AdjustTimestampForTypmod(Timestamp *time, int32 typmod)
 {
 	static const int64 TimestampScales[MAX_TIMESTAMP_PRECISION + 1] = {
 		INT64CONST(1000000),
@@ -360,18 +357,10 @@ AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
 		&& (typmod != -1) && (typmod != MAX_TIMESTAMP_PRECISION))
 	{
 		if (typmod < 0 || typmod > MAX_TIMESTAMP_PRECISION)
-		{
-			if (error)
-			{
-				*error = true;
-				return false;
-			}
-
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("timestamp(%d) precision must be between %d and %d",
 							typmod, 0, MAX_TIMESTAMP_PRECISION)));
-		}
 
 		if (*time >= INT64CONST(0))
 		{
@@ -384,15 +373,8 @@ AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
 					  * TimestampScales[typmod]);
 		}
 	}
-
-	return true;
 }
 
-void
-AdjustTimestampForTypmod(Timestamp *time, int32 typmod)
-{
-	(void) AdjustTimestampForTypmodError(time, typmod, NULL);
-}
 
 /* timestamptz_in()
  * Convert a string to internal form.
@@ -446,6 +428,14 @@ timestamptz_in(PG_FUNCTION_ARGS)
 			TIMESTAMP_NOBEGIN(result);
 			break;
 
+		case DTK_INVALID:
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("date/time value \"%s\" is no longer supported", str)));
+
+			TIMESTAMP_NOEND(result);
+			break;
+
 		default:
 			elog(ERROR, "unexpected dtype %d while parsing timestamptz \"%s\"",
 				 dtype, str);
@@ -491,8 +481,8 @@ parse_sane_timezone(struct pg_tm *tm, text *zone)
 	if (isdigit((unsigned char) *tzname))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid input syntax for type %s: \"%s\"",
-						"numeric time zone", tzname),
+				 errmsg("invalid input syntax for numeric time zone: \"%s\"",
+						tzname),
 				 errhint("Numeric time zones must have \"-\" or \"+\" as first character.")));
 
 	rt = DecodeTimezone(tzname, &tz);
@@ -582,8 +572,18 @@ make_timestamp_internal(int year, int month, int day,
 
 	date = date2j(tm.tm_year, tm.tm_mon, tm.tm_mday) - POSTGRES_EPOCH_JDATE;
 
-	/* Check for time overflow */
-	if (float_time_overflows(hour, min, sec))
+	/*
+	 * This should match the checks in DecodeTimeOnly, except that since we're
+	 * dealing with a float "sec" value, we also explicitly reject NaN.  (An
+	 * infinity input should get rejected by the range comparisons, but we
+	 * can't be sure how those will treat a NaN.)
+	 */
+	if (hour < 0 || min < 0 || min > MINS_PER_HOUR - 1 ||
+		isnan(sec) ||
+		sec < 0 || sec > SECS_PER_MINUTE ||
+		hour > HOURS_PER_DAY ||
+	/* test for > 24:00:00 */
+		(hour == HOURS_PER_DAY && (min > 0 || sec > 0)))
 		ereport(ERROR,
 				(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
 				 errmsg("time field value out of range: %d:%02d:%02g",
@@ -591,7 +591,7 @@ make_timestamp_internal(int year, int month, int day,
 
 	/* This should match tm2time */
 	time = (((hour * MINS_PER_HOUR + min) * SECS_PER_MINUTE)
-			* USECS_PER_SEC) + (int64) rint(sec * USECS_PER_SEC);
+			* USECS_PER_SEC) + rint(sec * USECS_PER_SEC);
 
 	result = date * USECS_PER_DAY + time;
 	/* check for major overflow */
@@ -935,6 +935,12 @@ interval_in(PG_FUNCTION_ARGS)
 						 errmsg("interval out of range")));
 			break;
 
+		case DTK_INVALID:
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("date/time value \"%s\" is no longer supported", str)));
+			break;
+
 		default:
 			elog(ERROR, "unexpected dtype %d while parsing interval \"%s\"",
 				 dtype, str);
@@ -1229,69 +1235,59 @@ intervaltypmodleastfield(int32 typmod)
 }
 
 
-/*
- * interval_support()
- *
- * Planner support function for interval_scale().
- *
+/* interval_transform()
  * Flatten superfluous calls to interval_scale().  The interval typmod is
  * complex to permit accepting and regurgitating all SQL standard variations.
  * For truncation purposes, it boils down to a single, simple granularity.
  */
 Datum
-interval_support(PG_FUNCTION_ARGS)
+interval_transform(PG_FUNCTION_ARGS)
 {
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
+	FuncExpr   *expr = castNode(FuncExpr, PG_GETARG_POINTER(0));
 	Node	   *ret = NULL;
+	Node	   *typmod;
 
-	if (IsA(rawreq, SupportRequestSimplify))
+	Assert(list_length(expr->args) >= 2);
+
+	typmod = (Node *) lsecond(expr->args);
+
+	if (IsA(typmod, Const) &&!((Const *) typmod)->constisnull)
 	{
-		SupportRequestSimplify *req = (SupportRequestSimplify *) rawreq;
-		FuncExpr   *expr = req->fcall;
-		Node	   *typmod;
+		Node	   *source = (Node *) linitial(expr->args);
+		int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
+		bool		noop;
 
-		Assert(list_length(expr->args) >= 2);
-
-		typmod = (Node *) lsecond(expr->args);
-
-		if (IsA(typmod, Const) && !((Const *) typmod)->constisnull)
+		if (new_typmod < 0)
+			noop = true;
+		else
 		{
-			Node	   *source = (Node *) linitial(expr->args);
-			int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
-			bool		noop;
+			int32		old_typmod = exprTypmod(source);
+			int			old_least_field;
+			int			new_least_field;
+			int			old_precis;
+			int			new_precis;
 
-			if (new_typmod < 0)
-				noop = true;
+			old_least_field = intervaltypmodleastfield(old_typmod);
+			new_least_field = intervaltypmodleastfield(new_typmod);
+			if (old_typmod < 0)
+				old_precis = INTERVAL_FULL_PRECISION;
 			else
-			{
-				int32		old_typmod = exprTypmod(source);
-				int			old_least_field;
-				int			new_least_field;
-				int			old_precis;
-				int			new_precis;
+				old_precis = INTERVAL_PRECISION(old_typmod);
+			new_precis = INTERVAL_PRECISION(new_typmod);
 
-				old_least_field = intervaltypmodleastfield(old_typmod);
-				new_least_field = intervaltypmodleastfield(new_typmod);
-				if (old_typmod < 0)
-					old_precis = INTERVAL_FULL_PRECISION;
-				else
-					old_precis = INTERVAL_PRECISION(old_typmod);
-				new_precis = INTERVAL_PRECISION(new_typmod);
-
-				/*
-				 * Cast is a no-op if least field stays the same or decreases
-				 * while precision stays the same or increases.  But
-				 * precision, which is to say, sub-second precision, only
-				 * affects ranges that include SECOND.
-				 */
-				noop = (new_least_field <= old_least_field) &&
-					(old_least_field > 0 /* SECOND */ ||
-					 new_precis >= MAX_INTERVAL_PRECISION ||
-					 new_precis >= old_precis);
-			}
-			if (noop)
-				ret = relabel_to_typmod(source, new_typmod);
+			/*
+			 * Cast is a no-op if least field stays the same or decreases
+			 * while precision stays the same or increases.  But precision,
+			 * which is to say, sub-second precision, only affects ranges that
+			 * include SECOND.
+			 */
+			noop = (new_least_field <= old_least_field) &&
+				(old_least_field > 0 /* SECOND */ ||
+				 new_precis >= MAX_INTERVAL_PRECISION ||
+				 new_precis >= old_precis);
 		}
+		if (noop)
+			ret = relabel_to_typmod(source, new_typmod);
 	}
 
 	PG_RETURN_POINTER(ret);
@@ -1363,7 +1359,7 @@ AdjustIntervalForTypmod(Interval *interval, int32 typmod)
 		 * can't do it consistently.  (We cannot enforce a range limit on the
 		 * highest expected field, since we do not have any equivalent of
 		 * SQL's <interval leading field precision>.)  If we ever decide to
-		 * revisit this, interval_support will likely require adjusting.
+		 * revisit this, interval_transform will likely require adjusting.
 		 *
 		 * Note: before PG 8.4 we interpreted a limited set of fields as
 		 * actually causing a "modulo" operation on a given value, potentially
@@ -1614,37 +1610,15 @@ GetSQLLocalTimestamp(int32 typmod)
 }
 
 /*
- * timeofday(*) -- returns the current time as a text.
- */
-Datum
-timeofday(PG_FUNCTION_ARGS)
-{
-	struct timeval tp;
-	char		templ[128];
-	char		buf[128];
-	pg_time_t	tt;
-
-	gettimeofday(&tp, NULL);
-	tt = (pg_time_t) tp.tv_sec;
-	pg_strftime(templ, sizeof(templ), "%a %b %d %H:%M:%S.%%06d %Y %Z",
-				pg_localtime(&tt, session_timezone));
-	snprintf(buf, sizeof(buf), templ, tp.tv_usec);
-
-	PG_RETURN_TEXT_P(cstring_to_text(buf));
-}
-
-/*
  * TimestampDifference -- convert the difference between two timestamps
  *		into integer seconds and microseconds
- *
- * This is typically used to calculate a wait timeout for select(2),
- * which explains the otherwise-odd choice of output format.
  *
  * Both inputs must be ordinary finite timestamps (in current usage,
  * they'll be results from GetCurrentTimestamp()).
  *
- * We expect start_time <= stop_time.  If not, we return zeros,
- * since then we're already past the previously determined stop_time.
+ * We expect start_time <= stop_time.  If not, we return zeros; for current
+ * callers there is no need to be tense about which way division rounds on
+ * negative inputs.
  */
 void
 TimestampDifference(TimestampTz start_time, TimestampTz stop_time,
@@ -1662,36 +1636,6 @@ TimestampDifference(TimestampTz start_time, TimestampTz stop_time,
 		*secs = (long) (diff / USECS_PER_SEC);
 		*microsecs = (int) (diff % USECS_PER_SEC);
 	}
-}
-
-/*
- * TimestampDifferenceMilliseconds -- convert the difference between two
- * 		timestamps into integer milliseconds
- *
- * This is typically used to calculate a wait timeout for WaitLatch()
- * or a related function.  The choice of "long" as the result type
- * is to harmonize with that.  It is caller's responsibility that the
- * input timestamps not be so far apart as to risk overflow of "long"
- * (which'd happen at about 25 days on machines with 32-bit "long").
- *
- * Both inputs must be ordinary finite timestamps (in current usage,
- * they'll be results from GetCurrentTimestamp()).
- *
- * We expect start_time <= stop_time.  If not, we return zero,
- * since then we're already past the previously determined stop_time.
- *
- * Note we round up any fractional millisecond, since waiting for just
- * less than the intended timeout is undesirable.
- */
-long
-TimestampDifferenceMilliseconds(TimestampTz start_time, TimestampTz stop_time)
-{
-	TimestampTz diff = stop_time - start_time;
-
-	if (diff <= 0)
-		return 0;
-	else
-		return (long) ((diff + 999) / 1000);
 }
 
 /*
@@ -1761,8 +1705,6 @@ timestamptz_to_time_t(TimestampTz t)
  * This is mostly for use in emitting messages.  The primary difference
  * from timestamptz_out is that we force the output format to ISO.  Note
  * also that the result is in a static buffer, not pstrdup'd.
- *
- * See also pg_strftime.
  */
 const char *
 timestamptz_to_str(TimestampTz t)
@@ -2046,9 +1988,6 @@ GetEpochTime(struct pg_tm *tm)
 
 	t0 = pg_gmtime(&epoch);
 
-	if (t0 == NULL)
-		elog(ERROR, "could not convert epoch to timestamp: %m");
-
 	tm->tm_year = t0->tm_year;
 	tm->tm_mon = t0->tm_mon;
 	tm->tm_mday = t0->tm_mday;
@@ -2184,34 +2123,16 @@ timestamp_hash_extended(PG_FUNCTION_ARGS)
  * Cross-type comparison functions for timestamp vs timestamptz
  */
 
-int32
-timestamp_cmp_timestamptz_internal(Timestamp timestampVal, TimestampTz dt2)
-{
-	TimestampTz dt1;
-	int			overflow;
-
-	dt1 = timestamp2timestamptz_opt_overflow(timestampVal, &overflow);
-	if (overflow > 0)
-	{
-		/* dt1 is larger than any finite timestamp, but less than infinity */
-		return TIMESTAMP_IS_NOEND(dt2) ? -1 : +1;
-	}
-	if (overflow < 0)
-	{
-		/* dt1 is less than any finite timestamp, but more than -infinity */
-		return TIMESTAMP_IS_NOBEGIN(dt2) ? +1 : -1;
-	}
-
-	return timestamptz_cmp_internal(dt1, dt2);
-}
-
 Datum
 timestamp_eq_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) == 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) == 0);
 }
 
 Datum
@@ -2219,8 +2140,11 @@ timestamp_ne_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) != 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) != 0);
 }
 
 Datum
@@ -2228,8 +2152,11 @@ timestamp_lt_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) < 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) < 0);
 }
 
 Datum
@@ -2237,8 +2164,11 @@ timestamp_gt_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) > 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) > 0);
 }
 
 Datum
@@ -2246,8 +2176,11 @@ timestamp_le_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) <= 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) <= 0);
 }
 
 Datum
@@ -2255,8 +2188,11 @@ timestamp_ge_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt2) >= 0);
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) >= 0);
 }
 
 Datum
@@ -2264,8 +2200,11 @@ timestamp_cmp_timestamptz(PG_FUNCTION_ARGS)
 {
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(0);
 	TimestampTz dt2 = PG_GETARG_TIMESTAMPTZ(1);
+	TimestampTz dt1;
 
-	PG_RETURN_INT32(timestamp_cmp_timestamptz_internal(timestampVal, dt2));
+	dt1 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_INT32(timestamp_cmp_internal(dt1, dt2));
 }
 
 Datum
@@ -2273,8 +2212,11 @@ timestamptz_eq_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) == 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) == 0);
 }
 
 Datum
@@ -2282,8 +2224,11 @@ timestamptz_ne_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) != 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) != 0);
 }
 
 Datum
@@ -2291,8 +2236,11 @@ timestamptz_lt_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) > 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) < 0);
 }
 
 Datum
@@ -2300,8 +2248,11 @@ timestamptz_gt_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) < 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) > 0);
 }
 
 Datum
@@ -2309,8 +2260,11 @@ timestamptz_le_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) >= 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) <= 0);
 }
 
 Datum
@@ -2318,8 +2272,11 @@ timestamptz_ge_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_BOOL(timestamp_cmp_timestamptz_internal(timestampVal, dt1) <= 0);
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_BOOL(timestamp_cmp_internal(dt1, dt2) >= 0);
 }
 
 Datum
@@ -2327,8 +2284,11 @@ timestamptz_cmp_timestamp(PG_FUNCTION_ARGS)
 {
 	TimestampTz dt1 = PG_GETARG_TIMESTAMPTZ(0);
 	Timestamp	timestampVal = PG_GETARG_TIMESTAMP(1);
+	TimestampTz dt2;
 
-	PG_RETURN_INT32(-timestamp_cmp_timestamptz_internal(timestampVal, dt1));
+	dt2 = timestamp2timestamptz(timestampVal);
+
+	PG_RETURN_INT32(timestamp_cmp_internal(dt1, dt2));
 }
 
 
@@ -3237,7 +3197,7 @@ interval_mul(PG_FUNCTION_ARGS)
 	/* cascade units down */
 	result->day += (int32) month_remainder_days;
 	result_double = rint(span->time * factor + sec_remainder * USECS_PER_SEC);
-	if (isnan(result_double) || !FLOAT8_FITS_IN_INT64(result_double))
+	if (result_double > PG_INT64_MAX || result_double < PG_INT64_MIN)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 				 errmsg("interval out of range")));
@@ -3425,7 +3385,7 @@ interval_accum(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
+					  INTERVALOID, sizeof(Interval), false, 'd',
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3442,7 +3402,7 @@ interval_accum(PG_FUNCTION_ARGS)
 	transdatums[1] = IntervalPGetDatum(&N);
 
 	result = construct_array(transdatums, 2,
-							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
+							 INTERVALOID, sizeof(Interval), false, 'd');
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3465,7 +3425,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray1,
-					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
+					  INTERVALOID, sizeof(Interval), false, 'd',
 					  &transdatums1, NULL, &ndatums1);
 	if (ndatums1 != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3474,7 +3434,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	N1 = *(DatumGetIntervalP(transdatums1[1]));
 
 	deconstruct_array(transarray2,
-					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
+					  INTERVALOID, sizeof(Interval), false, 'd',
 					  &transdatums2, NULL, &ndatums2);
 	if (ndatums2 != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3491,7 +3451,7 @@ interval_combine(PG_FUNCTION_ARGS)
 	transdatums1[1] = IntervalPGetDatum(&N1);
 
 	result = construct_array(transdatums1, 2,
-							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
+							 INTERVALOID, sizeof(Interval), false, 'd');
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3509,7 +3469,7 @@ interval_accum_inv(PG_FUNCTION_ARGS)
 	ArrayType  *result;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
+					  INTERVALOID, sizeof(Interval), false, 'd',
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3526,7 +3486,7 @@ interval_accum_inv(PG_FUNCTION_ARGS)
 	transdatums[1] = IntervalPGetDatum(&N);
 
 	result = construct_array(transdatums, 2,
-							 INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE);
+							 INTERVALOID, sizeof(Interval), false, 'd');
 
 	PG_RETURN_ARRAYTYPE_P(result);
 }
@@ -3541,7 +3501,7 @@ interval_avg(PG_FUNCTION_ARGS)
 				N;
 
 	deconstruct_array(transarray,
-					  INTERVALOID, sizeof(Interval), false, TYPALIGN_DOUBLE,
+					  INTERVALOID, sizeof(Interval), false, 'd',
 					  &transdatums, NULL, &ndatums);
 	if (ndatums != 2)
 		elog(ERROR, "expected 2-element interval array");
@@ -3942,15 +3902,14 @@ timestamp_trunc(PG_FUNCTION_ARGS)
 	PG_RETURN_TIMESTAMP(result);
 }
 
-/*
- * Common code for timestamptz_trunc() and timestamptz_trunc_zone().
- *
- * tzp identifies the zone to truncate with respect to.  We assume
- * infinite timestamps have already been rejected.
+/* timestamptz_trunc()
+ * Truncate timestamp to specified units.
  */
-static TimestampTz
-timestamptz_trunc_internal(text *units, TimestampTz timestamp, pg_tz *tzp)
+Datum
+timestamptz_trunc(PG_FUNCTION_ARGS)
 {
+	text	   *units = PG_GETARG_TEXT_PP(0);
+	TimestampTz timestamp = PG_GETARG_TIMESTAMPTZ(1);
 	TimestampTz result;
 	int			tz;
 	int			type,
@@ -3961,6 +3920,9 @@ timestamptz_trunc_internal(text *units, TimestampTz timestamp, pg_tz *tzp)
 	struct pg_tm tt,
 			   *tm = &tt;
 
+	if (TIMESTAMP_NOT_FINITE(timestamp))
+		PG_RETURN_TIMESTAMPTZ(timestamp);
+
 	lowunits = downcase_truncate_identifier(VARDATA_ANY(units),
 											VARSIZE_ANY_EXHDR(units),
 											false);
@@ -3969,7 +3931,7 @@ timestamptz_trunc_internal(text *units, TimestampTz timestamp, pg_tz *tzp)
 
 	if (type == UNITS)
 	{
-		if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, tzp) != 0)
+		if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 					 errmsg("timestamp out of range")));
@@ -4070,7 +4032,7 @@ timestamptz_trunc_internal(text *units, TimestampTz timestamp, pg_tz *tzp)
 		}
 
 		if (redotz)
-			tz = DetermineTimeZoneOffset(tm, tzp);
+			tz = DetermineTimeZoneOffset(tm, session_timezone);
 
 		if (tm2timestamp(tm, fsec, &tz, &result) != 0)
 			ereport(ERROR,
@@ -4085,83 +4047,6 @@ timestamptz_trunc_internal(text *units, TimestampTz timestamp, pg_tz *tzp)
 						lowunits)));
 		result = 0;
 	}
-
-	return result;
-}
-
-/* timestamptz_trunc()
- * Truncate timestamptz to specified units in session timezone.
- */
-Datum
-timestamptz_trunc(PG_FUNCTION_ARGS)
-{
-	text	   *units = PG_GETARG_TEXT_PP(0);
-	TimestampTz timestamp = PG_GETARG_TIMESTAMPTZ(1);
-	TimestampTz result;
-
-	if (TIMESTAMP_NOT_FINITE(timestamp))
-		PG_RETURN_TIMESTAMPTZ(timestamp);
-
-	result = timestamptz_trunc_internal(units, timestamp, session_timezone);
-
-	PG_RETURN_TIMESTAMPTZ(result);
-}
-
-/* timestamptz_trunc_zone()
- * Truncate timestamptz to specified units in specified timezone.
- */
-Datum
-timestamptz_trunc_zone(PG_FUNCTION_ARGS)
-{
-	text	   *units = PG_GETARG_TEXT_PP(0);
-	TimestampTz timestamp = PG_GETARG_TIMESTAMPTZ(1);
-	text	   *zone = PG_GETARG_TEXT_PP(2);
-	TimestampTz result;
-	char		tzname[TZ_STRLEN_MAX + 1];
-	char	   *lowzone;
-	int			type,
-				val;
-	pg_tz	   *tzp;
-
-	/*
-	 * timestamptz_zone() doesn't look up the zone for infinite inputs, so we
-	 * don't do so here either.
-	 */
-	if (TIMESTAMP_NOT_FINITE(timestamp))
-		PG_RETURN_TIMESTAMP(timestamp);
-
-	/*
-	 * Look up the requested timezone (see notes in timestamptz_zone()).
-	 */
-	text_to_cstring_buffer(zone, tzname, sizeof(tzname));
-
-	/* DecodeTimezoneAbbrev requires lowercase input */
-	lowzone = downcase_truncate_identifier(tzname,
-										   strlen(tzname),
-										   false);
-
-	type = DecodeTimezoneAbbrev(0, lowzone, &val, &tzp);
-
-	if (type == TZ || type == DTZ)
-	{
-		/* fixed-offset abbreviation, get a pg_tz descriptor for that */
-		tzp = pg_tzset_offset(-val);
-	}
-	else if (type == DYNTZ)
-	{
-		/* dynamic-offset abbreviation, use its referenced timezone */
-	}
-	else
-	{
-		/* try it as a full zone name */
-		tzp = pg_tzset(tzname);
-		if (!tzp)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("time zone \"%s\" not recognized", tzname)));
-	}
-
-	result = timestamptz_trunc_internal(units, timestamp, tzp);
 
 	PG_RETURN_TIMESTAMPTZ(result);
 }
@@ -4377,7 +4262,6 @@ date2isoweek(int year, int mon, int mday)
 /* date2isoyear()
  *
  *	Returns ISO 8601 year number.
- *	Note: zero or negative results follow the year-zero-exists convention.
  */
 int
 date2isoyear(int year, int mon, int mday)
@@ -4652,19 +4536,24 @@ timestamp_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
-				/* Adjust BC years */
-				if (result <= 0)
-					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
+				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
+				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -4851,19 +4740,24 @@ timestamptz_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
-				/* Adjust BC years */
-				if (result <= 0)
-					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
+				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
+				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -5028,6 +4922,18 @@ interval_part(PG_FUNCTION_ARGS)
 }
 
 
+/* timestamp_zone_transform()
+ * The original optimization here caused problems by relabeling Vars that
+ * could be matched to index entries.  It might be possible to resurrect it
+ * at some point by teaching the planner to be less cavalier with RelabelType
+ * nodes, but that will take careful analysis.
+ */
+Datum
+timestamp_zone_transform(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(NULL);
+}
+
 /*	timestamp_zone()
  *	Encode timestamp type with specified time zone.
  *	This function is just timestamp2timestamptz() except instead of
@@ -5121,6 +5027,18 @@ timestamp_zone(PG_FUNCTION_ARGS)
 	PG_RETURN_TIMESTAMPTZ(result);
 }
 
+/* timestamp_izone_transform()
+ * The original optimization here caused problems by relabeling Vars that
+ * could be matched to index entries.  It might be possible to resurrect it
+ * at some point by teaching the planner to be less cavalier with RelabelType
+ * nodes, but that will take careful analysis.
+ */
+Datum
+timestamp_izone_transform(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_POINTER(NULL);
+}
+
 /* timestamp_izone()
  * Encode timestamp type with specified time interval as time zone.
  */
@@ -5154,23 +5072,6 @@ timestamp_izone(PG_FUNCTION_ARGS)
 	PG_RETURN_TIMESTAMPTZ(result);
 }								/* timestamp_izone() */
 
-/* TimestampTimestampTzRequiresRewrite()
- *
- * Returns false if the TimeZone GUC setting causes timestamp_timestamptz and
- * timestamptz_timestamp to be no-ops, where the return value has the same
- * bits as the argument.  Since project convention is to assume a GUC changes
- * no more often than STABLE functions change, the answer is valid that long.
- */
-bool
-TimestampTimestampTzRequiresRewrite(void)
-{
-	long		offset;
-
-	if (pg_get_timezone_offset(session_timezone, &offset) && offset == 0)
-		return false;
-	return true;
-}
-
 /* timestamp_timestamptz()
  * Convert local timestamp to timestamp at GMT
  */
@@ -5182,18 +5083,8 @@ timestamp_timestamptz(PG_FUNCTION_ARGS)
 	PG_RETURN_TIMESTAMPTZ(timestamp2timestamptz(timestamp));
 }
 
-/*
- * Convert timestamp to timestamp with time zone.
- *
- * On successful conversion, *overflow is set to zero if it's not NULL.
- *
- * If the timestamp is finite but out of the valid range for timestamptz, then:
- * if overflow is NULL, we throw an out-of-range error.
- * if overflow is not NULL, we store +1 or -1 there to indicate the sign
- * of the overflow, and return the appropriate timestamptz infinity.
- */
-TimestampTz
-timestamp2timestamptz_opt_overflow(Timestamp timestamp, int *overflow)
+static TimestampTz
+timestamp2timestamptz(Timestamp timestamp)
 {
 	TimestampTz result;
 	struct pg_tm tt,
@@ -5201,53 +5092,24 @@ timestamp2timestamptz_opt_overflow(Timestamp timestamp, int *overflow)
 	fsec_t		fsec;
 	int			tz;
 
-	if (overflow)
-		*overflow = 0;
-
 	if (TIMESTAMP_NOT_FINITE(timestamp))
-		return timestamp;
-
-	/* We don't expect this to fail, but check it pro forma */
-	if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) == 0)
+		result = timestamp;
+	else
 	{
+		if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+					 errmsg("timestamp out of range")));
+
 		tz = DetermineTimeZoneOffset(tm, session_timezone);
 
-		result = dt2local(timestamp, -tz);
-
-		if (IS_VALID_TIMESTAMP(result))
-		{
-			return result;
-		}
-		else if (overflow)
-		{
-			if (result < MIN_TIMESTAMP)
-			{
-				*overflow = -1;
-				TIMESTAMP_NOBEGIN(result);
-			}
-			else
-			{
-				*overflow = 1;
-				TIMESTAMP_NOEND(result);
-			}
-			return result;
-		}
+		if (tm2timestamp(tm, fsec, &tz, &result) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+					 errmsg("timestamp out of range")));
 	}
 
-	ereport(ERROR,
-			(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-			 errmsg("timestamp out of range")));
-
-	return 0;
-}
-
-/*
- * Promote timestamp to timestamptz, throwing error for overflow.
- */
-static TimestampTz
-timestamp2timestamptz(Timestamp timestamp)
-{
-	return timestamp2timestamptz_opt_overflow(timestamp, NULL);
+	return result;
 }
 
 /* timestamptz_timestamp()
@@ -5473,7 +5335,8 @@ generate_series_timestamp(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestamp(DirectFunctionCall2(timestamp_pl_interval,
+		fctx->current = DatumGetTimestamp(
+										  DirectFunctionCall2(timestamp_pl_interval,
 															  TimestampGetDatum(fctx->current),
 															  PointerGetDatum(&fctx->step)));
 
@@ -5553,7 +5416,8 @@ generate_series_timestamptz(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
+		fctx->current = DatumGetTimestampTz(
+											DirectFunctionCall2(timestamptz_pl_interval,
 																TimestampTzGetDatum(fctx->current),
 																PointerGetDatum(&fctx->step)));
 

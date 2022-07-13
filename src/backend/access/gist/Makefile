@@ -12,17 +12,7 @@ subdir = src/backend/access/gist
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	gist.o \
-	gistbuild.o \
-	gistbuildbuffers.o \
-	gistget.o \
-	gistproc.o \
-	gistscan.o \
-	gistsplit.o \
-	gistutil.o \
-	gistvacuum.o \
-	gistvalidate.o \
-	gistxlog.o
+OBJS = gist.o gistutil.o gistxlog.o gistvacuum.o gistget.o gistscan.o \
+       gistproc.o gistsplit.o gistbuild.o gistbuildbuffers.o gistvalidate.o
 
 include $(top_srcdir)/src/backend/common.mk

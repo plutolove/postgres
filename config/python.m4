@@ -8,16 +8,8 @@
 # ----------------
 # Look for Python and set the output variable 'PYTHON' if found,
 # fail otherwise.
-#
-# As the Python 3 transition happens and PEP 394 isn't updated, we
-# need to cater to systems that don't have unversioned "python" by
-# default.  Some systems ship with "python3" by default and perhaps
-# have "python" in an optional package.  Some systems only have
-# "python2" and "python3", in which case it's reasonable to prefer the
-# newer version.
 AC_DEFUN([PGAC_PATH_PYTHON],
-[PGAC_PATH_PROGS(PYTHON, [python python3 python2])
-AC_ARG_VAR(PYTHON, [Python program])dnl
+[PGAC_PATH_PROGS(PYTHON, python)
 if test x"$PYTHON" = x""; then
   AC_MSG_ERROR([Python not found])
 fi
@@ -37,8 +29,8 @@ python_majorversion=`echo "$python_fullversion" | sed '[s/^\([0-9]*\).*/\1/]'`
 python_minorversion=`echo "$python_fullversion" | sed '[s/^[0-9]*\.\([0-9]*\).*/\1/]'`
 python_version=`echo "$python_fullversion" | sed '[s/^\([0-9]*\.[0-9]*\).*/\1/]'`
 # Reject unsupported Python versions as soon as practical.
-if test "$python_majorversion" -lt 3 -a "$python_minorversion" -lt 6; then
-  AC_MSG_ERROR([Python version $python_version is too old (version 2.6 or later is required)])
+if test "$python_majorversion" -lt 3 -a "$python_minorversion" -lt 4; then
+  AC_MSG_ERROR([Python version $python_version is too old (version 2.4 or later is required)])
 fi
 
 AC_MSG_CHECKING([for Python distutils module])

@@ -3,7 +3,7 @@
  * nodeLimit.c
  *	  Routines to handle limiting of query results where appropriate
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -41,7 +41,6 @@ static TupleTableSlot *			/* return: a tuple or NULL */
 ExecLimit(PlanState *pstate)
 {
 	LimitState *node = castNode(LimitState, pstate);
-	ExprContext *econtext = node->ps.ps_ExprContext;
 	ScanDirection direction;
 	TupleTableSlot *slot;
 	PlanState  *outerPlan;
@@ -103,16 +102,6 @@ ExecLimit(PlanState *pstate)
 					node->lstate = LIMIT_EMPTY;
 					return NULL;
 				}
-
-				/*
-				 * Tuple at limit is needed for comparation in subsequent
-				 * execution to detect ties.
-				 */
-				if (node->limitOption == LIMIT_OPTION_WITH_TIES &&
-					node->position - node->offset == node->count - 1)
-				{
-					ExecCopySlot(node->last_slot, slot);
-				}
 				node->subSlot = slot;
 				if (++node->position > node->offset)
 					break;
@@ -136,67 +125,43 @@ ExecLimit(PlanState *pstate)
 			if (ScanDirectionIsForward(direction))
 			{
 				/*
-				 * Forwards scan, so check for stepping off end of window.  At
-				 * the end of the window, the behavior depends on whether WITH
-				 * TIES was specified: if so, we need to change the state
-				 * machine to WINDOWEND_TIES, and fall through to the code for
-				 * that case.  If not (nothing was specified, or ONLY was)
-				 * return NULL without advancing the subplan or the position
-				 * variable, but change the state machine to record having
-				 * done so.
-				 *
-				 * Once at the end, ideally, we would shut down parallel
-				 * resources; but that would destroy the parallel context
-				 * which might be required for rescans.  To do that, we'll
-				 * need to find a way to pass down more information about
-				 * whether rescans are possible.
+				 * Forwards scan, so check for stepping off end of window. If
+				 * we are at the end of the window, return NULL without
+				 * advancing the subplan or the position variable; but change
+				 * the state machine state to record having done so.
 				 */
 				if (!node->noCount &&
 					node->position - node->offset >= node->count)
 				{
-					if (node->limitOption == LIMIT_OPTION_COUNT)
-					{
-						node->lstate = LIMIT_WINDOWEND;
-						return NULL;
-					}
-					else
-					{
-						node->lstate = LIMIT_WINDOWEND_TIES;
-						/* we'll fall through to the next case */
-					}
-				}
-				else
-				{
-					/*
-					 * Get next tuple from subplan, if any.
-					 */
-					slot = ExecProcNode(outerPlan);
-					if (TupIsNull(slot))
-					{
-						node->lstate = LIMIT_SUBPLANEOF;
-						return NULL;
-					}
+					node->lstate = LIMIT_WINDOWEND;
 
 					/*
-					 * If WITH TIES is active, and this is the last in-window
-					 * tuple, save it to be used in subsequent WINDOWEND_TIES
-					 * processing.
+					 * If we know we won't need to back up, we can release
+					 * resources at this point.
 					 */
-					if (node->limitOption == LIMIT_OPTION_WITH_TIES &&
-						node->position - node->offset == node->count - 1)
-					{
-						ExecCopySlot(node->last_slot, slot);
-					}
-					node->subSlot = slot;
-					node->position++;
-					break;
+					if (!(node->ps.state->es_top_eflags & EXEC_FLAG_BACKWARD))
+						(void) ExecShutdownNode(outerPlan);
+
+					return NULL;
 				}
+
+				/*
+				 * Get next tuple from subplan, if any.
+				 */
+				slot = ExecProcNode(outerPlan);
+				if (TupIsNull(slot))
+				{
+					node->lstate = LIMIT_SUBPLANEOF;
+					return NULL;
+				}
+				node->subSlot = slot;
+				node->position++;
 			}
 			else
 			{
 				/*
 				 * Backwards scan, so check for stepping off start of window.
-				 * As above, only change state-machine status if so.
+				 * As above, change only state-machine status if so.
 				 */
 				if (node->position <= node->offset + 1)
 				{
@@ -212,65 +177,6 @@ ExecLimit(PlanState *pstate)
 					elog(ERROR, "LIMIT subplan failed to run backwards");
 				node->subSlot = slot;
 				node->position--;
-				break;
-			}
-
-			Assert(node->lstate == LIMIT_WINDOWEND_TIES);
-			/* FALL THRU */
-
-		case LIMIT_WINDOWEND_TIES:
-			if (ScanDirectionIsForward(direction))
-			{
-				/*
-				 * Advance the subplan until we find the first row with
-				 * different ORDER BY pathkeys.
-				 */
-				slot = ExecProcNode(outerPlan);
-				if (TupIsNull(slot))
-				{
-					node->lstate = LIMIT_SUBPLANEOF;
-					return NULL;
-				}
-
-				/*
-				 * Test if the new tuple and the last tuple match. If so we
-				 * return the tuple.
-				 */
-				econtext->ecxt_innertuple = slot;
-				econtext->ecxt_outertuple = node->last_slot;
-				if (ExecQualAndReset(node->eqfunction, econtext))
-				{
-					node->subSlot = slot;
-					node->position++;
-				}
-				else
-				{
-					node->lstate = LIMIT_WINDOWEND;
-					return NULL;
-				}
-			}
-			else
-			{
-				/*
-				 * Backwards scan, so check for stepping off start of window.
-				 * Change only state-machine status if so.
-				 */
-				if (node->position <= node->offset + 1)
-				{
-					node->lstate = LIMIT_WINDOWSTART;
-					return NULL;
-				}
-
-				/*
-				 * Get previous tuple from subplan; there should be one! And
-				 * change state-machine status.
-				 */
-				slot = ExecProcNode(outerPlan);
-				if (TupIsNull(slot))
-					elog(ERROR, "LIMIT subplan failed to run backwards");
-				node->subSlot = slot;
-				node->position--;
-				node->lstate = LIMIT_INWINDOW;
 			}
 			break;
 
@@ -295,28 +201,12 @@ ExecLimit(PlanState *pstate)
 				return NULL;
 
 			/*
-			 * We already past one position to detect ties so re-fetch
-			 * previous tuple; there should be one!  Note previous tuple must
-			 * be in window.
+			 * Backing up from window end: simply re-return the last tuple
+			 * fetched from the subplan.
 			 */
-			if (node->limitOption == LIMIT_OPTION_WITH_TIES)
-			{
-				slot = ExecProcNode(outerPlan);
-				if (TupIsNull(slot))
-					elog(ERROR, "LIMIT subplan failed to run backwards");
-				node->subSlot = slot;
-				node->lstate = LIMIT_INWINDOW;
-			}
-			else
-			{
-				/*
-				 * Backing up from window end: simply re-return the last tuple
-				 * fetched from the subplan.
-				 */
-				slot = node->subSlot;
-				node->lstate = LIMIT_INWINDOW;
-				/* position does not change 'cause we didn't advance it before */
-			}
+			slot = node->subSlot;
+			node->lstate = LIMIT_INWINDOW;
+			/* position does not change 'cause we didn't advance it before */
 			break;
 
 		case LIMIT_WINDOWSTART:
@@ -431,7 +321,7 @@ recompute_limits(LimitState *node)
 static int64
 compute_tuples_needed(LimitState *node)
 {
-	if ((node->noCount) || (node->limitOption == LIMIT_OPTION_WITH_TIES))
+	if (node->noCount)
 		return -1;
 	/* Note: if this overflows, we'll return a negative value, which is OK */
 	return node->count + node->offset;
@@ -484,42 +374,18 @@ ExecInitLimit(Limit *node, EState *estate, int eflags)
 										   (PlanState *) limitstate);
 	limitstate->limitCount = ExecInitExpr((Expr *) node->limitCount,
 										  (PlanState *) limitstate);
-	limitstate->limitOption = node->limitOption;
 
 	/*
-	 * Initialize result type.
+	 * Initialize result slot and type. (XXX not actually used, but upper
+	 * nodes access it to get this node's result tupledesc...)
 	 */
-	ExecInitResultTypeTL(&limitstate->ps);
-
-	limitstate->ps.resultopsset = true;
-	limitstate->ps.resultops = ExecGetResultSlotOps(outerPlanState(limitstate),
-													&limitstate->ps.resultopsfixed);
+	ExecInitResultTupleSlotTL(estate, &limitstate->ps);
 
 	/*
 	 * limit nodes do no projections, so initialize projection info for this
 	 * node appropriately
 	 */
 	limitstate->ps.ps_ProjInfo = NULL;
-
-	/*
-	 * Initialize the equality evaluation, to detect ties.
-	 */
-	if (node->limitOption == LIMIT_OPTION_WITH_TIES)
-	{
-		TupleDesc	desc;
-		const TupleTableSlotOps *ops;
-
-		desc = ExecGetResultType(outerPlanState(limitstate));
-		ops = ExecGetResultSlotOps(outerPlanState(limitstate), NULL);
-
-		limitstate->last_slot = ExecInitExtraTupleSlot(estate, desc, ops);
-		limitstate->eqfunction = execTuplesMatchPrepare(desc,
-														node->uniqNumCols,
-														node->uniqColIdx,
-														node->uniqOperators,
-														node->uniqCollations,
-														&limitstate->ps);
-	}
 
 	return limitstate;
 }
