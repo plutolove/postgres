@@ -19,3 +19,11 @@ bash -x init.sh
 create table test (a integer,b integer,c integer ,d integer);
 insert into abc select (random()*(10^5))::integer,(random()*(10^5))::integer,(random()*(10^5))::integer from generate_series(1,100);
 ```
+
+```
+rmmod btusb
+rmmod btintel
+
+modprobe btintel
+modprobe btusb
+```
